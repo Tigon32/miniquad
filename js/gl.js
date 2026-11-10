@@ -324,7 +324,7 @@ function _webglGet(name_, p, type) {
             if (type != 'EM_FUNC_SIG_PARAM_I' && type != 'EM_FUNC_SIG_PARAM_I64') {
                 GL.recordError(0x500); // GL_INVALID_ENUM
 
-                err('GL_INVALID_ENUM in glGet' + type + 'v(GL_SHADER_BINARY_FORMATS): Invalid parameter type!');
+                console.error('GL_INVALID_ENUM in glGet' + type + 'v(GL_SHADER_BINARY_FORMATS): Invalid parameter type!');
             }
             return; // Do not write anything to the out pointer, since no binary formats are supported.
         case 0x87FE: // GL_NUM_PROGRAM_BINARY_FORMATS
@@ -409,7 +409,7 @@ function _webglGet(name_, p, type) {
     }
 
     switch (type) {
-        case 'EM_FUNC_SIG_PARAM_I64': getArray(p, Int32Array, 1)[0] = ret;
+        case 'EM_FUNC_SIG_PARAM_I64':
         case 'EM_FUNC_SIG_PARAM_I': getArray(p, Int32Array, 1)[0] = ret; break;
         case 'EM_FUNC_SIG_PARAM_F': getArray(p, Float32Array, 1)[0] = ret; break;
         case 'EM_FUNC_SIG_PARAM_B': getArray(p, Int8Array, 1)[0] = ret ? 1 : 0; break;
@@ -1151,7 +1151,7 @@ var importObject = {
         },
         glDeleteQueries: function (n, ids) {
             for (var i = 0; i < n; i++) {
-                var id = getArray(textures + i * 4, Uint32Array, 1)[0];
+                var id = getArray(ids + i * 4, Uint32Array, 1)[0];
                 var query = GL.timerQueries[id];
                 if (!query) {
                     continue;
@@ -1247,16 +1247,11 @@ var importObject = {
             canvas.onkeydown = function (event) {
                 var sapp_key_code = into_sapp_keycode(event.code);
                 switch (sapp_key_code) {
-                    //  space, arrows - prevent scrolling of the page
+                    // Space, arrows, F1-F10, backspace, tab, quote and slash:
+                    // prevent browser scrolling and navigation when the canvas has focus.
                     case 32: case 262: case 263: case 264: case 265:
-                    // F1-F10
                     case 290: case 291: case 292: case 293: case 294: case 295: case 296: case 297: case 298: case 299:
-                    // backspace is Back on Firefox/Windows
-                    case 259:
-                    // tab - for UI
-                    case 258:
-                    // quote and slash are Quick Find on Firefox
-                    case 39: case 47:
+                    case 259: case 258: case 39: case 47:
                         event.preventDefault();
                         break;
                 }

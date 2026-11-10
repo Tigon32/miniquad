@@ -33,3 +33,15 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: ESLint browser bridge
         run: npm run lint:js
+      - name: Install supported test browsers
+        run: npx playwright install --with-deps chromium firefox webkit
+      - name: Run real browser WASM smoke tests
+        run: npm run test:browser
+      - name: Store browser test traces on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-smoke-failures
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 7

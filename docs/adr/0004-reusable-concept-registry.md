@@ -39,16 +39,16 @@ How can projects share terms without making another project depend on Miniquad?
 
 The independent repository will own the shared concepts, schema, validator, release tags, and documentation.
 Do not store this framework under Miniquad.
-The owner must create or select the separate repository before publication.
+The independent repository is [Tigon32/technical-terminology](https://github.com/Tigon32/technical-terminology).
 
 Miniquad can keep `docs/terminology/miniquad.json`.
 It contains **only Miniquad domain concepts**.
 It can refer to stable IDs from the separate shared registry.
-Use a versioned shared release when the registry is available.
+Use the pinned shared commit `0e755947aed328d5287e19e2f4adf0e46ae0549b` until a versioned release is available.
 Do not download the latest shared terms during a required PR check.
 
 Keep `docs/glossary.md` as the readable project glossary until a reviewed shared generator is available.
-Do not make `master` depend on a repository that does not yet exist.
+Keep the shared source pinned to a reviewed commit. Do not download a moving branch in CI.
 
 ## Full ontology decision
 
@@ -69,13 +69,13 @@ Then, write a new MADR for a full ontology.
 
 * Shared releases need version control.
 * A project must check its external references.
-* The separate repository does not yet exist.
+* Changes in the separate repository need independent reviews and pinned updates.
 * A complete STE review still needs the approved rules and dictionary.
 
 ## Confirmation
 
-1. Create a separate terminology repository.
-2. Publish shared terms and their schema there.
+1. Confirm that the separate terminology repository has its own source and policy.
+2. Use the shared concepts and validation script at the pinned revision.
 3. Validate the Miniquad extension with a fixed shared version.
 4. Test the shared data with a second project.
 5. Review whether a full ontology adds necessary value.

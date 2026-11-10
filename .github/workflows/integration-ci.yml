@@ -73,13 +73,25 @@ jobs:
         with:
           path: ~/.cache/ms-playwright
           key: playwright-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}-${{ github.event_name == 'workflow_dispatch' && 'all' || 'chromium' }}
-      - name: Install browser for this test lane
+      - name: Install host browser libraries
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            npx playwright install --with-deps chromium firefox webkit
+            npx playwright install-deps chromium firefox webkit
           else
-            npx playwright install --with-deps chromium
+            npx playwright install-deps chromium
           fi
+      - name: Download browser binaries only on a cache miss
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            npx playwright install chromium firefox webkit
+          else
+            npx playwright install chromium
+          fi
+      - name: Report browser cache result
+        run: |
+          echo "Playwright cache hit: ${{ steps.playwright-cache.outputs.cache-hit }}"
+          ls -1 ~/.cache/ms-playwright
       - name: Save browser downloads before running tests
         if: steps.playwright-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@v4

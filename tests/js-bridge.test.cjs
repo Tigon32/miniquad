@@ -13,6 +13,7 @@ function createBrowserBridge() {
     const windowHandlers = new Map();
     const documentHandlers = new Map();
     const events = [];
+    const messages = [];
     const memory = { buffer: new ArrayBuffer(1024 * 1024) };
     let cursor = 8;
 
@@ -57,7 +58,11 @@ function createBrowserBridge() {
         document,
         window,
         TextEncoder,
-        console,
+        console: {
+            ...console,
+            warn: (...args) => messages.push({ kind: "warn", args }),
+            error: (...args) => messages.push({ kind: "error", args })
+        },
         setTimeout() {},
         clearTimeout() {}
     });
@@ -68,15 +73,17 @@ function createBrowserBridge() {
     assert.equal(typeof window.ondrop, "function");
     return {
         events,
-        async drop(files) {
-            await window.ondrop({
-                preventDefault() {},
-                dataTransfer: { files: files.map(([name, bytes]) => ({
-                    name,
-                    async arrayBuffer() { return Uint8Array.from(bytes).buffer; }
-                })) }
-            });
+        messages,
+        async dropRaw(files) {
+            await window.ondrop({ preventDefault() {}, dataTransfer: { files } });
             return events;
+        },
+        async drop(files) {
+            return this.dropRaw(files.map(([name, bytes]) => ({
+                name,
+                size: bytes.length,
+                async arrayBuffer() { return Uint8Array.from(bytes).buffer; }
+            })));
         }
     };
 }
@@ -109,4 +116,64 @@ test("empty file contents and non-ASCII filename survive drop", async () => {
     assert.equal(events[1].name, "café.txt");
     assert.equal(events[1].nameLen, new TextEncoder().encode("café.txt").length);
     assert.deepEqual(events[1].bytes, []);
+});
+
+test("file drops reject files above the per-file limit before reading", async () => {
+    const harness = createBrowserBridge();
+    let readCount = 0;
+    await harness.dropRaw([{
+        name: "too-large.dat",
+        size: 32 * 1024 * 1024 + 1,
+        async arrayBuffer() { readCount++; throw new Error("must not read"); }
+    }]);
+    assert.equal(readCount, 0);
+    assert.deepEqual(harness.events.map(e => e.kind), ["start", "finish"]);
+    assert.equal(harness.messages.filter(m => m.kind === "warn").length, 1);
+});
+
+test("file drops reject oversized buffers after reading", async () => {
+    const harness = createBrowserBridge();
+    await harness.dropRaw([{
+        name: "wrong-size.bin",
+        size: 1,
+        async arrayBuffer() { return new ArrayBuffer(32 * 1024 * 1024 + 1); }
+    }]);
+    assert.deepEqual(harness.events.map(e => e.kind), ["start", "finish"]);
+    assert.equal(harness.messages.filter(m => m.kind === "warn").length, 1);
+});
+
+test("failed file reads do not prevent later files or completion", async () => {
+    const harness = createBrowserBridge();
+    await harness.dropRaw([
+        { name: "missing.bin", size: 1, async arrayBuffer() { throw new Error("read failed"); } },
+        { name: "ok.bin", size: 2, async arrayBuffer() { return Uint8Array.of(9, 8).buffer; } }
+    ]);
+    assert.deepEqual(harness.events.map(e => e.kind), ["start", "file", "finish"]);
+    assert.equal(harness.events[1].name, "ok.bin");
+    assert.deepEqual(harness.events[1].bytes, [9, 8]);
+    assert.equal(harness.messages.filter(m => m.kind === "error").length, 1);
+});
+
+test("overlapping file-drop events execute one transaction at a time", async () => {
+    const harness = createBrowserBridge();
+    let releaseFirst;
+    const pending = new Promise(resolve => { releaseFirst = resolve; });
+    const first = harness.dropRaw([{
+        name: "first.bin", size: 1, async arrayBuffer() { return pending; }
+    }]);
+    // Let the first queued drop start and wait for the file.
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(harness.events.map(e => e.kind), ["start"]);
+    const second = harness.dropRaw([{
+        name: "second.bin", size: 1, async arrayBuffer() { return Uint8Array.of(2).buffer; }
+    }]);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(harness.events.map(e => e.kind), ["start"]);
+    releaseFirst(Uint8Array.of(1).buffer);
+    await Promise.all([first, second]);
+    assert.deepEqual(harness.events.map(e => e.kind), [
+        "start", "file", "finish", "start", "file", "finish"
+    ]);
+    assert.equal(harness.events[1].name, "first.bin");
+    assert.equal(harness.events[4].name, "second.bin");
 });

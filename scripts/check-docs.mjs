@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Check project-owned Markdown paths and architecture decision metadata.
 // This check does not validate ASD-STE100 grammar or document semantics.
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, extname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -74,7 +74,8 @@ export function audit(rootDir = root) {
         const doc = readFileSync(join(adrFolder,file),"utf8");
         const status = doc.match(/\*\s*Status:\s*\*\*(Proposed|Accepted|Deprecated|Superseded)\*\*/u)?.[1];
         if (!status || !statusSet.has(status)) errors.push("ADR has no valid status: "+file);
-        const lines = adrIndex.split(/\r?\n/u).filter(line=>line.includes("]("+file+")"));
+        const lines = adrIndex.split(/\r?\n/u).filter(line=>
+            /^\s*\*\s*\[\d{4}\s/u.test(line) && line.includes("]("+file+")"));
         if (lines.length !== 1) errors.push("ADR index must contain exactly one entry: "+file);
         else if (status && !lines[0].includes("**"+status+"**")) errors.push("ADR index status differs: "+file);
     }

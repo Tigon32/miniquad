@@ -33,17 +33,17 @@ jobs:
 
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Install packages (Linux)
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
           sudo apt-get -yq --no-install-suggests --no-install-recommends install ${{ matrix.packages }}
-      - uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
-          target: ${{ matrix.config.target }}
-          override: true
+      - name: Install Rust target
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add "${{ matrix.config.target }}"
       - name: Workaround MinGW issue # https://github.com/rust-lang/rust/issues/47048
         if: runner.os == 'Linux' && matrix.config.target == 'x86_64-pc-windows-gnu'
         run: |
@@ -64,10 +64,8 @@ jobs:
           echo "[target.armv7-unknown-linux-gnueabihf]" >> ~/.cargo/config
           echo "linker = \"arm-linux-gnueabihf-gcc\"" >> ~/.cargo/config
 
-      - uses: actions-rs/cargo@v1
-        with:
-          command: build
-          args: --all-targets --target=${{ matrix.config.target }}
+      - name: Build target
+        run: cargo build --all-targets --target="${{ matrix.config.target }}"
 
   android:
     name: Android
@@ -75,7 +73,7 @@ jobs:
     timeout-minutes: 30
     container: notfl3/cargo-apk
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       
       - name: cargo quad-apk
         run: |
@@ -86,10 +84,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions-rs/toolchain@v1
-        with:
-          toolchain: '1.70.0'
-          override: true
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Install minimum supported Rust
+        run: |
+          rustup toolchain install 1.70.0 --profile minimal
+          rustup default 1.70.0
       - name: Verify MSRV
         run: cargo build --all-targets

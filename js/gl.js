@@ -16,6 +16,7 @@ if (!canvas) {
 }
 var gl;
 var webgl_context_lost = false;
+var webgl_depth_texture_supported = false;
 
 var clipboard = null;
 
@@ -91,7 +92,8 @@ function init_webgl(version) {
         acquireDrawBuffers(gl);
 
         // https://developer.mozilla.org/en-US/docs/Web/API/WEBGL_depth_texture
-        if (gl.getExtension('WEBGL_depth_texture') == null) {
+        webgl_depth_texture_supported = gl.getExtension('WEBGL_depth_texture') != null;
+        if (!webgl_depth_texture_supported) {
             console.warn("WebGL1 depth textures unavailable; use WebGL2 for depth render targets");
         }
     } else if (version == 2) {
@@ -99,6 +101,7 @@ function init_webgl(version) {
         if (!gl) {
             throw new Error("WebGL2 context is unavailable");
         }
+        webgl_depth_texture_supported = true;
     } else {
         throw new Error("Unsupported WebGL version: " + version);
     }
@@ -745,6 +748,11 @@ var importObject = {
             gl.bindTexture(target, GL.textures[texture]);
         },
         glTexImage2D: function (target, level, internalFormat, width, height, border, format, type, pixels) {
+            if (!webgl_depth_texture_supported &&
+                (format === gl.DEPTH_COMPONENT || format === gl.DEPTH_STENCIL ||
+                 internalFormat === gl.DEPTH_COMPONENT || internalFormat === gl.DEPTH_STENCIL)) {
+                throw new Error("WebGL1 depth textures are unavailable on this browser");
+            }
             gl.texImage2D(target, level, internalFormat, width, height, border, format, type,
                 pixels ? getArray(pixels, Uint8Array, texture_size(internalFormat, width, height)) : null);
         },

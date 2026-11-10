@@ -10,6 +10,7 @@ test("record browser startup and frame interval baselines without enforcing unca
     window.__browserSLI={
       navigationStart:performance.timeOrigin,
       firstDrawMs:null,
+      firstWasmFrameCallbackMs:null,
       animationFrames:[],
       cpuFrameMs:[]
     };
@@ -27,6 +28,9 @@ test("record browser startup and frame interval baselines without enforcing unca
     window.requestAnimationFrame=function(callback){
       return raf.call(this,timestamp=>{
         if(typeof wasm_exports==="object"&&typeof wasm_exports.frame==="function"){
+          if(window.__browserSLI.firstWasmFrameCallbackMs===null){
+            window.__browserSLI.firstWasmFrameCallbackMs=performance.now();
+          }
           window.__browserSLI.animationFrames.push(timestamp);
         }
         return callback(timestamp);
@@ -54,6 +58,7 @@ test("record browser startup and frame interval baselines without enforcing unca
     const sli=window.__browserSLI;
     return {
       firstWebGLDrawSubmissionMs:sli.firstDrawMs,
+      firstWasmFrameCallbackMs:sli.firstWasmFrameCallbackMs,
       rafTimestampsMs:sli.animationFrames.slice(0,80),
       cpuFrameMs:sli.cpuFrameMs.slice(0,80),
       navigation:performance.getEntriesByType("navigation").map(n=>({
@@ -70,12 +75,13 @@ test("record browser startup and frame interval baselines without enforcing unca
     testSourceRevision:process.env.GITHUB_HEAD_SHA||process.env.GITHUB_SHA||"local",
     samples:{frameIntervals:intervals.length,cpuFrames:metrics.cpuFrameMs.length},
     firstWebGLDrawSubmissionMs:metrics.firstWebGLDrawSubmissionMs,
+    firstWasmFrameCallbackMs:metrics.firstWasmFrameCallbackMs,
     frameIntervalMs:{p50:percentile(sortedIntervals,.5),p95:percentile(sortedIntervals,.95),p99:percentile(sortedIntervals,.99)},
     jsToWasmFrameCallMs:{p50:percentile(sortedCpu,.5),p95:percentile(sortedCpu,.95),p99:percentile(sortedCpu,.99)},
     navigation:metrics.navigation,
-    limitations:"Warm running browser frame samples. First GL draw submission is not first visible pixel; JS-to-WASM frame call includes CPU GL submission, not GPU completion. Not GPU memory or native device metrics."
+    limitations:"Warm running browser frame samples. First WASM frame callback is not first visible painted pixel; first GL draw submission may be null when the engine uses extension-backed instanced calls. JS-to-WASM frame call includes CPU GL submission, not GPU completion. Not GPU memory or native device metrics."
   };
-  expect(receipt.firstWebGLDrawSubmissionMs).toBeGreaterThan(0);
+  expect(receipt.firstWasmFrameCallbackMs).toBeGreaterThan(0);
   await testInfo.attach("browser-sli-baseline.json",{
     contentType:"application/json",body:JSON.stringify(receipt,null,2)
   });

@@ -104,7 +104,10 @@ function init_webgl(version) {
     }
     // GPU resources cannot be used after context loss. This bridge does not
     // currently rebuild textures, buffers, and pipelines on restoration.
-    canvas.addEventListener("webglcontextlost", function () {
+    canvas.addEventListener("webglcontextlost", function (event) {
+        // Permit the browser to restore its context, but do not resume frames:
+        // Miniquad has not reconstructed the invalidated GPU resources.
+        event.preventDefault();
         webgl_context_lost = true;
         if (animation_frame_timeout) {
             window.cancelAnimationFrame(animation_frame_timeout);

@@ -1,13 +1,14 @@
 //! IME Input Test Example with Text Rendering
 //!
 //! Demonstrates:
-//! - Text input box with visible text using fontdue
+//! - Text input box with visible text using Skrifa and Zeno
 //! - IME candidate window positioning using window::set_ime_position()
 //! - Chinese/Japanese/Korean input support
 //!
 //! Click on an input box to focus it, then type with your IME.
 
-use fontdue::{Font, FontSettings};
+use skrifa::{instance::{LocationRef, Size}, outline::{DrawSettings, OutlinePen}, FontRef, MetadataProvider};
+use zeno::{Mask, Origin, PathBuilder, Command};
 use miniquad::*;
 use std::collections::HashMap;
 use std::io::Write;
@@ -20,8 +21,23 @@ const FONT_PATH: &str = "C:\\Windows\\Fonts\\msyh.ttc"; // Microsoft YaHei
 const FONT_PATH: &str = "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc";
 
 // ============================================================================
-// Text Renderer using fontdue
+// Text renderer using Skrifa outlines and Zeno alpha masks
 // ============================================================================
+
+#[derive(Default)]
+struct GlyphPath(Vec<Command>);
+
+impl OutlinePen for GlyphPath {
+    fn move_to(&mut self, x: f32, y: f32) { self.0.move_to([x, y]); }
+    fn line_to(&mut self, x: f32, y: f32) { self.0.line_to([x, y]); }
+    fn quad_to(&mut self, cx: f32, cy: f32, x: f32, y: f32) {
+        self.0.quad_to([cx, cy], [x, y]);
+    }
+    fn curve_to(&mut self, cx: f32, cy: f32, dx: f32, dy: f32, x: f32, y: f32) {
+        self.0.curve_to([cx, cy], [dx, dy], [x, y]);
+    }
+    fn close(&mut self) { self.0.close(); }
+}
 
 struct GlyphInfo {
     uv: [f32; 4], // x, y, w, h in UV coords
@@ -31,7 +47,7 @@ struct GlyphInfo {
 }
 
 struct TextRenderer {
-    font: Font,
+    font_data: Vec<u8>,
     font_size: f32,
     cache: HashMap<char, GlyphInfo>,
     atlas: TextureId,
@@ -46,15 +62,14 @@ struct TextRenderer {
 impl TextRenderer {
     fn new(ctx: &mut Box<dyn RenderingBackend>, font_size: f32) -> Self {
         let font_data = std::fs::read(FONT_PATH).expect("Failed to load font file");
-        let font = Font::from_bytes(font_data.as_slice(), FontSettings::default())
-            .expect("Failed to parse font");
+        FontRef::from_index(&font_data, 0).expect("Failed to parse font");
         
         let atlas_size = 1024u32;
         let atlas_data = vec![0u8; (atlas_size * atlas_size * 4) as usize];
         let atlas = ctx.new_texture_from_rgba8(atlas_size as u16, atlas_size as u16, &atlas_data);
 
         Self {
-            font, font_size, cache: HashMap::new(), atlas, atlas_data,
+            font_data, font_size, cache: HashMap::new(), atlas, atlas_data,
             atlas_size, cursor_x: 0, cursor_y: 0, row_h: 0, dirty: false,
         }
     }
@@ -62,47 +77,64 @@ impl TextRenderer {
     fn cache_char(&mut self, ch: char) {
         if self.cache.contains_key(&ch) { return; }
         
-        let (m, bmp) = self.font.rasterize(ch, self.font_size);
-        if m.width == 0 || m.height == 0 {
+        // This demo accepts a TTC, TTF, or OTF file. Font data stays owned by TextRenderer.
+        let font = FontRef::from_index(&self.font_data, 0).expect("Font data changed");
+        let size = Size::new(self.font_size);
+        let gid = font.charmap().map(ch).unwrap_or_default();
+        let advance = font.glyph_metrics(size, LocationRef::default())
+            .advance_width(gid).unwrap_or(0.0);
+        let mut path = GlyphPath::default();
+        if let Some(glyph) = font.outline_glyphs().get(gid) {
+            if let Err(error) = glyph.draw(
+                DrawSettings::unhinted(size, LocationRef::default()),
+                &mut path,
+            ) {
+                eprintln!("Cannot draw glyph outline: {:?}", error);
+            }
+        }
+        let (bitmap, placement) = Mask::new(&path.0).origin(Origin::BottomLeft).render();
+        let width = placement.width as usize;
+        let height = placement.height as usize;
+        if width == 0 || height == 0 {
             self.cache.insert(ch, GlyphInfo {
-                uv: [0.0; 4], size: [0.0; 2], offset: [0.0; 2], advance: m.advance_width,
+                uv: [0.0; 4], size: [0.0; 2], offset: [0.0; 2], advance,
             });
             return;
         }
 
-        if self.cursor_x + m.width as u32 > self.atlas_size {
+        if self.cursor_x + width as u32 > self.atlas_size {
             self.cursor_x = 0;
             self.cursor_y += self.row_h + 1;
             self.row_h = 0;
         }
-        if self.cursor_y + m.height as u32 > self.atlas_size {
+        if self.cursor_y + height as u32 > self.atlas_size {
             eprintln!("Atlas full!");
             return;
         }
 
         // Copy glyph bitmap to atlas
-        for y in 0..m.height {
-            for x in 0..m.width {
-                let src = y * m.width + x;
+        for y in 0..height {
+            for x in 0..width {
+                let src = y * width + x;
                 let dx = self.cursor_x + x as u32;
                 let dy = self.cursor_y + y as u32;
                 let dst = ((dy * self.atlas_size + dx) * 4) as usize;
                 self.atlas_data[dst..dst+3].copy_from_slice(&[255, 255, 255]);
-                self.atlas_data[dst + 3] = bmp[src];
+                self.atlas_data[dst + 3] = bitmap[src];
             }
         }
 
         let s = self.atlas_size as f32;
         self.cache.insert(ch, GlyphInfo {
             uv: [self.cursor_x as f32 / s, self.cursor_y as f32 / s,
-                 m.width as f32 / s, m.height as f32 / s],
-            size: [m.width as f32, m.height as f32],
-            offset: [m.xmin as f32, m.ymin as f32],
-            advance: m.advance_width,
+                 width as f32 / s, height as f32 / s],
+            size: [width as f32, height as f32],
+            offset: [placement.left as f32, placement.top as f32 - height as f32],
+            advance,
         });
 
-        self.cursor_x += m.width as u32 + 1;
-        self.row_h = self.row_h.max(m.height as u32);
+        self.cursor_x += width as u32 + 1;
+        self.row_h = self.row_h.max(height as u32);
         // Mark atlas dirty only after successful insertion
         self.dirty = true;
     }
@@ -410,4 +442,36 @@ fn main() {
         window_height: 300,
         ..Default::default()
     }, || Box::new(Stage::new()));
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod font_tests {
+    use super::*;
+
+    #[test]
+    fn parse_and_rasterize_a_real_font_glyph() {
+        let data = std::fs::read("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+            .expect("Install fonts-dejavu-core for the IME example test");
+        let font = FontRef::from_index(&data, 0).expect("valid TrueType font");
+        let gid = font.charmap().map('A').expect("font has a Latin A glyph");
+        let size = Size::new(22.0);
+        let advance = font
+            .glyph_metrics(size, LocationRef::default())
+            .advance_width(gid)
+            .expect("font has glyph metrics");
+        assert!(advance > 0.0);
+
+        let mut path = GlyphPath::default();
+        font.outline_glyphs()
+            .get(gid)
+            .expect("font has a glyph outline")
+            .draw(DrawSettings::unhinted(size, LocationRef::default()), &mut path)
+            .expect("glyph outline is valid");
+        let (mask, placement) = Mask::new(&path.0)
+            .origin(Origin::BottomLeft)
+            .render();
+        assert!(placement.width > 0 && placement.height > 0);
+        assert_eq!(mask.len(), (placement.width * placement.height) as usize);
+        assert!(mask.iter().any(|&alpha| alpha > 0));
+    }
 }

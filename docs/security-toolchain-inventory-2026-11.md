@@ -36,7 +36,7 @@ The library declares these dependencies in `Cargo.toml`:
 | Apple platforms | `objc-rs` (package alias `objc`) | `0.2` |
 | Development | `glam` | `0.24` |
 | Development | `quad-rand` | `0.1` |
-| Development | `fontdue` | `0.8` |
+| Isolated IME demo | `skrifa`, `zeno` | `0.48.0`, `0.3.3` |
 
 The Rust minimum supported version is **1.70**.
 The normal CI uses `stable`, which is not an immutable compiler version.
@@ -93,5 +93,6 @@ Do not suppress the warning or describe it as a confirmed exploitable vulnerabil
 
 * [MADR 0007](adr/0007-use-supported-and-secure-toolchains.md)
 * [Security policy](../SECURITY.md)
+* [IME font evaluation](font-renderer-evaluation-2026-11.md)
 * [Issue #16](https://github.com/Tigon32/miniquad/issues/16)
 * [GitHub guidance for secure Actions](https://docs.github.com/en/actions/reference/security/secure-use)

@@ -1,0 +1,39 @@
+name: Generate ESLint 10 lockfile (one-shot)
+on:
+  push:
+    branches:
+      - build/eslint-v10
+
+permissions:
+  contents: write
+
+concurrency:
+  group: eslint-v10-bootstrap
+  cancel-in-progress: true
+
+jobs:
+  lockfile:
+    if: github.repository == 'Tigon32/miniquad' && github.actor == 'Tigon32' && github.ref == 'refs/heads/build/eslint-v10'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Resolve lockfile without lifecycle scripts
+        run: npm install --package-lock-only --ignore-scripts --no-audit --no-fund
+      - name: Verify locked tools and browser bridge rules
+        run: |
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run lint:js
+          node --test tests/*.test.cjs
+      - name: Commit lockfile and remove bootstrap workflow
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add package-lock.json
+          git rm .github/workflows/bootstrap-eslint-v10.yml
+          git diff --cached --quiet && exit 1
+          git commit -m "build: lock ESLint 10 dependencies"
+          git push origin HEAD:refs/heads/build/eslint-v10

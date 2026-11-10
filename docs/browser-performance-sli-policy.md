@@ -23,7 +23,8 @@ Comparison PRs must cite their own revision and both measured receipts.
 | SLI | Collection method | Reported units | Known limits |
 | --- | --- | --- | --- |
 | Raw and compressed JavaScript + WASM | `node scripts/measure-bundle-size.mjs` on actual `js/gl.js`, release quad and offscreen WASM | Bytes, SHA-256, gzip level 9, Brotli quality 11 | Computed compression, not captured HTTP transfer, cache or CDN behavior |
-| Startup to first GL draw submission | `tests/browser/performance-baseline.spec.mjs`, from navigation start to first `drawElements` call | Milliseconds | Not first visible painted pixel; may include transient shader compilation |
+| Startup to first WASM frame callback | `tests/browser/performance-baseline.spec.mjs`, navigation start to first scheduled WASM frame callback | Milliseconds | Not first visible painted pixel; records readiness to update/draw, not GPU presentation |
+| First observed GL draw submission (optional) | Prototype wrappers for `drawElements` where available | Milliseconds or null | Some instanced calls use WebGL extensions and bypass the wrapper; null means **not observed**, not zero latency |
 | Frame interval | 60+ requestAnimationFrame timestamps from the compiled WASM test page | p50, p95 and p99 in milliseconds | Refresh rate, CI host scheduling, timers and browser throttling change values |
 | JavaScript-to-WASM frame callback CPU time | Wrap the compiled WASM `frame()` call after startup, observe 40+ samples | p50, p95 and p99 in milliseconds | Includes Rust/GL command submission; excludes asynchronous GPU completion |
 | Navigation network response | Browser PerformanceNavigationTiming entry | Milliseconds and transfer bytes when available | Local HTTP and cache behavior are not a production network benchmark |

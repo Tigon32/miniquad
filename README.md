@@ -1,5 +1,9 @@
 # Miniquad
 
+> **Source and credit:** This project began as a fork of [Miniquad](https://github.com/not-fl3/miniquad), created by Fedor Logachev.
+> See [upstream attribution](docs/upstream-attribution.md) and the original licence notices.
+> The project is planning a new name. No package or public API has been renamed yet.
+
 [![Github Actions](https://github.com/not-fl3/miniquad/workflows/Cross-compile/badge.svg)](https://github.com/not-fl3/miniquad/actions?query=workflow%3A)
 [![Docs](https://docs.rs/miniquad/badge.svg?version=0.3.13)](https://docs.rs/miniquad/0.3.13/miniquad/index.html)
 [![Crates.io version](https://img.shields.io/crates/v/miniquad.svg)](https://crates.io/crates/miniquad)

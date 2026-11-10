@@ -1297,6 +1297,7 @@ var importObject = {
             });
             canvas.onkeydown = function (event) {
                 var sapp_key_code = into_sapp_keycode(event.code);
+                if (sapp_key_code === undefined) return;
                 switch (sapp_key_code) {
                     // Space, arrows, F1-F10, backspace, tab, quote and slash:
                     // prevent browser scrolling and navigation when the canvas has focus.
@@ -1317,10 +1318,14 @@ var importObject = {
             };
             canvas.onkeyup = function (event) {
                 var sapp_key_code = into_sapp_keycode(event.code);
+                if (sapp_key_code === undefined) return;
                 var modifiers = into_sapp_modifiers(event);
 
-                keys_down.delete(sapp_key_code);
-                wasm_exports.key_up(sapp_key_code, modifiers);
+                // Browsers can send keyup after focus loss already released a
+                // key. The Rust callback must see exactly one release.
+                if (keys_down.delete(sapp_key_code)) {
+                    wasm_exports.key_up(sapp_key_code, modifiers);
+                }
                 // macOS browsers send no keyup for a key released while Cmd
                 // is down, so every key but the modifiers (340 to 347),
                 // which do send one, comes up with Cmd.
@@ -1335,6 +1340,7 @@ var importObject = {
             });
             canvas.onkeypress = function (event) {
                 var sapp_key_code = into_sapp_keycode(event.code);
+                if (sapp_key_code === undefined) return;
 
                 // firefox do not send onkeypress events for ctrl+keys and delete key while chrome do
                 // workaround to make this behavior consistent

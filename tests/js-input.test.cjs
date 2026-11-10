@@ -57,6 +57,8 @@ function fixture() {
         key_down(code,mods,repeat) {received.push({type:"down",code,mods,repeat});},
         key_up(code,mods) {received.push({type:"up",code,mods});},
         key_press(code) {received.push({type:"press",code});},
+        touch(kind,id,x,y) {received.push({type:"touch",kind,id,x,y});},
+        resize(width,height) {received.push({type:"resize",width,height});},
         focus(hasFocus) {received.push({type:"focus",hasFocus});}
     };
     const context = vm.createContext({window,document,TextEncoder,console: {
@@ -182,4 +184,63 @@ test("clipboard paste ignores non-string data without allocating", () => {
     f.windowEvents.get("paste")(event);
     assert.equal(f.allocations, 0);
     assert.deepEqual(f.received, []);
+});
+
+test("unknown keyboard codes must not reach Rust or enter held-key state", () => {
+    const f=fixture();
+    f.canvas.onkeydown({
+        code:"UnsupportedBrowserKey",repeat:false,
+        ctrlKey:false,shiftKey:false,altKey:false,metaKey:false,
+        preventDefault() {}
+    });
+    f.canvas.onkeyup({
+        code:"UnsupportedBrowserKey",
+        ctrlKey:false,shiftKey:false,altKey:false,metaKey:false
+    });
+    assert.deepEqual(f.received.filter(e=>e.type==="down"||e.type==="up"),[]);
+    assert.equal(vm.runInContext("keys_down.size",f.context),0);
+});
+
+test("duplicate keyup cannot release an already released key twice", () => {
+    const f=fixture();
+    const event={code:"KeyA",repeat:false,
+        ctrlKey:false,shiftKey:false,altKey:false,metaKey:false,
+        preventDefault() {}};
+    f.canvas.onkeydown(event);
+    f.canvas.onkeyup(event);
+    f.canvas.onkeyup(event);
+    assert.deepEqual(f.received.filter(e=>e.type==="down"||e.type==="up")
+        .map(e=>({type:e.type,code:e.code})),[
+        {type:"down",code:65},
+        {type:"up",code:65}
+    ]);
+});
+
+test("touch cancellation forwards every changed touch with canceled event type", () => {
+    const f=fixture();
+    const callback=f.canvasEvents.get("touchcancel");
+    assert.equal(typeof callback,"function");
+    let prevented=0;
+    callback({
+        preventDefault() {prevented++;},
+        changedTouches:[{identifier:2,clientX:15,clientY:30},
+                        {identifier:3,clientX:20,clientY:35}]
+    });
+    assert.equal(prevented,1);
+    assert.deepEqual(f.received.filter(e=>e.type==="touch"),[
+        {type:"touch",kind:13,id:2,x:15,y:30},
+        {type:"touch",kind:13,id:3,x:20,y:35}
+    ]);
+});
+
+test("zero-size canvas resize remains bounded and notifies Rust", () => {
+    const f=fixture();
+    f.canvas.clientWidth=0;
+    f.canvas.clientHeight=0;
+    f.window.onresize();
+    assert.equal(f.canvas.width,0);
+    assert.equal(f.canvas.height,0);
+    assert.deepEqual(f.received.filter(e=>e.type==="resize"),[
+        {type:"resize",width:0,height:0}
+    ]);
 });

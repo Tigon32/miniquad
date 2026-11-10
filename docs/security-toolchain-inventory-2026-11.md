@@ -96,3 +96,42 @@ Do not suppress the warning or describe it as a confirmed exploitable vulnerabil
 * [IME font evaluation](font-renderer-evaluation-2026-11.md)
 * [Issue #16](https://github.com/Tigon32/miniquad/issues/16)
 * [GitHub guidance for secure Actions](https://docs.github.com/en/actions/reference/security/secure-use)
+
+## Verification addendum — 2026-11-10
+
+This section supersedes the older statements above that a RustSec scan had
+not executed, that `fontdue` still occurred in the crate graph, and that the
+Android container remained in the workflow. Keep the older statements as an
+audit trail rather than silently rewriting historical observations.
+
+* [Security scan 42855970374](https://github.com/Tigon32/miniquad/actions/runs/42855970374):
+  RustSec, npm advisories, and Cargo licence checks passed on PR #66 head
+  `ccb4a831d87459fc73cbb526a83de5e3d2b11c5e`.
+  Both the root crate and isolated IME demo licence graphs passed.
+* [Post-merge security scan 42856445237](https://github.com/Tigon32/miniquad/actions/runs/42856445237)
+  succeeded on commit `37903df1286d8e09e99c2db3b34243765d54bbb4`.
+* PR #61 replaced the demonstration-only `fontdue` graph with a locked
+  isolated `skrifa` and `zeno` crate. PR #63
+  [RustSec scan 42805287295](https://github.com/Tigon32/miniquad/actions/runs/42805287295)
+  passed both resolved crate graphs with `--deny unmaintained`.
+* PR #62 removed the unverified Android container. Android build/runtime
+  remains **unqualified**, not a supported release target.
+* The root is a library with a reviewed temporary-lockfile audit policy.
+  The standalone IME demo keeps its committed Cargo lockfile. Resolved
+  dependency versions can change across future audit dates; the workflow
+  regenerates the root graph before scanning. A successful scan is a
+  revision- and date-specific result, not an indefinite guarantee.
+* Required PR CI uses `npm ci --ignore-scripts --no-audit --no-fund`;
+  the scheduled security gate uses `npm audit --package-lock-only
+  --audit-level=moderate` and denies unmaintained Rust crates.
+* The checked-in HTML and JavaScript browser fixtures load the local
+  `js/gl.js` and WASM artifacts over HTTP. No third-party script CDN
+  is required. Fonts and external software outside those declared build
+  inputs remain subject to individual source and licence review.
+* The owner auto-merge job uses write permission and checks out trusted
+  `master` only; ordinary test and scan jobs have `contents: read`.
+  The trusted policy does not execute an untrusted PR head in a
+  `pull_request_target` job.
+
+These scan results are evidence of the enumerated checks, not a
+penetration test or an audit of all code, all browser engines, or native targets.

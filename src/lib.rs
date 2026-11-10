@@ -515,3 +515,6 @@ where
         native::ios::run(conf, f);
     }
 }
+
+#[cfg(test)]
+mod resource_manager_tests;

@@ -25,6 +25,7 @@ jobs:
           rustup toolchain install stable --profile minimal
           rustup default stable
           rustup target add wasm32-unknown-unknown
+          rustup component add rustfmt clippy
       - name: Restore Cargo package cache
         id: cargo-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -38,6 +39,10 @@ jobs:
             cargo-v2-${{ runner.os }}-${{ runner.arch }}-
       - name: Check immutable GitHub Action references
         run: node scripts/check-actions.mjs
+      - name: Check formatting of new Rust regression tests
+        run: rustfmt --check --edition 2018 src/resource_manager_tests.rs
+      - name: Focused Rust Clippy correctness check
+        run: cargo clippy --lib -- -D clippy::correctness
       - name: Rust library tests
         run: cargo test --lib
       - name: WASM library check

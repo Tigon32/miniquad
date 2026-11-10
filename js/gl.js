@@ -1718,9 +1718,19 @@ function start_wasm(instance) {
     exports.main();
 }
 
+// A canvas has one WASM application lifecycle. Share pending or completed
+// loads for the same artifact; a failed load may be retried.
+var wasm_load_promise = null;
+var wasm_load_path = null;
 function load(wasm_path) {
     if (!canvas) {
         throw new Error("Miniquad requires a #glcanvas element before loading WASM");
+    }
+    if (wasm_load_promise !== null) {
+        if (wasm_load_path !== wasm_path) {
+            return Promise.reject(new Error("Cannot load different WASM module into active canvas"));
+        }
+        return wasm_load_promise;
     }
     register_plugins(plugins);
 
@@ -1735,14 +1745,19 @@ function load(wasm_path) {
         ? WebAssembly.compileStreaming(response)
         : response.then(result => result.arrayBuffer()).then(bytes => WebAssembly.compile(bytes));
 
-    return module
+    wasm_load_path = wasm_path;
+    wasm_load_promise = module
         .then(compiled => {
             validate_wasm_imports(compiled);
             return WebAssembly.instantiate(compiled, importObject);
         })
         .then(start_wasm)
         .catch(error => {
+            // Release the failed transaction, not an initialized instance.
+            wasm_load_promise = null;
+            wasm_load_path = null;
             console.error("WASM failed to load", error);
             throw error;
         });
+    return wasm_load_promise;
 }

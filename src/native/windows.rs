@@ -180,8 +180,8 @@ mod file_drop_tests {
         // an injected reader error, and must not panic in the drop callback.
         assert_eq!(error.raw_os_error(), Some(32));
 
-        drop(drop);
-        drop(locked);
+        std::mem::drop(drop);
+        std::mem::drop(locked);
         std::fs::remove_file(path).expect("Cleanup locked file fixture");
     }
 

@@ -24,10 +24,17 @@ const builds=names.map(name=>{
     }]));
     return {name,baseline,candidate,delta:changes};
 });
+const experiment=process.env.MINIQUAD_EXPERIMENT_KIND||"rust-oz";
+if(!["rust-oz","binaryen-oz"].includes(experiment)){
+  throw new Error("Unknown WASM experiment: "+experiment);
+}
 const report={
   sourceHead:process.env.GITHUB_HEAD_SHA||process.env.GITHUB_SHA||"local",
   baseline:"cargo build --release --target wasm32-unknown-unknown",
-  candidate:'RUSTFLAGS="-C opt-level=z" CARGO_TARGET_DIR=target/experiment cargo build --release --target wasm32-unknown-unknown',
+  experiment,
+  candidate:experiment==="binaryen-oz"
+    ?"Pinned Binaryen wasm-opt -Oz applied to release WASM fixture"
+    :'RUSTFLAGS="-C opt-level=z" CARGO_TARGET_DIR=target/experiment cargo build --release --target wasm32-unknown-unknown',
   rustc:process.env.EXPERIMENT_RUSTC_VERSION||"see workflow log",
   runner:process.env.RUNNER_OS||process.platform,
   compression:"gzip 9; Brotli 11",

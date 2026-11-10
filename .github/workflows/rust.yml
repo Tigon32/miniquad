@@ -67,17 +67,9 @@ jobs:
       - name: Build target
         run: cargo build --all-targets --target="${{ matrix.config.target }}"
 
-  android:
-    name: Android
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    container: notfl3/cargo-apk
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      
-      - name: cargo quad-apk
-        run: |
-          cargo quad-apk build 
+  # Android is not run here until a reviewed, digest-pinned toolchain exists.
+  # The old notfl3/cargo-apk tag has no verified provenance in this fork.
+  # Do not claim Android runtime or build qualification from this workflow.
 
   msrv:
     name: MSRV Check

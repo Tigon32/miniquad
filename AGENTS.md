@@ -55,6 +55,13 @@ Use [MADR 0002](docs/adr/0002-risk-based-verification-and-selective-tdd.md) to s
 An editorial change does not need a new behavior test.
 A bug fix must have a regression test when a repeatable test is possible.
 
+Before you change an architecture boundary or public contract, write or revise a MADR.
+Include the alternatives, decision status, and observed evidence.
+Update the affected glossary terms, diagrams, tests, and guides in the same PR.
+Do not change an accepted decision in place. Write a new decision to supersede it.
+Run `node scripts/check-docs.mjs` to check documentation links and decision records.
+This check does not prove technical meaning or ASD-STE100 compliance.
+
 ## Local checks
 
 Run only the checks that apply to the change.

@@ -681,7 +681,15 @@ var importObject = {
             emscripten_shaders_hack = flag;
         },
         sapp_set_clipboard: function (ptr, len) {
-            clipboard = UTF8ToString(ptr, len);
+            // Rust supplies a byte slice, not a NUL-terminated C string.
+            // Reject an invalid memory range before changing clipboard state.
+            if (!Number.isSafeInteger(ptr) || !Number.isSafeInteger(len) ||
+                ptr < 0 || len < 0 || ptr > wasm_memory.buffer.byteLength ||
+                len > wasm_memory.buffer.byteLength - ptr) {
+                throw new RangeError("Invalid WASM clipboard memory range");
+            }
+            const bytes = new Uint8Array(wasm_memory.buffer, ptr, len);
+            clipboard = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
         },
         dpi_scale,
         rand: function () {

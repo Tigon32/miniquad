@@ -206,9 +206,9 @@ impl crate::native::Clipboard for Clipboard {
     }
 
     fn set(&mut self, data: &str) {
-        let len = data.len();
-        let data = std::ffi::CString::new(data).unwrap();
-        unsafe { sapp_set_clipboard(data.as_ptr(), len) };
+        // The JS import takes a byte length. Interior NUL bytes are valid UTF-8
+        // and must not cause a CString conversion panic or silent truncation.
+        unsafe { sapp_set_clipboard(data.as_ptr().cast(), data.len()) };
     }
 }
 

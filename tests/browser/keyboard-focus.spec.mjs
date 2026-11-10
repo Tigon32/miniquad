@@ -8,9 +8,13 @@ test("focused canvas sends a key release when focus is lost", async ({ page }) =
   });
 
   await page.goto("/", { waitUntil: "load" });
+  // Export availability precedes listener installation during startup.
+  // Wait for the actual canvas handlers before sending keyboard input.
   await page.waitForFunction(() => typeof wasm_exports === "object" &&
     typeof wasm_exports.key_down === "function" &&
-    typeof wasm_exports.key_up === "function");
+    typeof wasm_exports.key_up === "function" &&
+    typeof document.querySelector("#glcanvas")?.onkeydown === "function" &&
+    typeof document.querySelector("#glcanvas")?.onkeyup === "function");
 
   // Observe calls while forwarding them to the actual compiled WASM exports.
   await page.evaluate(() => {

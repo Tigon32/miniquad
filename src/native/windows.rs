@@ -1,4 +1,4 @@
-use std::{ffi::OsString, os::windows::ffi::OsStringExt, path::PathBuf};
+use std::{ffi::OsString, io::Read, os::windows::ffi::OsStringExt, path::PathBuf};
 
 use crate::{
     conf::{Conf, Icon},
@@ -10,7 +10,7 @@ use crate::{
 use winapi::{
     shared::{
         hidusage::{HID_USAGE_GENERIC_MOUSE, HID_USAGE_PAGE_GENERIC},
-        minwindef::{DWORD, HIWORD, LOWORD, LPARAM, LRESULT, MAX_PATH, TRUE, UINT, WPARAM},
+        minwindef::{DWORD, HIWORD, LOWORD, LPARAM, LRESULT, TRUE, UINT, WPARAM},
         ntdef::NULL,
         windef::{HBRUSH, HCURSOR, HDC, HICON, HWND, POINT, RECT},
         windowsx::{GET_X_LPARAM, GET_Y_LPARAM},
@@ -18,12 +18,65 @@ use winapi::{
     um::{
         imm::{HIMC, ImmGetContext, ImmReleaseContext},
         libloaderapi::{GetModuleHandleW, GetProcAddress},
-        shellapi::{DragAcceptFiles, DragQueryFileW, HDROP},
+        shellapi::{DragAcceptFiles, DragFinish, DragQueryFileW, HDROP},
         shellscalingapi::*,
         wingdi::*,
         winuser::*,
     },
 };
+
+// Bound files that come from untrusted drag-and-drop events.
+const MAX_DROPPED_FILES: u32 = 128;
+const MAX_DROP_PATH_UNITS: usize = 32767;
+const MAX_DROPPED_FILE_BYTES: usize = 32 * 1024 * 1024;
+const MAX_DROPPED_TOTAL_BYTES: usize = 64 * 1024 * 1024;
+
+fn read_bounded_drop_bytes<R: Read>(reader: R, limit: usize) -> std::io::Result<Option<Vec<u8>>> {
+    let mut data = Vec::new();
+    // Read one extra byte to detect a file that exceeds the limit.
+    reader.take(limit as u64 + 1).read_to_end(&mut data)?;
+    if data.len() > limit {
+        Ok(None)
+    } else {
+        Ok(Some(data))
+    }
+}
+
+#[cfg(test)]
+mod file_drop_tests {
+    use super::read_bounded_drop_bytes;
+    use std::io::{Cursor, Error, ErrorKind, Read};
+
+    #[test]
+    fn read_bytes_at_limit() {
+        assert_eq!(
+            read_bounded_drop_bytes(Cursor::new(vec![1, 2, 3]), 3).unwrap(),
+            Some(vec![1, 2, 3])
+        );
+    }
+
+    #[test]
+    fn reject_data_above_limit() {
+        assert_eq!(
+            read_bounded_drop_bytes(Cursor::new(vec![1, 2, 3, 4]), 3).unwrap(),
+            None
+        );
+    }
+
+    struct FailedReader;
+
+    impl Read for FailedReader {
+        fn read(&mut self, _buffer: &mut [u8]) -> std::io::Result<usize> {
+            Err(Error::new(ErrorKind::PermissionDenied, "unreadable"))
+        }
+    }
+
+    #[test]
+    fn return_read_errors_without_panicking() {
+        let error = read_bounded_drop_bytes(FailedReader, 3).unwrap_err();
+        assert_eq!(error.kind(), ErrorKind::PermissionDenied);
+    }
+}
 
 // IME constants
 const GCS_RESULTSTR: DWORD = 0x0800;
@@ -740,25 +793,57 @@ unsafe extern "system" fn win32_wndproc(
         }
         WM_DROPFILES => {
             let hdrop = wparam as HDROP;
-            let mut path = core::mem::MaybeUninit::<[u16; MAX_PATH]>::uninit();
             let num_drops = DragQueryFileW(hdrop, u32::MAX, std::ptr::null_mut(), 0);
+            let mut paths = Vec::new();
+            let mut bytes = Vec::new();
+            let mut total = 0usize;
 
-            let mut d = crate::native_display().lock().unwrap();
-            d.dropped_files = Default::default();
-            for i in 0..num_drops {
-                let path_ptr = path.as_mut_ptr() as *mut u16;
-                let path_len = DragQueryFileW(hdrop, i, path_ptr, MAX_PATH as u32) as usize;
-                if path_len > 0 {
-                    // SAFETY: `DragQueryFileW` initializes `path_ptr` up to `path_len`
-                    // elements before use, and we only access the initialized portion.
-                    let path = unsafe {
-                        let path = path.assume_init();
-                        PathBuf::from(OsString::from_wide(&path[0..path_len]))
-                    };
-                    d.dropped_files.bytes.push(std::fs::read(&path).unwrap());
-                    d.dropped_files.paths.push(path);
+            for i in 0..num_drops.min(MAX_DROPPED_FILES) {
+                // Query the full Windows path length before allocating a buffer.
+                let path_len = DragQueryFileW(hdrop, i, std::ptr::null_mut(), 0) as usize;
+                if path_len == 0 || path_len > MAX_DROP_PATH_UNITS {
+                    eprintln!("Ignore dropped file with invalid path length");
+                    continue;
+                }
+
+                let mut wide_path = vec![0u16; path_len + 1];
+                let copied = DragQueryFileW(
+                    hdrop,
+                    i,
+                    wide_path.as_mut_ptr(),
+                    wide_path.len() as u32,
+                ) as usize;
+                if copied != path_len {
+                    eprintln!("Ignore dropped file with changed path length");
+                    continue;
+                }
+                let path = PathBuf::from(OsString::from_wide(&wide_path[..copied]));
+                let max_bytes = MAX_DROPPED_FILE_BYTES
+                    .min(MAX_DROPPED_TOTAL_BYTES.saturating_sub(total));
+                if max_bytes == 0 {
+                    eprintln!("Ignore dropped file: total size limit reached");
+                    continue;
+                }
+
+                match std::fs::File::open(&path)
+                    .and_then(|file| read_bounded_drop_bytes(file, max_bytes))
+                {
+                    Ok(Some(data)) => {
+                        total += data.len();
+                        paths.push(path);
+                        bytes.push(data);
+                    }
+                    Ok(None) => eprintln!("Ignore dropped file: size limit exceeded"),
+                    Err(error) => eprintln!("Cannot read dropped file: {}", error),
                 }
             }
+
+            // The window owns HDROP and must release it once.
+            DragFinish(hdrop);
+            let mut d = crate::native_display().lock().unwrap();
+            d.dropped_files = Default::default();
+            d.dropped_files.paths = paths;
+            d.dropped_files.bytes = bytes;
         }
         WM_ACTIVATE => {
             if LOWORD(wparam as _) == WA_ACTIVE || LOWORD(wparam as _) == WA_CLICKACTIVE {

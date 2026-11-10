@@ -1,0 +1,194 @@
+{
+  "$schema": "./schema.json",
+  "namespace": "miniquad",
+  "version": "0.1.0",
+  "source": "Concepts from the Miniquad library and its current glossary.",
+  "concepts": [
+    {
+      "id": "miniquad:library",
+      "term": "Miniquad",
+      "definition": "A Rust library that provides window, input, and graphics functions for different platforms.",
+      "kind": "technical-noun",
+      "related": [
+        "miniquad:backend"
+      ]
+    },
+    {
+      "id": "miniquad:application",
+      "term": "game application",
+      "definition": "A program that uses Miniquad and contains application or game rules.",
+      "kind": "technical-noun",
+      "aliases": [
+        "game"
+      ],
+      "related": [
+        "miniquad:library"
+      ]
+    },
+    {
+      "id": "miniquad:backend",
+      "term": "platform backend",
+      "definition": "Code that connects Miniquad to a specific operating system or graphics API.",
+      "kind": "technical-noun",
+      "related": [
+        "miniquad:graphics-context"
+      ]
+    },
+    {
+      "id": "miniquad:WASM",
+      "term": "WebAssembly module",
+      "definition": "A compiled module that a WebAssembly runtime can execute.",
+      "kind": "technical-noun",
+      "aliases": [
+        "WASM"
+      ],
+      "related": [
+        "miniquad:browser-bridge"
+      ]
+    },
+    {
+      "id": "miniquad:browser-bridge",
+      "term": "browser bridge",
+      "definition": "JavaScript code that connects browser services and events to Miniquad WASM.",
+      "kind": "technical-noun",
+      "related": [
+        "miniquad:WASM",
+        "core:interface"
+      ]
+    },
+    {
+      "id": "miniquad:WebGL",
+      "term": "WebGL",
+      "definition": "A browser graphics API that sends drawing commands to a GPU.",
+      "kind": "technical-noun",
+      "related": [
+        "miniquad:graphics-context"
+      ]
+    },
+    {
+      "id": "miniquad:graphics-context",
+      "term": "graphics context",
+      "definition": "The state and access that a graphics backend uses for GPU operations.",
+      "kind": "technical-noun",
+      "related": [
+        "miniquad:WebGL",
+        "miniquad:backend"
+      ]
+    },
+    {
+      "id": "miniquad:GPU-buffer",
+      "term": "GPU buffer",
+      "definition": "GPU memory that holds data for drawing operations.",
+      "kind": "technical-noun",
+      "related": [
+        "miniquad:buffer-update"
+      ]
+    },
+    {
+      "id": "miniquad:buffer-update",
+      "term": "buffer update",
+      "definition": "An operation that changes the data in a GPU buffer.",
+      "kind": "technical-noun",
+      "related": [
+        "miniquad:GPU-buffer"
+      ]
+    },
+    {
+      "id": "miniquad:texture",
+      "term": "texture",
+      "definition": "An image resource that the GPU uses for drawing.",
+      "kind": "technical-noun",
+      "related": [
+        "miniquad:render-target"
+      ]
+    },
+    {
+      "id": "miniquad:render-target",
+      "term": "render target",
+      "definition": "A screen or offscreen resource that receives rendered output.",
+      "kind": "technical-noun",
+      "related": [
+        "miniquad:render-pass",
+        "miniquad:texture"
+      ]
+    },
+    {
+      "id": "miniquad:render-pass",
+      "term": "render pass",
+      "definition": "A set of drawing operations that uses a defined render target and render state.",
+      "kind": "technical-noun",
+      "related": [
+        "miniquad:render-target",
+        "miniquad:draw-call"
+      ]
+    },
+    {
+      "id": "miniquad:draw-call",
+      "term": "draw call",
+      "definition": "A command that tells the GPU to draw geometry.",
+      "kind": "technical-noun",
+      "related": [
+        "miniquad:render-pass"
+      ]
+    },
+    {
+      "id": "miniquad:pipeline",
+      "term": "rendering pipeline",
+      "definition": "The shaders and GPU state used for drawing.",
+      "kind": "technical-noun",
+      "related": [
+        "miniquad:draw-call"
+      ]
+    },
+    {
+      "id": "miniquad:frame",
+      "term": "frame",
+      "definition": "One complete visual update.",
+      "kind": "technical-noun",
+      "related": [
+        "miniquad:render-pass"
+      ]
+    },
+    {
+      "id": "miniquad:integration-PR",
+      "term": "integration PR",
+      "definition": "A pull request that adds selected upstream changes to the Miniquad fork.",
+      "kind": "technical-noun",
+      "broader": "core:pull-request"
+    },
+    {
+      "id": "miniquad:voxel",
+      "term": "voxel",
+      "definition": "One volume element in a three-dimensional grid.",
+      "kind": "technical-noun",
+      "related": [
+        "miniquad:voxel-chunk"
+      ]
+    },
+    {
+      "id": "miniquad:voxel-chunk",
+      "term": "voxel chunk",
+      "definition": "A bounded group of voxels that a game can load, update, or draw as a unit.",
+      "kind": "technical-noun",
+      "related": [
+        "miniquad:voxel"
+      ]
+    },
+    {
+      "id": "miniquad:hybrid-rendering",
+      "term": "hybrid 2D/3D rendering",
+      "definition": "A rendering method that draws two-dimensional and three-dimensional objects in one frame.",
+      "kind": "technical-noun",
+      "related": [
+        "miniquad:render-pass"
+      ]
+    },
+    {
+      "id": "miniquad:server-simulation",
+      "term": "authoritative server simulation",
+      "definition": "A server simulation that determines the game state used by clients.",
+      "kind": "technical-noun",
+      "broader": "core:server-side-execution"
+    }
+  ]
+}

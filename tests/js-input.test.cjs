@@ -37,6 +37,10 @@ function fixture() {
         cancelAnimationFrame() {}
     };
     const wasm = {
+        allocate_transfer_vec_u8(n) {
+            return this.allocate_vec_u8(n);
+        },
+        discard_transfer_vec_u8() {},
         allocate_vec_u8(len) {
             allocations++;
             assert.ok(Number.isSafeInteger(len) && len>=0);

@@ -39,8 +39,10 @@ jobs:
             cargo-v2-${{ runner.os }}-${{ runner.arch }}-
       - name: Check immutable GitHub Action references
         run: node scripts/check-actions.mjs
-      - name: Check formatting of new Rust regression tests
-        run: rustfmt --check --edition 2018 src/resource_manager_tests.rs
+      - name: Check formatting of new Rust regression tests and event API
+        run: |
+          rustfmt --check --edition 2018 src/resource_manager_tests.rs
+          rustfmt --check --edition 2018 src/event.rs
       - name: Observe repository-wide rustfmt differences (legacy baseline; non-blocking)
         id: full-rustfmt
         continue-on-error: true

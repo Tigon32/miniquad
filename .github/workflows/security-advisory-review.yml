@@ -5,6 +5,8 @@ on:
     branches: [master]
     paths:
       - Cargo.toml
+      - deny.toml
+      - examples/ime_demo/Cargo.toml
       - examples/ime_demo/Cargo.lock
       - package-lock.json
       - .github/workflows/security-advisory-review.yml
@@ -12,6 +14,8 @@ on:
     branches: [master]
     paths:
       - Cargo.toml
+      - deny.toml
+      - examples/ime_demo/Cargo.toml
       - examples/ime_demo/Cargo.lock
       - .github/workflows/security-advisory-review.yml
   workflow_dispatch:
@@ -61,3 +65,19 @@ jobs:
           echo "This audit checks the current resolved Rust dependency graph."
           echo "Cargo.lock is generated for the scan and is not committed."
           echo "It is not proof that all platform features or runtime code are secure."
+
+
+  rust-licenses:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install a fixed cargo-deny version
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          cargo install cargo-deny --version 0.20.2 --locked
+      - name: Verify core crate licences
+        run: cargo deny --config deny.toml --manifest-path Cargo.toml check licenses
+      - name: Verify isolated IME demo licences
+        run: cargo deny --config deny.toml --manifest-path examples/ime_demo/Cargo.toml check licenses

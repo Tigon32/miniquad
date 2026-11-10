@@ -1361,6 +1361,8 @@ var importObject = {
                 }
             });
 
+            // Bound both the encoded clipboard copy and the matching WASM allocation.
+            const MAX_CLIPBOARD_PASTE_BYTES = 1024 * 1024;
             window.addEventListener("paste", function (e) {
                 if (document.activeElement != canvas) {
                     return;
@@ -1370,13 +1372,24 @@ var importObject = {
                 var clipboardData = e.clipboardData || window.clipboardData;
                 var pastedData = clipboardData.getData('Text');
 
-                if (pastedData != undefined && pastedData != null && pastedData.length != 0) {
-                    const utf8 = new TextEncoder().encode(pastedData);
-                    const len = utf8.byteLength;
-                    const msg = wasm_exports.allocate_vec_u8(len);
-                    new Uint8Array(wasm_memory.buffer, msg, len).set(utf8);
-                    wasm_exports.on_clipboard_paste(msg, len);
+                if (typeof pastedData !== "string" || pastedData.length === 0) {
+                    return;
                 }
+                // UTF-8 byte length is at least the number of UTF-16 code units.
+                // Reject huge strings before creating another large buffer.
+                if (pastedData.length > MAX_CLIPBOARD_PASTE_BYTES) {
+                    console.warn("Clipboard paste rejected: size limit exceeded");
+                    return;
+                }
+                const utf8 = new TextEncoder().encode(pastedData);
+                const len = utf8.byteLength;
+                if (len > MAX_CLIPBOARD_PASTE_BYTES) {
+                    console.warn("Clipboard paste rejected: size limit exceeded");
+                    return;
+                }
+                const msg = wasm_exports.allocate_vec_u8(len);
+                new Uint8Array(wasm_memory.buffer, msg, len).set(utf8);
+                wasm_exports.on_clipboard_paste(msg, len);
             });
 
             window.ondragover = function (e) {

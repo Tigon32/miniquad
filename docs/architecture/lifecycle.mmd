@@ -1,0 +1,38 @@
+sequenceDiagram
+    participant Page as examples/index.html
+    participant JS as js/gl.js
+    participant WASM as src/native/wasm.rs
+    participant App as Rust EventHandler
+    participant GL as Browser WebGL
+    Page->>JS: load(WASM URL)
+    JS->>JS: fetch then WebAssembly.compile
+    JS->>JS: validate_wasm_imports
+    JS->>WASM: WebAssembly.instantiate(importObject)
+    WASM-->>JS: exports and memory
+    JS->>WASM: crate_version()
+    alt Missing exports or ABI mismatch
+        JS-->>Page: reject and log startup failure
+    else ABI version 3 matches
+        JS->>WASM: main()
+        WASM->>JS: init_webgl(version)
+        JS->>GL: canvas.getContext
+        alt WebGL context unavailable
+            JS-->>WASM: throw capability error
+        else WebGL ready
+            WASM->>JS: run_animation_loop
+            JS->>WASM: frame() each requestAnimationFrame
+            WASM->>App: update and draw events
+            App->>GL: GPU calls through WASM imports
+            Page->>JS: focused keyboard mouse or paste event
+            JS->>WASM: key_down or mouse_down
+            opt Clipboard or dropped file
+                JS->>WASM: allocate_transfer_vec_u8
+                JS->>WASM: on_clipboard_paste or on_file_dropped
+                WASM->>WASM: consume registered buffer once
+            end
+            opt WebGL context lost
+                GL-->>JS: webglcontextlost
+                JS->>JS: cancel frames and report reload required
+            end
+        end
+    end

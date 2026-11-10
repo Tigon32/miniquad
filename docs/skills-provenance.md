@@ -13,6 +13,7 @@
 | `principle-boundary-discipline`, `principle-type-system-discipline` | `miniquad-wasm-abi` | Real `UTF-8`, raw pointer, memory ownership and Rust–JavaScript ABI |
 | `create-verification-skill`, `principle-prove-it-works` | `miniquad-browser-repro` | Observe the real WebGL/WASM demo instead of treating compilation as functional proof |
 | `blast-radius`, `principle-make-operations-idempotent` | `miniquad-native-safety` | Native FFI callback/lifetime and event/retry failure modes |
+| `principle-boundary-discipline`, `principle-prove-it-works` | `miniquad-security-gates` | Trust-boundary threats, resource caps, supply-chain pinning and CI privilege limits |
 | `benchmark-checklist`, `principle-explain-the-number` | `miniquad-performance-proof` | Equivalent work, explicit limiter, paired baseline and honest variance |
 | `principle-sequence-verifiable-units`, `principle-prove-it-works` | `miniquad-verified-delivery` | Small source-bound PRs and actually verified delivery |
 
@@ -24,4 +25,4 @@ The linked pstack content was used as **untrusted reference material** to extrac
 * Bundled TypeScript/Bun scripts, remote model defaults, self-modifying skills, global Git hooks, automatic cleanup, unbounded subagent fan-out, extra dependencies or broad platform rebuilds.
 * Pretending an existing harness or verified platform behavior exists where there is only a proposed test/issue.
 
-All six skills are Markdown-only, with no executable helpers or remote imports. They grant no additional GitHub permissions. The runtime binary and shipped JavaScript remain unchanged. See [AGENTS.md](../AGENTS.md) for routing and [the MADR index](adr/README.md) for decisions. 
+All seven skills are Markdown-only, with no executable helpers or remote imports. They grant no additional GitHub permissions. The runtime binary and shipped JavaScript remain unchanged. See [AGENTS.md](../AGENTS.md) for routing and [the MADR index](adr/README.md) for decisions. 

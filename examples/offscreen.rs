@@ -222,6 +222,11 @@ fn main() {
         conf::AppleGfxApi::OpenGl
     };
 
+    // Depth render targets require WebGL2 where WebGL1 depth textures are unavailable.
+    #[cfg(target_arch = "wasm32")]
+    {
+        conf.platform.webgl_version = conf::WebGLVersion::WebGL2;
+    }
     miniquad::start(conf, move || Box::new(Stage::new()));
 }
 

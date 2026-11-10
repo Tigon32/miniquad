@@ -40,4 +40,8 @@ See [MADR 0003](adr/0003-use-asd-ste100-for-communication.md).
 
 See [MADR 0001](adr/0001-use-madr-and-ubiquitous-language.md).
 
+Miniquad-specific concept IDs are in [the domain extension](terminology/miniquad.json).
+A separate terminology registry will own the shared terms and validation tools.
+This project does not contain the shared framework.
+
 **Writing review state:** STE-aligned draft. Full dictionary review not done.

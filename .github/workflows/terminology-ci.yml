@@ -1,0 +1,33 @@
+name: Miniquad terminology CI
+
+on:
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  terminology:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Get fixed shared terminology source
+        uses: actions/checkout@v4
+        with:
+          repository: Tigon32/technical-terminology
+          ref: 0e755947aed328d5287e19e2f4adf0e46ae0549b
+          path: .external/technical-terminology
+          persist-credentials: false
+      - name: Check shared and Miniquad concept references
+        run: |
+          node .external/technical-terminology/scripts/validate.mjs \
+            .external/technical-terminology/concepts/core.json \
+            docs/terminology/miniquad.json

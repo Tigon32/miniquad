@@ -7,7 +7,9 @@ on:
     types: [opened, reopened, synchronize, ready_for_review]
 
 permissions:
-  contents: read
+  # GitHub requires contents write to enable auto-merge.
+  # The job never checks out or runs an untrusted PR head.
+  contents: write
   pull-requests: write
 
 concurrency:

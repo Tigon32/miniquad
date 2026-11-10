@@ -11,6 +11,9 @@ See [MADR 0003](adr/0003-use-asd-ste100-for-communication.md).
 | **Miniquad** | A Rust library for windows, input, and graphics on different platforms. | Game engine |
 | **Game / application** | A program that uses Miniquad and contains game or application rules. | Miniquad library |
 | **Platform backend** | Code that connects Miniquad to a specific operating system or graphics API. | Game logic |
+| **Game engine** | A software system that supplies game rules and runtime functions. Miniquad does not supply the full system. | Miniquad library |
+| **Rendering API** | Functions that let an application submit drawing commands to a graphics system. | Game simulation |
+| **Interface contract** | Rules that define the data, types, ownership, version, and behavior at a boundary. | Implementation detail |
 | **WebAssembly module (WASM)** | Rust code that is compiled into a module for a WASM runtime. | JavaScript bridge |
 | **Browser bridge** | The JavaScript file `js/gl.js`. It connects browser functions and events to WASM. | Game engine |
 | **WebGL** | The browser graphics API that sends drawing commands to the GPU. | WebAssembly |

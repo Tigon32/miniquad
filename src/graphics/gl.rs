@@ -25,6 +25,8 @@ pub mod raw_gl {
 struct Buffer {
     gl_buf: GLuint,
     buffer_type: BufferType,
+    /// The `usage` hint its stores get.
+    gl_usage: GLenum,
     size: usize,
     // Dimension of the indices for this buffer,
     // used only as a type argument for glDrawElements and can be
@@ -911,12 +913,11 @@ impl RenderingBackend for GlContext {
     }
 
     fn delete_texture(&mut self, texture: TextureId) {
-        //self.cache.clear_texture_bindings();
-
         let t = self.textures.get(texture);
         match &t.raw {
             TextureOrRenderbuffer::Texture(raw) => unsafe {
                 glDeleteTextures(1, raw as *const _);
+                self.cache.forget_texture(*raw);
             },
             TextureOrRenderbuffer::Renderbuffer(raw) => unsafe {
                 glDeleteRenderbuffers(1, raw as *const _);
@@ -1376,6 +1377,7 @@ impl RenderingBackend for GlContext {
         let buffer = Buffer {
             gl_buf,
             buffer_type: type_,
+            gl_usage,
             size,
             index_type,
         };
@@ -1404,7 +1406,11 @@ impl RenderingBackend for GlContext {
         self.cache.store_buffer_binding(gl_target);
         self.cache
             .bind_buffer(gl_target, buffer.gl_buf, buffer.index_type);
-        unsafe { glBufferSubData(gl_target, 0, size as _, data.ptr as _) };
+        // A new store for each update, as Metal gives each update a buffer
+        // of its own. Writing into the store that draws already queued
+        // still read makes the driver copy it first, and Mali's driver
+        // waits on all the work it has queued to do so.
+        unsafe { glBufferData(gl_target, size as _, data.ptr as _, buffer.gl_usage) };
         self.cache.restore_buffer_binding(gl_target);
     }
 

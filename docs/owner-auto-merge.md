@@ -43,6 +43,8 @@ These are **authorization logic tests**.
 They cannot prove GitHub token permissions or server-side branch enforcement.
 
 Record the actual first owner PR that auto-merges.
+Use `gh pr view NUMBER --json autoMergeRequest,mergeStateStatus,statusCheckRollup` to inspect a PR.
+Do not describe an enabled auto-merge request as a completed merge.
 Record a failed-required-check test before you close delivery issue #17.
 Do not claim that an untested external PR was rejected by GitHub.
 

@@ -89,3 +89,17 @@ fn mutable_access_to_removed_handle_panics() {
     resources.remove(id);
     resources[id] = 42;
 }
+
+#[test]
+fn resource_id_overflow_does_not_mutate_live_resources() {
+    let mut resources = ResourceManager::default();
+    let live = resources.add("live");
+    resources.id = usize::MAX;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        resources.add("must not be inserted");
+    }));
+    assert!(result.is_err(), "exhausted IDs must report failure");
+    assert_eq!(resources[live], "live");
+    assert_eq!(resources.resources.len(), 1);
+    assert_eq!(resources.id, usize::MAX);
+}

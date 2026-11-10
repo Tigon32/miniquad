@@ -123,8 +123,23 @@ test("dispose() removes listeners: a later media change is not observed", async 
   expect(calls).toEqual([]);
 });
 
+// WebKit's default keyboard-navigation mode (macOS Safari's "Full Keyboard
+// Access" preference off, the factory default) moves plain Tab focus only
+// between text fields, not buttons. Safari's own documented alternative in
+// that mode is Option-Tab ("Alt+Tab" in Playwright's cross-platform key
+// names) to move focus to the next control, including a <button>. See
+// Safari > Settings > Advanced, "Press Tab to highlight each item on a web
+// page" (default off), and the confirmed Playwright WebKit behavior in
+// https://github.com/microsoft/playwright/issues/41808. Chromium and
+// Firefox tab to buttons by default, so only WebKit needs the alternate
+// key. This keeps the assertion itself (the next button receives focus)
+// unchanged across engines; it does not add a tabindex or relax the check.
+function nextControlKey(browserName) {
+  return browserName === "webkit" ? "Alt+Tab" : "Tab";
+}
+
 for (const width of [320, 1280, 1440]) {
-  test(`keyboard-only pause/resume works at ${width}px width`, async ({ page }) => {
+  test(`keyboard-only pause/resume works at ${width}px width`, async ({ page, browserName }) => {
     await page.setViewportSize({ width, height: 640 });
     await routeModule(page);
     await page.emulateMedia({ reducedMotion: "no-preference" });
@@ -136,7 +151,7 @@ for (const width of [320, 1280, 1440]) {
     await page.keyboard.press("Enter");
     await expect(page.locator("#status")).toHaveText("paused");
 
-    await page.keyboard.press("Tab");
+    await page.keyboard.press(nextControlKey(browserName));
     await expect(page.locator("#resume-button")).toBeFocused();
     await page.keyboard.press("Space");
     await expect(page.locator("#status")).toHaveText("running");

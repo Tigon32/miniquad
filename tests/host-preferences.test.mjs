@@ -40,6 +40,18 @@ test("validateParameters accepts a valid foreground/background pair",()=>{
     assert.deepEqual(errors,[]);
 });
 
+test("validateParameters rejects a sparse color array hole, not a silently coerced NaN/zero",()=>{
+    // eslint-disable-next-line no-sparse-arrays
+    const sparse=[0,,0,1];
+    assert.equal(sparse.length,4);
+    assert.equal(1 in sparse,false);
+    const {value,errors}=validateParameters({foreground:sparse});
+    assert.equal(value.foreground,undefined);
+    assert.equal(errors.length,1);
+    assert.equal(errors[0].key,"foreground");
+    assert.match(errors[0].message,/foreground\[1\]/);
+});
+
 test("validateParameters rejects a color array with the wrong length",()=>{
     const {value,errors}=validateParameters({foreground:[0,0,0]});
     assert.equal(value.foreground,undefined);
@@ -363,6 +375,85 @@ test("createHostPreferences reports an unsupported setParameters command, never 
     const handle=createHostPreferences({element:{},application,view,onError:(error)=>errors.push(error)});
     assert.ok(errors.some((error)=>error.message.includes("does not support setParameters")));
     handle.dispose();
+});
+
+test("a runtime throw from application.setParameters() is routed through onError, not propagated",()=>{
+    const view=fakeView();
+    view.getComputedStyle=()=>({getPropertyValue:(name)=>name==="--miniquad-foreground" ? "#ff0000" : ""});
+    const application={
+        supportsParameters:true,
+        pause(){},
+        resume(){},
+        setParameters(){ throw new Error("rejected: unsupported combination"); }
+    };
+    const errors=[];
+    assert.doesNotThrow(()=>createHostPreferences({
+        element:{},application,view,onError:(error)=>errors.push(error)
+    }));
+    assert.ok(errors.some((error)=>error.message.includes("application.setParameters() threw")
+        && error.message.includes("rejected: unsupported combination")));
+});
+
+test("a runtime throw from application.pause() is routed through onError, not propagated",()=>{
+    const view=fakeView({"(prefers-reduced-motion: reduce)":true});
+    const application={
+        supportsParameters:true,
+        pause(){ throw new Error("device lost"); },
+        resume(){}
+    };
+    const errors=[];
+    assert.doesNotThrow(()=>createHostPreferences({element:{},application,view,onError:(error)=>errors.push(error)}));
+    assert.ok(errors.some((error)=>error.message.includes("application.pause() threw")
+        && error.message.includes("device lost")));
+});
+
+test("a runtime throw from application.resume() is routed through onError, not propagated",()=>{
+    const view=fakeView();
+    const application={
+        supportsParameters:true,
+        pause(){},
+        resume(){ throw new Error("context not ready"); }
+    };
+    const errors=[];
+    assert.doesNotThrow(()=>createHostPreferences({element:{},application,view,onError:(error)=>errors.push(error)}));
+    assert.ok(errors.some((error)=>error.message.includes("application.resume() threw")
+        && error.message.includes("context not ready")));
+});
+
+test("a runtime throw reports the original error as cause, without a broad swallow of other errors",()=>{
+    const view=fakeView();
+    const original=new Error("boom");
+    const application={
+        supportsParameters:true,
+        pause(){},
+        resume(){ throw original; }
+    };
+    const errors=[];
+    createHostPreferences({element:{},application,view,onError:(error)=>errors.push(error)});
+    const reported=errors.find((error)=>error.message.includes("application.resume() threw"));
+    assert.equal(reported.cause,original);
+});
+
+test("a runtime throw without onError still surfaces (no silent fallback) instead of a false success",()=>{
+    const view=fakeView({"(prefers-reduced-motion: reduce)":true});
+    const application={
+        supportsParameters:true,
+        pause(){ throw new Error("boom"); },
+        resume(){}
+    };
+    const originalQueueMicrotask=globalThis.queueMicrotask;
+    const deferred=[];
+    globalThis.queueMicrotask=(callback)=>deferred.push(callback);
+    try {
+        // Construction itself must not throw synchronously: the re-throw is
+        // deferred to a later microtask so it stays visible instead of
+        // being swallowed by this constructor call.
+        assert.doesNotThrow(()=>createHostPreferences({element:{},application,view}));
+        assert.equal(deferred.length,1);
+        assert.throws(()=>deferred[0](),/application\.pause\(\) threw: boom/);
+    } finally {
+        globalThis.queueMicrotask=originalQueueMicrotask;
+    }
 });
 
 test("setSpeed validates before forwarding, and reports an out-of-range value",()=>{

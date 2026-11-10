@@ -163,6 +163,15 @@ A host whose palette changes by some other condition (a class toggle not
 tied to `prefers-color-scheme`, for example) must call `refreshPalette()`
 itself after changing the custom property.
 
+`readPalette()` (and, through it, every palette read inside
+`createHostPreferences()`) intentionally returns `{ value: {}, errors: [] }`
+when `element` or `view.getComputedStyle` is unavailable, instead of
+throwing. This is deliberate non-browser support: with no DOM, there is no
+custom property to read, so there is nothing to validate and nothing to
+report as an error. This is why `createHostPreferences({ view: undefined })`
+works outside a browser (see the `view` option above), rather than a silent
+swallow of a real failure.
+
 ### Motion handling
 
 * On creation, and on every `(prefers-reduced-motion: reduce)` change, the

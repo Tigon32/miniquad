@@ -342,6 +342,28 @@ function reportError(onError, error) {
     });
 }
 
+/**
+ * Call one method on the application handle, catching only a synchronous
+ * throw from that single call. The original error is reported through
+ * `onError` with an actionable message naming the method, and kept as
+ * `cause` for inspection. This never swallows the error: it is always
+ * surfaced, never silently dropped. It never catches anything outside the
+ * named call (for example errors from `onError` itself, or from unrelated
+ * adapter code), so it does not widen into a broad try/catch around this
+ * module.
+ */
+function invokeApplicationMethod(application, method, args, onError) {
+    try {
+        return application[method](...args);
+    } catch (error) {
+        reportError(onError, new Error(
+            "application." + method + "() threw: " + (error instanceof Error ? error.message : String(error)),
+            { cause: error }
+        ));
+        return undefined;
+    }
+}
+
 function applyValidated(application, value, errors, onError) {
     for (const error of errors) {
         reportError(onError, new Error(error.key + ": " + error.message));
@@ -354,7 +376,7 @@ function applyValidated(application, value, errors, onError) {
         reportError(onError, new Error("application does not support setParameters for keys: " + keys.join(", ")));
         return;
     }
-    application.setParameters(value);
+    invokeApplicationMethod(application, "setParameters", [value], onError);
 }
 
 /**
@@ -376,9 +398,13 @@ function applyValidated(application, value, errors, onError) {
  * - The adapter never calls pause()/resume() for the same target state
  *   twice in a row, so the host may safely call it from its own controls.
  *
- * `onError` is called for every unsupported command, invalid value, or
- * invalid override. There is no silent fallback: a rejected value is never
- * replaced with a default and reported as success.
+ * `onError` is called for every unsupported command, invalid value,
+ * invalid override, or a runtime exception thrown by
+ * `application.pause()`, `application.resume()`, or
+ * `application.setParameters()`. There is no silent fallback: a rejected
+ * value, and a thrown runtime error, are never treated as a success. A
+ * thrown call is caught only at that single call site; it does not widen
+ * into a broad try/catch around adapter logic.
  *
  * `dispose()` removes every media-query listener added by this adapter. It
  * does not call application.dispose() or otherwise touch the application;
@@ -422,12 +448,12 @@ export function createHostPreferences({ element, application, onError, view = ty
         lastMotionRunning = running;
         if (running) {
             if (typeof application.resume === "function") {
-                application.resume();
+                invokeApplicationMethod(application, "resume", [], onError);
             } else {
                 reportError(onError, new Error("application does not support resume()"));
             }
         } else if (typeof application.pause === "function") {
-            application.pause();
+            invokeApplicationMethod(application, "pause", [], onError);
         } else {
             reportError(onError, new Error("application does not support pause()"));
         }

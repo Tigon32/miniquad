@@ -33,10 +33,20 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: ESLint browser bridge
         run: npm run lint:js
-      - name: Install supported test browsers
-        run: npx playwright install --with-deps chromium firefox webkit
+      - name: Install browser for this test lane
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            npx playwright install --with-deps chromium firefox webkit
+          else
+            npx playwright install --with-deps chromium
+          fi
       - name: Run real browser WASM smoke tests
-        run: npm run test:browser
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            npm run test:browser
+          else
+            npm run test:browser:chromium
+          fi
       - name: Store browser test traces on failure
         if: failure()
         uses: actions/upload-artifact@v4

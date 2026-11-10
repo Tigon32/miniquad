@@ -42,10 +42,117 @@ fn read_bounded_drop_bytes<R: Read>(reader: R, limit: usize) -> std::io::Result<
     }
 }
 
+// Returns None for invalid/changed lengths. The HDROP owner remains responsible
+// for exactly one DragFinish call, even when a path cannot be decoded.
+unsafe fn query_drop_path(hdrop: HDROP, index: u32) -> Option<PathBuf> {
+    let path_len = DragQueryFileW(hdrop, index, std::ptr::null_mut(), 0) as usize;
+    if path_len == 0 || path_len > MAX_DROP_PATH_UNITS {
+        return None;
+    }
+    let mut wide_path = vec![0u16; path_len + 1];
+    let copied = DragQueryFileW(hdrop, index, wide_path.as_mut_ptr(), wide_path.len() as u32)
+        as usize;
+    if copied != path_len {
+        return None;
+    }
+    Some(PathBuf::from(OsString::from_wide(&wide_path[..copied])))
+}
+
 #[cfg(test)]
 mod file_drop_tests {
-    use super::read_bounded_drop_bytes;
+    use super::{query_drop_path, read_bounded_drop_bytes, MAX_DROP_PATH_UNITS, MAX_DROPPED_FILE_BYTES};
     use std::io::{Cursor, Error, ErrorKind, Read};
+    use std::mem::size_of;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr;
+    use winapi::shared::windef::POINT;
+    use winapi::um::shellapi::{DragFinish, DragQueryFileW, HDROP};
+
+    // winapi 0.3 exposes HDROP and DragQueryFileW, but not DROPFILES.
+    // This is the documented Win32 DROPFILES header layout.
+    #[repr(C)]
+    struct SyntheticDropFilesHeader {
+        p_files: u32,
+        pt: POINT,
+        f_nc: i32,
+        f_wide: i32,
+    }
+    use winapi::um::winbase::{
+        GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE, GMEM_ZEROINIT,
+    };
+
+    // A DROPFILES global-memory fixture exercises the real Windows Shell API
+    // without a UI session or a physical drag gesture. DragFinish is called
+    // exactly once when this fixture goes out of scope.
+    struct SyntheticDrop(HDROP);
+    impl SyntheticDrop {
+        fn new(path: &std::ffi::OsStr) -> Self {
+            let mut wide: Vec<u16> = path.encode_wide().collect();
+            wide.extend_from_slice(&[0, 0]);
+            let offset = size_of::<SyntheticDropFilesHeader>();
+            let size = offset + wide.len() * size_of::<u16>();
+            unsafe {
+                let global = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, size);
+                assert!(!global.is_null(), "GlobalAlloc failed");
+                let address = GlobalLock(global) as *mut u8;
+                assert!(!address.is_null(), "GlobalLock failed");
+                ptr::write_unaligned(address as *mut SyntheticDropFilesHeader, SyntheticDropFilesHeader {
+                    p_files: offset as u32,
+                    pt: POINT { x: 0, y: 0 },
+                    f_nc: 0,
+                    f_wide: 1,
+                });
+                ptr::copy_nonoverlapping(
+                    wide.as_ptr() as *const u8,
+                    address.add(offset),
+                    wide.len() * size_of::<u16>(),
+                );
+                GlobalUnlock(global);
+                Self(global as HDROP)
+            }
+        }
+    }
+    impl Drop for SyntheticDrop {
+        fn drop(&mut self) {
+            unsafe { DragFinish(self.0) };
+        }
+    }
+
+    #[test]
+    fn drag_query_file_reads_unicode_path_through_win32() {
+        let path = std::ffi::OsStr::new(r"C:\tmp\café_测试_🎮.dat");
+        let drop = SyntheticDrop::new(path);
+        unsafe {
+            assert_eq!(DragQueryFileW(drop.0, u32::MAX, ptr::null_mut(), 0), 1);
+            let actual = query_drop_path(drop.0, 0).expect("Unicode path must decode");
+            assert_eq!(actual.as_os_str(), path);
+        }
+    }
+
+    #[test]
+    fn drag_query_file_reads_path_beyond_legacy_max_path() {
+        let path = format!("C:\\tmp\\{}.dat", "x".repeat(300));
+        let drop = SyntheticDrop::new(std::ffi::OsStr::new(&path));
+        unsafe {
+            let actual = query_drop_path(drop.0, 0).expect("Long path must not truncate");
+            assert_eq!(actual.as_os_str(), std::ffi::OsStr::new(&path));
+        }
+    }
+
+    #[test]
+    fn overlong_shell_path_is_rejected_before_path_allocation() {
+        let path = format!("C:\\tmp\\{}", "x".repeat(MAX_DROP_PATH_UNITS));
+        let drop = SyntheticDrop::new(std::ffi::OsStr::new(&path));
+        unsafe { assert!(query_drop_path(drop.0, 0).is_none()); }
+    }
+
+    #[test]
+    fn byte_reader_rejects_real_per_file_bound_plus_one() {
+        assert_eq!(
+            read_bounded_drop_bytes(std::io::repeat(42), MAX_DROPPED_FILE_BYTES).unwrap(),
+            None
+        );
+    }
 
     #[test]
     fn read_bytes_at_limit() {
@@ -799,25 +906,10 @@ unsafe extern "system" fn win32_wndproc(
             let mut total = 0usize;
 
             for i in 0..num_drops.min(MAX_DROPPED_FILES) {
-                // Query the full Windows path length before allocating a buffer.
-                let path_len = DragQueryFileW(hdrop, i, std::ptr::null_mut(), 0) as usize;
-                if path_len == 0 || path_len > MAX_DROP_PATH_UNITS {
-                    eprintln!("Ignore dropped file with invalid path length");
+                let Some(path) = query_drop_path(hdrop, i) else {
+                    eprintln!("Ignore dropped file with invalid or changed path length");
                     continue;
-                }
-
-                let mut wide_path = vec![0u16; path_len + 1];
-                let copied = DragQueryFileW(
-                    hdrop,
-                    i,
-                    wide_path.as_mut_ptr(),
-                    wide_path.len() as u32,
-                ) as usize;
-                if copied != path_len {
-                    eprintln!("Ignore dropped file with changed path length");
-                    continue;
-                }
-                let path = PathBuf::from(OsString::from_wide(&wide_path[..copied]));
+                };
                 let max_bytes = MAX_DROPPED_FILE_BYTES
                     .min(MAX_DROPPED_TOTAL_BYTES.saturating_sub(total));
                 if max_bytes == 0 {

@@ -147,6 +147,45 @@ mod file_drop_tests {
     }
 
     #[test]
+    fn locked_file_drop_is_rejected_without_panicking() {
+        use std::os::windows::fs::OpenOptionsExt;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "miniquad-locked-drop-{}-{}.dat",
+            std::process::id(),
+            unique
+        ));
+        // A zero share mode prevents another handle from opening this file.
+        let locked = std::fs::OpenOptions::new()
+            .write(true)
+            .read(true)
+            .create_new(true)
+            .share_mode(0)
+            .open(&path)
+            .expect("Create locked drop fixture");
+
+        let drop = SyntheticDrop::new(path.as_os_str());
+        let selected = unsafe { query_drop_path(drop.0, 0) }
+            .expect("Win32 must decode the synthetic dropped path");
+        assert_eq!(selected, path);
+        let error = std::fs::File::open(&selected)
+            .and_then(|file| read_bounded_drop_bytes(file, MAX_DROPPED_FILE_BYTES))
+            .unwrap_err();
+        // ERROR_SHARING_VIOLATION is a genuine Win32 I/O rejection rather than
+        // an injected reader error, and must not panic in the drop callback.
+        assert_eq!(error.raw_os_error(), Some(32));
+
+        std::mem::drop(drop);
+        std::mem::drop(locked);
+        std::fs::remove_file(path).expect("Cleanup locked file fixture");
+    }
+
+    #[test]
     fn byte_reader_rejects_real_per_file_bound_plus_one() {
         assert_eq!(
             read_bounded_drop_bytes(std::io::repeat(42), MAX_DROPPED_FILE_BYTES).unwrap(),

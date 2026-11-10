@@ -1,21 +1,22 @@
 # Toolchain and dependency security inventory
 
 * Review date: 2026-11-10
-* Scope: Source on `master` before the security pinning PR
+* Scope: Security-reviewed workflow action updates from official release tags
 * Writing review: STE-aligned draft
 * Review status: **Partial inventory, not a complete vulnerability audit**
 
 ## GitHub Actions
 
 The following SHAs were resolved from the stated upstream GitHub tag references on 2026-11-10.
+These were the latest non-prerelease tags reported by each upstream GitHub Releases API on the review date.
 A SHA identifies the action code. It does not prove that code is free of security faults.
 
 | Action | Source tag | Pinned commit |
 | --- | --- | --- |
-| `actions/checkout` | `v4` | `11d5960a326750d5838078e36cf38b85af677262` |
-| `actions/setup-node` | `v4` | `49933ea5288caeca8642d1e84afbd3f7d6820020` |
-| `actions/cache` | `v4` | `0057852bfaa89a56745cba8c7296529d2fc39830` |
-| `actions/upload-artifact` | `v4` | `ea165f8d65b6e75b540449e92b4886f43607fa02` |
+| `actions/checkout` | `v7.0.1` | `3d3c42e5aac5ba805825da76410c181273ba90b1` |
+| `actions/setup-node` | `v7.1.0` | `949feb2413d6458794dcd2491c4babbbce0c15c1` |
+| `actions/cache` | `v6.1.0` | `55cc8345863c7cc4c66a329aec7e433d2d1c52a9` |
+| `actions/upload-artifact` | `v7.0.2` | `cf430e030ddbb5b0abf93d22962f4752f3646cd9` |
 
 The cache restore and save actions use the same `actions/cache` commit.
 The workflow uses full SHAs for all `uses:` action references.

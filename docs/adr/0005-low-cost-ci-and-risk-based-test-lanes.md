@@ -72,6 +72,16 @@ Do not treat it as a passing test.
 4. Do not share a mutable cache without a versioned key. Do not download an unreviewed executable from a cache.
 5. Use GitHub cache access rules. Do not store secrets, private data, or credentials in a cache. A cache is not a trusted software source.
 6. Separate browser cache keys for the Chromium PR lane and the full browser test lane.
+   The workflow must create shared browser caches on the trusted `master` branch.
+   A cache created in a PR cannot provide a cache hit to a different PR.
+   Run the cache-prime workflow when the Playwright lockfile or configuration changes.
+   Keep a manual cache-prime option for the full browser matrix.
+   Keep the browser cache key tied to the OS, CPU type, and dependency lockfile.
+   Use the libraries in the pinned Ubuntu runner for the normal Chromium lane.
+   Do not run `apt-get update` or `playwright install-deps` on every PR if the image already has the necessary libraries.
+   Run `playwright install-deps` for a manual full-browser check when needed.
+   Do not cache `/var/lib/apt/lists` or installed system libraries between GitHub runners.
+   A new runner image must pass the real Chromium test before use.
 7. Use a fixed runner image and a fixed browser test version. Install only the necessary browsers.
 8. Set `concurrency` for each workflow. Use the PR number to group PR runs. When a new run starts for that PR, cancel its old run.
 9. Do not cancel an unrelated PR run. Keep manual release checks independent from normal PR cancellation.
@@ -79,8 +89,11 @@ Do not treat it as a passing test.
 11. Do not use `paths` filters to bypass a required PR check. A required check must always report its result.
 12. Retain failure traces for a short fixed period. Upload only the files necessary to investigate a fault.
 13. Use `contents: read` for tests. Do not give secrets or write tokens to code from an untrusted PR.
-14. Review the cache hit rate, storage cost, and CI time after the first stable runs.
-15. Do not hide a test failure, disable a required test, or claim a performance gain without evidence.
+14. Check for a cache hit from the default branch before you download browser binaries.
+    Record whether Chromium, FFmpeg, and the headless shell came from the cache.
+    Do not describe a PR-scoped cache save as a cache that all PRs can use.
+15. Review the cache hit rate, storage cost, and CI time after the first stable runs.
+16. Do not hide a test failure, disable a required test, or claim a performance gain without evidence.
 
 GitHub can schedule jobs in an unexpected order. The concurrency group cancels a previous run for the same PR when another run starts. It is not a proof that the newer commit always completes first.
 Required checks and the protected branch rules must still apply to the exact PR head.

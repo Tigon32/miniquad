@@ -54,6 +54,7 @@ function createFixture({ streaming = true, imports = [], crateVersion = 3, respo
     return {
         calls,
         context,
+        setResponseStatus(status) {responseStatus=status;},
         load: () => vm.runInContext('load("quad.wasm")', context),
         getImport: name => vm.runInContext('importObject.env[' + JSON.stringify(name) + ']', context)
     };
@@ -102,4 +103,43 @@ test("plugin registers imports before module validation", async () => {
     await fixture.load();
     assert.equal(fixture.calls.main, 1);
     assert.equal(typeof fixture.getImport("custom_import"), "function");
+});
+
+test("concurrent WASM loads share one initialization transaction", async () => {
+    const f=createFixture();
+    const promises=[f.load(),f.load()];
+    await Promise.all(promises);
+    assert.equal(f.calls.fetch,1,"only one WASM HTTP fetch is permitted");
+    assert.equal(f.calls.compile,1,"one compiled module");
+    assert.equal(f.calls.instantiate,1,"one runtime instance");
+    assert.equal(f.calls.main,1,"one application main");
+});
+
+test("reloading an initialized canvas does not create another WASM runtime", async () => {
+    const f=createFixture();
+    await f.load();
+    await f.load();
+    assert.deepEqual(
+        [f.calls.fetch,f.calls.compile,f.calls.instantiate,f.calls.main],
+        [1,1,1,1]
+    );
+});
+
+test("a failed load releases its transaction so one retry can succeed", async () => {
+    const f=createFixture({responseStatus:503});
+    await assert.rejects(f.load(),/WASM HTTP request failed: 503/);
+    f.setResponseStatus(200);
+    await f.load();
+    assert.deepEqual(
+        [f.calls.fetch,f.calls.compile,f.calls.instantiate,f.calls.main],
+        [2,1,1,1]
+    );
+});
+
+test("loading another module into the initialized canvas fails explicitly", async () => {
+    const f=createFixture();
+    await f.load();
+    await assert.rejects(vm.runInContext('load("other.wasm")',f.context),
+        /Cannot load different WASM module into active canvas/);
+    assert.equal(f.calls.fetch,1);
 });

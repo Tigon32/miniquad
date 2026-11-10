@@ -1,0 +1,157 @@
+{
+  "version": 1,
+  "glossary": "docs/glossary.md",
+  "contract": "docs/abi-v3-contract.md",
+  "scenarios": [
+    {
+      "id": "LOAD-001",
+      "group": "loader",
+      "given": "a missing WASM artifact",
+      "when": "the browser loader requests it",
+      "then": "startup fails observably without a frame",
+      "testFile": "tests/browser/failures.spec.mjs",
+      "testTitle": "missing compiled WASM reports a failure and does not start frames",
+      "mode": "browser"
+    },
+    {
+      "id": "LOAD-002",
+      "group": "loader",
+      "given": "a missing canvas element",
+      "when": "the JS loader initializes",
+      "then": "a missing-canvas error stops the WASM request",
+      "testFile": "tests/browser/failures.spec.mjs",
+      "testTitle": "a missing canvas reports its requirement before starting WASM",
+      "mode": "browser"
+    },
+    {
+      "id": "LOAD-003",
+      "group": "loader",
+      "given": "an incompatible ABI version",
+      "when": "the compiled module initializes",
+      "then": "Rust main is not called",
+      "testFile": "tests/browser/failures.spec.mjs",
+      "testTitle": "a wrong ABI version stops the real compiled WASM before main",
+      "mode": "browser"
+    },
+    {
+      "id": "INPUT-001",
+      "group": "input",
+      "given": "the canvas holds a key",
+      "when": "the canvas loses focus",
+      "then": "a single matching key release reaches Rust",
+      "testFile": "tests/browser/keyboard-focus.spec.mjs",
+      "testTitle": "focused canvas sends a key release when focus is lost",
+      "mode": "browser"
+    },
+    {
+      "id": "INPUT-002",
+      "group": "input",
+      "given": "the pointer is held over the canvas",
+      "when": "the pointer is released outside the canvas",
+      "then": "the release reaches Rust exactly once",
+      "testFile": "tests/browser/pointer-clipboard-isolation.spec.mjs",
+      "testTitle": "mouse release outside the canvas reaches the real WASM callback once",
+      "mode": "browser"
+    },
+    {
+      "id": "INPUT-003",
+      "group": "input",
+      "given": "left and right pointer buttons are used",
+      "when": "the browser clicks the canvas",
+      "then": "both down and up events use mapped Rust button IDs",
+      "testFile": "tests/browser/pointer-and-clipboard-focus.spec.mjs",
+      "testTitle": "real canvas pointer buttons reach compiled WASM with ABI button mapping",
+      "mode": "browser"
+    },
+    {
+      "id": "TRANSFER-001",
+      "group": "unicode",
+      "given": "the canvas is focused",
+      "when": "a Unicode and NUL clipboard event is dispatched",
+      "then": "exact UTF-8 bytes reach the compiled WASM transfer export",
+      "testFile": "tests/browser/clipboard.spec.mjs",
+      "testTitle": "real browser transfers focused Unicode clipboard paste into WASM",
+      "mode": "browser"
+    },
+    {
+      "id": "TRANSFER-002",
+      "group": "unicode",
+      "given": "a malformed or oversized file drop arrives",
+      "when": "the JS bridge checks its metadata",
+      "then": "oversized data is rejected before reading",
+      "testFile": "tests/js-bridge.test.cjs",
+      "testTitle": "file drops reject files above the per-file limit before reading",
+      "mode": "node"
+    },
+    {
+      "id": "TRANSFER-003",
+      "group": "unicode",
+      "given": "a forged or already consumed WASM pointer is supplied",
+      "when": "a transfer callback is invoked",
+      "then": "Rust rejects the ownership transfer",
+      "testFile": "tests/browser/transfer-ownership.spec.mjs",
+      "testTitle": "WASM ABI v3 rejects forged, repeated and mismatched ownership transfers",
+      "mode": "browser"
+    },
+    {
+      "id": "GPU-001",
+      "group": "gpu",
+      "given": "a running GPU context exists",
+      "when": "WEBGL_lose_context is invoked",
+      "then": "compiled WASM stops rendering and reports context loss",
+      "testFile": "tests/browser/physical-context-loss.spec.mjs",
+      "testTitle": "WEBGL_lose_context stops compiled WASM frames without synthetic events",
+      "mode": "browser"
+    },
+    {
+      "id": "GPU-002",
+      "group": "gpu",
+      "given": "a real offscreen framebuffer is required",
+      "when": "the scene renders and returns to the default framebuffer",
+      "then": "visible texture pixels are presented",
+      "testFile": "tests/browser/offscreen.spec.mjs",
+      "testTitle": "Miniquad renders an offscreen pass and presents its texture",
+      "mode": "browser"
+    },
+    {
+      "id": "GPU-003",
+      "group": "gpu",
+      "given": "a canvas is resized",
+      "when": "the browser dispatches resize",
+      "then": "drawing-buffer dimensions update and animation continues",
+      "testFile": "tests/browser/resize.spec.mjs",
+      "testTitle": "compiled WASM survives a canvas resize and continues rendering",
+      "mode": "browser"
+    },
+    {
+      "id": "RESIL-001",
+      "group": "resilience",
+      "given": "one asynchronous file read is pending",
+      "when": "another drop begins",
+      "then": "transactions execute serially",
+      "testFile": "tests/js-bridge.test.cjs",
+      "testTitle": "overlapping file-drop events execute one transaction at a time",
+      "mode": "node"
+    },
+    {
+      "id": "RESIL-002",
+      "group": "resilience",
+      "given": "a drop read fails",
+      "when": "later files arrive",
+      "then": "the drop transaction completes and future work proceeds",
+      "testFile": "tests/js-bridge.test.cjs",
+      "testTitle": "failed file reads do not prevent later files or completion",
+      "mode": "node"
+    },
+    {
+      "id": "RESIL-003",
+      "group": "resilience",
+      "given": "WASM imports are missing",
+      "when": "the loader validates the module",
+      "then": "startup rejects before instantiation",
+      "testFile": "tests/js-loader.test.cjs",
+      "testTitle": "a required export must exist before startup",
+      "mode": "node"
+    }
+  ]
+}

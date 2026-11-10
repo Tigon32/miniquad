@@ -11,6 +11,7 @@ const files = new Map([
   ["/js/runtime.mjs", {file:"js/runtime.mjs",type:"text/javascript; charset=utf-8"}],
   ["/js/host-preferences.mjs", {file:"js/host-preferences.mjs",type:"text/javascript; charset=utf-8"}],
   ["/embed", {file:"tests/browser/embed.html",type:"text/html; charset=utf-8"}],
+  ["/drawing.wasm", {file:"companions/draw/target/wasm32-unknown-unknown/release/examples/showcase.wasm",type:"application/wasm"}],
   ["/clock-privacy", {file:"tests/browser/clock-privacy.html",type:"text/html; charset=utf-8"}],
   ["/quad.wasm", {file:"target/wasm32-unknown-unknown/release/examples/quad.wasm",type:"application/wasm"}],
   ["/offscreen", {file:"tests/browser/offscreen.html",type:"text/html; charset=utf-8"}],

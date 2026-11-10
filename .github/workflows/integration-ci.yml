@@ -61,6 +61,11 @@ jobs:
         run: cargo check --target wasm32-unknown-unknown --lib
       - name: Build WASM example
         run: cargo build --release --target wasm32-unknown-unknown --example quad --example offscreen
+      - name: Test and build optional drawing companion
+        run: |
+          cargo test --manifest-path companions/draw/Cargo.toml
+          cargo fmt --manifest-path companions/draw/Cargo.toml -- --check
+          cargo build --release --target wasm32-unknown-unknown --manifest-path companions/draw/Cargo.toml --example showcase
       - name: Save Cargo package cache before browser checks
         if: steps.cargo-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -88,7 +93,7 @@ jobs:
       - name: JavaScript syntax check
         run: node --check js/gl.js
       - name: Browser bridge regression tests
-        run: node --test tests/*.test.cjs
+        run: node --test tests/*.test.cjs tests/*.test.mjs
       - name: Install locked JavaScript lint tools
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: ESLint browser bridge

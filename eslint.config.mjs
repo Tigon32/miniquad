@@ -13,6 +13,8 @@ export default [
         document: "readonly",
         console: "readonly",
         URL: "readonly",
+        URLSearchParams: "readonly",
+        queueMicrotask: "readonly",
         AbortController: "readonly",
         AbortSignal: "readonly"
       }

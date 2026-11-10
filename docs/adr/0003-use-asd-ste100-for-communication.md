@@ -1,6 +1,6 @@
 # Use ASD-STE100 for project communication
 
-* Status: **Proposed**
+* Status: **Accepted**
 * Date: 2026-11-10
 * Scope: Miniquad project documentation and project communication
 
@@ -36,7 +36,7 @@ How can we use ASD-STE100 without an incorrect claim of full compliance?
 
 ## Decision Outcome
 
-**Proposed:** Use ASD-STE100 for new and changed project communication and documentation.
+**Accepted:** Use ASD-STE100 for new and changed project communication and documentation.
 
 Apply this rule to the README, guides, glossary, MADRs, agent skills, issue descriptions, pull request descriptions, review comments, test plans, release notes, and user instructions written for this project.
 

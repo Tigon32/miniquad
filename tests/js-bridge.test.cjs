@@ -226,3 +226,48 @@ test("file drops reject invalid declared sizes before reading", async () => {
     assert.deepEqual(harness.events.map(e => e.kind), ["start", "finish"]);
     assert.equal(harness.messages.filter(m => m.kind === "warn").length, 4);
 });
+
+test("file drop queue rejects excess transactions while a read is blocked", async () => {
+    const harness = createBrowserBridge();
+    let releaseFirst;
+    const pending = new Promise(resolve => { releaseFirst = resolve; });
+    const first = harness.dropRaw([{
+        name: "blocked.bin",
+        size: 1,
+        async arrayBuffer() { return pending; }
+    }]);
+    await new Promise(resolve => setImmediate(resolve));
+    const queued = [];
+    for (let index = 1; index < 10; index++) {
+        queued.push(harness.dropRaw([{
+            name: `next-${index}.bin`,
+            size: 1,
+            async arrayBuffer() { return Uint8Array.of(index).buffer; }
+        }]));
+    }
+    assert.deepEqual(harness.events.map(e => e.kind), ["start"]);
+    releaseFirst(Uint8Array.of(0).buffer);
+    await Promise.all([first, ...queued]);
+    assert.equal(harness.events.filter(e => e.kind === "file").length, 8);
+    assert.equal(harness.events.filter(e => e.kind === "start").length, 8);
+    assert.equal(harness.events.filter(e => e.kind === "finish").length, 8);
+    assert.equal(harness.messages.filter(m => m.kind === "warn").length, 2);
+
+    // Completion releases queue slots for later user input.
+    await harness.drop([["after.bin", [42]]]);
+    assert.equal(harness.events.filter(e => e.kind === "file").length, 9);
+});
+
+test("failed drop transactions release a pending queue slot", async () => {
+    const harness = createBrowserBridge();
+    await assert.rejects(harness.dropRaw([{
+        name: "invalid.bin", size: 1,
+        async arrayBuffer() { return Uint8Array.of(1).buffer; }
+    }, {
+        name: "throw.bin", size: 1,
+        get size() { throw new Error("invalid file metadata"); }
+    }]), /invalid file metadata/);
+    await harness.drop([["after-error.bin", [2]]]);
+    assert.equal(harness.events.at(-2).name, "after-error.bin");
+    assert.equal(harness.events.at(-1).kind, "finish");
+});

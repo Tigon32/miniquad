@@ -1402,10 +1402,18 @@ var importObject = {
             const MAX_DROPPED_TOTAL_BYTES = 64 * 1024 * 1024;
             const MAX_DROPPED_FILES = 128;
             const MAX_DROPPED_NAME_BYTES = 4096;
+            // Bound queued transactions while an asynchronous file read is pending.
+            const MAX_PENDING_DROPS = 8;
+            let pendingDrops = 0;
             let dropQueue = Promise.resolve();
 
             window.ondrop = function (e) {
                 e.preventDefault();
+                if (pendingDrops >= MAX_PENDING_DROPS) {
+                    console.warn("File drop rejected: pending drop limit exceeded");
+                    return Promise.resolve();
+                }
+                pendingDrops++;
                 const fileList = e.dataTransfer.files;
                 const files = Array.prototype.slice.call(fileList, 0, MAX_DROPPED_FILES);
                 if (fileList.length > MAX_DROPPED_FILES) {
@@ -1463,6 +1471,8 @@ var importObject = {
                 const result = dropQueue.then(runDrop);
                 dropQueue = result.catch(error => {
                     console.error("File drop failed", error);
+                }).finally(() => {
+                    pendingDrops--;
                 });
                 return result;
             };

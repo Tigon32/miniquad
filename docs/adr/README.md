@@ -1,12 +1,21 @@
-# Architectural decision records
+# Architecture decision records
 
-Use lightweight [MADR](https://adr.github.io/madr/) records to capture durable architecture choices. Keep the shared vocabulary in [../glossary.md](../glossary.md).
+Use [MADR](https://adr.github.io/madr/) to record important technical decisions.
+Use the [project glossary](../glossary.md) for technical terms.
+Use [MADR 0003](0003-use-asd-ste100-for-communication.md) for the writing rules.
+The documents are **STE-aligned drafts**. We have not completed a full ASD-STE100 dictionary check.
 
-## Index
+## Decision index
 
-* [0001 — Adopt MADR and a ubiquitous language](0001-use-madr-and-ubiquitous-language.md) — **Proposed**
-* [0002 — Risk-based verification with selective TDD](0002-risk-based-verification-and-selective-tdd.md) — **Proposed**
+* [0001 — Use MADR and one technical glossary](0001-use-madr-and-ubiquitous-language.md) — **Proposed**
+* [0002 — Use risk-based tests and selective TDD](0002-risk-based-verification-and-selective-tdd.md) — **Proposed**
+* [0003 — Use ASD-STE100 for project communication](0003-use-asd-ste100-for-communication.md) — **Accepted**
 
-## How to contribute
+## Write a new decision
 
-Copy the structure of ADR 0001 for new decisions. Use a monotonically increasing number and a descriptive filename, record considered alternatives and consequences, and link related PRs. Accepted ADRs are historical records: supersede rather than rewriting the old rationale.
+1. Copy the sections from MADR 0003.
+2. Give the file the next number and a clear name.
+3. Record the problem, options, decision, and effects.
+4. Use short sentences and the terms in the glossary.
+5. Link the related issue and pull request.
+6. Do not change an **Accepted** decision without a new MADR. Use the status **Superseded** for the old decision.

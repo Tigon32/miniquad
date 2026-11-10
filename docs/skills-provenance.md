@@ -1,28 +1,48 @@
-# Source and admission review for Miniquad agent skills
+# Source record for the agent skills
 
-* Reviewed: 2026-11-10
-* External reference: [Cursor pstack](https://github.com/cursor/plugins/tree/de8ee15dd1194627d21eb5fcd41cb1873208dabb/pstack), repository tree SHA `de8ee15dd1194627d21eb5fcd41cb1873208dabb`
-* Upstream license: [MIT, Copyright (c) 2026 Lauren Tan](https://github.com/cursor/plugins/blob/de8ee15dd1194627d21eb5fcd41cb1873208dabb/pstack/LICENSE)
-* Status: **Adapted ideas, original Miniquad project-local guidance**. No upstream plugin, scripts, prompts or agents were installed/executed or copied wholesale.
+* Review date: 2026-11-10
+* Reference: [Cursor pstack](https://github.com/cursor/plugins/tree/de8ee15dd1194627d21eb5fcd41cb1873208dabb/pstack)
+* Source tree SHA: `de8ee15dd1194627d21eb5fcd41cb1873208dabb`
+* Source licence: [MIT; Copyright (c) 2026 Lauren Tan](https://github.com/cursor/plugins/blob/de8ee15dd1194627d21eb5fcd41cb1873208dabb/pstack/LICENSE)
+* Writing rule: [MADR 0003](adr/0003-use-asd-ste100-for-communication.md)
 
-## Selection and localization
+The seven Miniquad skills use ideas from pstack.
+We wrote project-specific instructions.
+We did not copy the whole plugin.
+We did not install or run its scripts.
 
-| Relevant pstack reference | Miniquad adaptation | Why |
+## Skills and their source ideas
+
+| Pstack source | Miniquad skill | Purpose |
 | --- | --- | --- |
-| `correct`, `blast-radius`, `principle-fix-root-causes` | `miniquad-source-audit` | Evidence-bound root causes, cross-file effects and grouped regression classes |
-| `principle-boundary-discipline`, `principle-type-system-discipline` | `miniquad-wasm-abi` | Real `UTF-8`, raw pointer, memory ownership and Rust–JavaScript ABI |
-| `create-verification-skill`, `principle-prove-it-works` | `miniquad-browser-repro` | Observe the real WebGL/WASM demo instead of treating compilation as functional proof |
-| `blast-radius`, `principle-make-operations-idempotent` | `miniquad-native-safety` | Native FFI callback/lifetime and event/retry failure modes |
-| `principle-boundary-discipline`, `principle-prove-it-works` | `miniquad-security-gates` | Trust-boundary threats, resource caps, supply-chain pinning and CI privilege limits |
-| `benchmark-checklist`, `principle-explain-the-number` | `miniquad-performance-proof` | Equivalent work, explicit limiter, paired baseline and honest variance |
-| `principle-sequence-verifiable-units`, `principle-prove-it-works` | `miniquad-verified-delivery` | Small source-bound PRs and actually verified delivery |
+| `correct`, `blast-radius`, `principle-fix-root-causes` | `miniquad-source-audit` | Find root causes and group related issues |
+| `principle-boundary-discipline`, `principle-type-system-discipline` | `miniquad-wasm-abi` | Check JS/WASM data and memory ownership |
+| `create-verification-skill`, `principle-prove-it-works` | `miniquad-browser-repro` | Check the real application in a browser |
+| `blast-radius`, `principle-make-operations-idempotent` | `miniquad-native-safety` | Check native interfaces and resource lifetime |
+| `principle-boundary-discipline`, `principle-prove-it-works` | `miniquad-security-gates` | Check input, dependencies, and access rights |
+| `benchmark-checklist`, `principle-explain-the-number` | `miniquad-performance-proof` | Make comparable performance measurements |
+| `principle-sequence-verifiable-units`, `principle-prove-it-works` | `miniquad-verified-delivery` | Keep changes small and verify PR results |
 
-The linked pstack content was used as **untrusted reference material** to extract general engineering techniques. Miniquad's actual source and repository policy determine the instructions. Any future update must review the exact external commit, license, commands, linked dependencies and authority implications; no runtime fetch or automatic self-update is allowed.
+## Content that we did not use
 
-## Not adopted
+We did not add the Benny or Slack automations.
+We did not add an external agent service.
+We did not import TypeScript or Bun scripts.
+We did not install global Git hooks.
+We did not add an automatic skill update process.
+We did not use external model defaults or automatic PR approval.
 
-* Benny automation, Slack routing and posting, external credentials, autonomous overnight agents, bot UI and third-party provider orchestration.
-* Bundled TypeScript/Bun scripts, remote model defaults, self-modifying skills, global Git hooks, automatic cleanup, unbounded subagent fan-out, extra dependencies or broad platform rebuilds.
-* Pretending an existing harness or verified platform behavior exists where there is only a proposed test/issue.
+The full skills are in `.github/skills/`.
+Seven small files in `.cursor/skills/` point to them.
+These files do not give agents more permissions.
+They do not change the game runtime or its JavaScript download.
 
-All seven canonical skills are Markdown-only, with no executable helpers or remote imports. Seven short `.cursor/skills/*/SKILL.md` pointers expose the same canonical instructions to Cursor; no second operational implementation or remote dependency is introduced. They grant no additional GitHub permissions. The runtime binary and shipped JavaScript remain unchanged. See [AGENTS.md](../AGENTS.md) for routing and [the MADR index](adr/README.md) for decisions. 
+If a contributor updates a skill:
+
+1. Review the exact upstream revision and licence.
+2. Review all new commands and dependencies.
+3. Check the trust and access boundaries.
+4. Use the controlled-language rules in MADR 0003.
+5. Submit a PR with source and test records.
+
+**Writing review state:** STE-aligned draft. Full dictionary review not done.

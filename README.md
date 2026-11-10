@@ -6,11 +6,17 @@
 [![Discord chat](https://img.shields.io/discord/710177966440579103.svg?label=discord%20chat)](https://discord.gg/WfEp6ut)
 [![Matrix](https://img.shields.io/matrix/quad-general:matrix.org?label=matrix%20chat)](https://matrix.to/#/#quad-general:matrix.org)
 
-Miniquad is a manifestation of a dream in a world where we do not need a deep dependencies tree and thousands lines of code to draw things with a computer.
+Miniquad is a small Rust library for graphics, input, and windows.
+It supports several GPU and operating-system interfaces.
+The project aims to keep its code and dependencies small.
 
-Miniquad aims to provide a graphics abstraction that works the same way on any platform with a GPU, being as light weight as possible while covering as many machines as possible. 
+This fork uses [MADR 0003](docs/adr/0003-use-asd-ste100-for-communication.md) as its writing target.
+New project instructions and documents must use short, clear sentences and the technical terms in the [glossary](docs/glossary.md).
+These documents are **STE-aligned drafts**. We have not done a complete ASD-STE100 dictionary check.
 
-## Supported Platforms
+The platform list below comes from the upstream project. It is **not** a record of platform tests on this fork.
+
+## Platform targets
 
 * Windows, OpenGL 3, OpenGL 2.2;
 * Linux, OpenGL 2.2, OpenGL 3, GLES 2, GLES 3;
@@ -23,8 +29,10 @@ Miniquad aims to provide a graphics abstraction that works the same way on any p
 
 ![Imgur](https://i.imgur.com/TRI50rk.gif)
 
-[examples/quad.rs](https://github.com/not-fl3/miniquad/blob/master/examples/quad.rs): [web demo](https://not-fl3.github.io/miniquad-samples/quad.html)<br/>
-[examples/offscreen.rs](https://github.com/not-fl3/miniquad/blob/master/examples/offscreen.rs): [web demo](https://not-fl3.github.io/miniquad-samples/offscreen.html)<br/>
+[examples/quad.rs](https://github.com/not-fl3/miniquad/blob/master/examples/quad.rs): [web demo](https://not-fl3.github.io/miniquad-samples/quad.html)
+
+[examples/offscreen.rs](https://github.com/not-fl3/miniquad/blob/master/examples/offscreen.rs): [web demo](https://not-fl3.github.io/miniquad-samples/offscreen.html)
+
 
 [PonasKovas/miniquad-mandelbrot](https://github.com/PonasKovas/miniquad-mandelbrot): [web demo](https://ponaskovas.github.io/miniquad-mandelbrot-wasm-demo/)
 
@@ -57,7 +65,8 @@ rustup target add wasm32-unknown-unknown
 cargo build --example quad --target wasm32-unknown-unknown
 ```
 
-And then use the following .html to load .wasm:
+Use the HTML example below to load the compiled WASM file.
+Use the JavaScript bridge from the same Miniquad revision as the WASM file.
 
 <details><summary>index.html</summary>
 
@@ -94,7 +103,8 @@ And then use the following .html to load .wasm:
 ```
 </details>
 
-One of the ways to server static .wasm and .html:
+To serve the static HTML and WASM files, you can use a local HTTP server.
+The command below installs one example server.
 
 ```no-run
 cargo install basic-http-server
@@ -103,21 +113,20 @@ basic-http-server .
 
 ## Android
 
-Recommended way to build for android is using Docker.<br/>
-miniquad uses slightly modifed version of `cargo-apk`
+You can use Docker to build the Android example.
+The upstream build uses a modified version of `cargo-apk`.
 
 ```no-run
 docker run --rm -v $(pwd)":/root/src" -w /root/src notfl3/cargo-apk cargo quad-apk build --example quad
 ```
 
-APK file will be in `target/android-artifacts/(debug|release)/apk`
-
-With "log-impl" enabled all log calls will be forwarded to adb console.
-No code modifications for Android required, everything should just works.
+The APK file is in `target/android-artifacts/(debug|release)/apk`.
+If you enable `log-impl`, the build sends log messages to the ADB console.
+This fork has not completed a new Android runtime test.
 
 ## iOS
 
-To run on the simulator:
+To run the example on the iOS simulator, use the commands below.
 
 ```no-run
 mkdir MyGame.app
@@ -148,7 +157,7 @@ xcrun simctl install booted MyGame.app/
 xcrun simctl launch booted com.mygame
 ```
 
-For details and instructions on provisioning for real iphone, check [https://macroquad.rs/articles/ios/](https://macroquad.rs/articles/ios/)
+For instructions to run the program on a physical iPhone, see [https://macroquad.rs/articles/ios/](https://macroquad.rs/articles/ios/)
 
 ## Cross Compilation
 
@@ -162,21 +171,16 @@ cargo run --example quad --target x86_64-pc-windows-gnu
 
 # Goals
 
-* Fast compilation time. Right now it is ~5s from "cargo clean" for both desktop and web.
-
-* Cross platform. Amount of platform specific user code required should be kept as little as possible.
-
-* Low-end devices support.
-
-* Hackability. Working on your own game, highly probable some hardware incompability will be found. Working around that kind of bugs should be easy, implementation details should not be hidden under layers of abstraction.
-
-* Forkability. Each platform implementation is, usually, just one pure Rust file. And this file is very copy-paste friendly - it doesnt use any miniquad specific abstractions. It is very easy to just copy some part of miniquad's platform implementation and use it standalone.
+* Keep compilation time short. Measure build time before you report a result.
+* Support more than one platform. Keep platform-specific application code small.
+* Support devices that have limited resources.
+* Make hardware and driver problems easy to find and correct.
+* Keep platform code easy to inspect and reuse.
 
 # Non-goals
 
-* Ultimate type safety. Library should be entirely safe in Rust's definition of safe - no UB or memory unsafety. But correct GPU state is not type guaranteed. Feel free to provide safety abstraction in the user code then!
-
-* High-end API, like Vulkan/DirectX 12. Take a look on [gfx-rs](https://github.com/gfx-rs/gfx) or [vulkano](https://github.com/vulkano-rs/vulkano) instead!
+* A Rust type system that can prove all GPU state is correct. The code must still meet Rust memory safety requirements.
+* A high-level interface for Vulkan or DirectX 12. For these interfaces, see [gfx-rs](https://github.com/gfx-rs/gfx) or [vulkano](https://github.com/vulkano-rs/vulkano).
 
 # Platinum sponsors
 

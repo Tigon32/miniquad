@@ -1,21 +1,40 @@
 ---
 name: miniquad-browser-repro
-description: Reproduce Miniquad WebGL1/2, loader and DOM input defects using actual browser behavior and capture comparable regression evidence.
+description: Run Miniquad in a browser and reproduce WebGL, loader, and input errors with clear test evidence.
 ---
 
-# Reproduce browser runtime behavior
+# Test Miniquad in a browser
 
-Use for WebGL context, GPU resource, event/focus, loader and rendering failures. Relevant issues: #11, #13, #15. A browser is the test surface; a Rust compile, ESLint pass or mocked WebGL object is not equivalent.
+Use this skill for browser input, WASM startup, WebGL, and GPU resource faults.
+Read issues [#11](https://github.com/Tigon32/miniquad/issues/11), [#13](https://github.com/Tigon32/miniquad/issues/13), and [#15](https://github.com/Tigon32/miniquad/issues/15).
 
-## Minimal reproducible lane
+## Prepare the test
 
-1. Freeze exact Rust source SHA, `js/gl.js` revision, WASM build flags, demo and browser/OS/GPU versions. Serve assets over HTTP with correct WASM content type and no hidden CDN dependencies. Do not execute unreviewed remote scripts.
-2. Observe a first rendered frame, initialization errors, WebGL version selection, extension availability, console messages and fatal/soft failure. Assert that missing canvas, denied context, wrong MIME, 404, missing exports, and version mismatch do **not** silently report success.
-3. Exercise a specific event matrix: focus/blur/visibility, keydown-repeat/key-up (especially Cmd/Ctrl), mouse up outside canvas, touchcancel, clipboard focus isolation, unicode filenames and large/failed file drops. Record JS invocation sequence and Rust-observed events.
-4. Exercise GPU lifecycle: create/bind/update/delete/recreate texture/buffer; offscreen render passes; WebGL context lost/restored; framebuffers and extension gating. Separate WebGL1 vs WebGL2 results.
-5. Where possible run automated Chromium, Firefox and WebKit acceptance on the same demo. WebKit on a desktop runner is **not** evidence of iOS Safari; use a separately labelled manual mobile test.
-6. Isolate browser profiles and sessions; do not drive a real user session or reuse a contaminated cache. Capture screenshots and logs only after removing private data; do not commit captures or credentials.
+1. Record the Rust and JavaScript source revisions.
+2. Build a WASM example with the required flags.
+3. Serve the WASM and JavaScript files over HTTP.
+4. Record the browser, OS, GPU, and WebGL version.
+5. Use a clean browser profile. Do not use a personal browser session.
 
-## Outcome states
+## Run the test
 
-**Reproduced** (steps and artifact), **not reproduced in named environment**, **blocked** (specific missing harness/device), or **unverified source hypothesis**. Include expected/actual outputs and a smallest failing fixture. Add a behavioral regression test that fails on baseline before proposing a fix. Link evidence to the relevant keeper issue; never write “browser-tested” without a real browser run.
+1. Start the example. Confirm that the browser draws the first frame.
+2. Test a missing canvas, missing WASM file, wrong MIME type, and wrong ABI version.
+3. If startup fails, confirm that the game does not report a successful start.
+4. Test focus, blur, keyboard release, repeat events, and the mouse button release outside the canvas.
+5. Test clipboard text and a file drop with Unicode names.
+6. Test resize, display scale, texture creation, texture deletion, and offscreen rendering.
+7. Test WebGL1 and WebGL2 separately.
+8. Test context loss and restoration when the browser supports the test.
+9. Collect console errors, expected results, and actual results.
+10. Keep personal data out of the test records.
+
+## Report the result
+
+Use one result for each test: **passed**, **failed**, **not reproduced**, or **blocked**.
+State which browser ran each test.
+Do not say that desktop WebKit is a test of iOS Safari.
+Do not say that a Rust build is a browser test.
+Add the source SHA and a link to the correct issue.
+
+**Writing review state:** STE-aligned draft. Full dictionary review not done.

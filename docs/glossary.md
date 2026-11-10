@@ -1,33 +1,43 @@
-# Ubiquitous language — Miniquad
+# Miniquad technical glossary
 
-This is the canonical vocabulary for this Miniquad fork. Prefer these terms in issues, pull requests, ADRs, agent instructions, and documentation. It documents existing concepts; it does **not** imply that all features below exist in every target or that public APIs should be renamed.
+Use these terms in code reviews, issues, PRs, and documents.
+Each term has one meaning in this project.
+This glossary does not change the public API.
+A term can be a **project technical name** without being an ASD-STE100 approved word.
+See [MADR 0003](adr/0003-use-asd-ste100-for-communication.md).
 
-| Preferred term | Meaning | Do not confuse with |
+| Term | Meaning | Different term |
 | --- | --- | --- |
-| **Miniquad** | Lightweight cross-platform windowing, input, and graphics abstraction implemented primarily in Rust. | A complete game engine. |
-| **Game/application** | Consumer of Miniquad that owns gameplay or application logic. | The Miniquad rendering library. |
-| **Platform backend** | Target-specific implementation providing graphics, windowing, and/or input facilities (e.g. WebGL, Metal, native OpenGL). | A gameplay subsystem. |
-| **WebAssembly module (WASM)** | Compiled Rust module executed by a browser's WASM runtime. | The JavaScript browser bridge. |
-| **Browser bridge** | `js/gl.js`: JavaScript glue that exposes browser/WebGL services and delivers events to WASM. | Game logic or an independent game engine. |
-| **WebGL** | Browser API for GPU-accelerated drawing, accessed through the browser bridge. | SVG, HTML Canvas 2D, or WebAssembly. |
-| **Graphics context** | Backend-owned access to GPU resources and rendering operations. | A WebGL canvas DOM element. |
-| **GPU buffer** | GPU-side storage for vertex, index, or other rendering data. | A CPU data structure or JavaScript ArrayBuffer. |
-| **Buffer update** | Operation that replaces or updates data associated with a GPU buffer; exact semantics belong to the rendering API contract. | CPU-side memory mutation. |
-| **Texture** | GPU image resource that may be sampled or used for rendering. | Source artwork such as an SVG. |
-| **Render target** | Destination of rendered output, such as the screen or an offscreen texture/framebuffer. | A texture used only as input. |
-| **Render pass** | Group of rendering operations targeting an output with associated setup/state. | One individual GPU draw call. |
-| **Draw call** | Submission to draw geometry using a pipeline and bound resources. | An application update tick. |
-| **Rendering pipeline** | Shader and render state configuration used for drawing. | The full build/deployment pipeline. |
-| **Frame** | One visual update of rendered output. | A physics simulation step (which may run at another frequency). |
-| **CI check** | Automated validation (e.g. Rust tests, WASM build, JavaScript lint). | Browser runtime correctness or a benchmark unless explicitly covered. |
-| **Integration PR** | Pull request combining selected upstream changes for testing/review in this fork. | The original upstream pull request and discussion. |
+| **Miniquad** | A Rust library for windows, input, and graphics on different platforms. | Game engine |
+| **Game / application** | A program that uses Miniquad and contains game or application rules. | Miniquad library |
+| **Platform backend** | Code that connects Miniquad to a specific operating system or graphics API. | Game logic |
+| **WebAssembly module (WASM)** | Rust code that is compiled into a module for a WASM runtime. | JavaScript bridge |
+| **Browser bridge** | The JavaScript file `js/gl.js`. It connects browser functions and events to WASM. | Game engine |
+| **WebGL** | The browser graphics API that sends drawing commands to the GPU. | WebAssembly |
+| **Graphics context** | The state and access that a graphics backend uses for GPU operations. | HTML canvas element |
+| **GPU buffer** | Memory on the GPU that holds data for drawing. | JavaScript ArrayBuffer |
+| **Buffer update** | An operation that changes data in a GPU buffer. The API contract defines the exact action. | A CPU memory write |
+| **Texture** | An image resource that the GPU uses for drawing. | Source image file |
+| **Render target** | The screen or an offscreen resource that receives a rendered image. | Input-only texture |
+| **Render pass** | A set of drawing operations that use one target and one defined state. | One draw call |
+| **Draw call** | A command that tells the GPU to draw geometry. | Game update |
+| **Rendering pipeline** | The shaders and render state that the GPU uses for drawing. | CI pipeline |
+| **Frame** | One completed visual update. | Physics simulation step |
+| **CI check** | A test or build check that runs automatically. | Proof of browser behavior |
+| **Integration PR** | A pull request that adds selected upstream changes to this fork. | Original upstream PR |
+| **SSE (server-side execution)** | Game simulation or other work that runs on a server. | Intel SSE instructions or HTTP Server-Sent Events |
+| **BDD** | Behavior-driven development. It records user behavior in test scenarios. | A guarantee that all tests pass |
+| **STE-aligned draft** | Text written with the project controlled-English rules. | Verified ASD-STE100 compliance |
 
-## Rules for adding terms
+## Add a term
 
-1. Define a term where it first becomes necessary, using one unambiguous preferred name.
-2. Record aliases only when unavoidable; don't mix **backend**, **renderer**, **engine**, and **bridge** as if they were synonyms.
-3. Explain boundary concepts explicitly when crossing Rust/WASM/JavaScript.
-4. Keep implementation details in code and ADRs; keep this glossary focused on meanings.
-5. When a definition is disputed, propose a glossary change and link the corresponding ADR or issue.
+1. Check if the glossary has a term with the same meaning.
+2. If the term is new, give it one definition.
+3. Use the same term in all changed documents.
+4. Do not use **backend**, **renderer**, **engine**, and **bridge** as synonyms.
+5. If two definitions conflict, propose a change in an issue or a PR.
+6. Do not change an API name to make an editorial change.
 
-See [ADR 0001](adr/0001-use-madr-and-ubiquitous-language.md).
+See [MADR 0001](adr/0001-use-madr-and-ubiquitous-language.md).
+
+**Writing review state:** STE-aligned draft. Full dictionary review not done.

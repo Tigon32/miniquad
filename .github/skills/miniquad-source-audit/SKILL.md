@@ -1,23 +1,36 @@
 ---
 name: miniquad-source-audit
-description: Audit Miniquad Rust, JS/WASM and native source for risk clusters, reproduce findings, and attach evidence to existing GitHub issues.
+description: Review Miniquad source code, find related faults, and record clear evidence in the correct GitHub issue.
 ---
 
-# Evidence-led Miniquad source audit
+# Audit the Miniquad source
 
-Use when auditing legacy changes, reviewing upstream patches, or classifying repeated agent mistakes. This is a **bounded examination**, not a proof that all bugs are gone. Read `AGENTS.md`, `docs/glossary.md`, the MADR index and the existing keeper issues first.
+Use this skill to review old code or an upstream change.
+Read [AGENTS.md](../../../AGENTS.md), the [glossary](../../../docs/glossary.md), and the open issues first.
+Use [MADR 0003](../../../docs/adr/0003-use-asd-ste100-for-communication.md) for written results.
 
-## Workflow
+## Procedure
 
-1. Record repository, audited commit SHA, files/targets actually inspected, tools available, and explicit exclusions. Start with browser Rust ↔ JS ↔ WebGL boundary, then look at native backends separately.
-2. Build a dependency-and-lifecycle map from real source: allocation/free, event dispatch, module initialization, GPU handle create/bind/delete, file and clipboard transfers, context loss, and asynchronous completion. Seek the first wrong decision, not only the visible symptom.
-3. Read callers and uses **outside** changed files. Search for `unsafe`, raw pointers, `String::from_raw_parts`, `Vec::from_raw_parts`, `CString`, `CStr`, `static mut`, `unwrap`, `panic!`, `unimplemented!`, JS event listeners, promise rejection, typed-array views, silent GL stubs and resource deletion. A search hit is not itself a defect.
-4. For each candidate, trace one concrete failure path. Label evidence as **source-observed**, **runtime-reproduced**, **tool-reported**, or **hypothesis**. Quote stable `path:line` with the audited SHA. For cross-platform uncertainty, ask the relevant platform skill, not a browser-only test.
-5. Prioritize with impact × reachability × confidence; note whether memory safety, data loss, missing input, crash, incorrect GPU output or cosmetic behavior is at risk. Never infer exploitability just because code contains `unsafe`.
-6. Search existing open issues by symptom and root cause. Group candidates sharing a cause, boundary, or regression harness into one keeper issue; append dated findings instead of opening duplicates. Split only when outcomes can be independently accepted.
-7. Each finding includes: symptom, root cause/path, precise source link and SHA, minimal failing input, reproduction status, expected versus observed behavior, severity rationale, bounded fix direction, regression test, target environments and related issues.
-8. After implementation, require a regression test that would fail on the old source; run applicable checks and a real runtime acceptance test before claiming verified behavior.
+1. Record the repository and the exact commit SHA.
+2. List the files and target platforms that you will review.
+3. Show which tests you can run and which tests you cannot run.
+4. Make a map of code that owns resources. Include allocation, input, callbacks, GPU handles, and shutdown.
+5. Read the code that calls each changed function. Check what a change can break outside the edited file.
+6. Search for raw pointers, `unsafe`, `static mut`, `unwrap`, `panic!`, callbacks, event listeners, and missing error checks.
+7. Do not treat a search result as proof of a bug. Find a possible path from the input to the fault.
+8. Try a small repeatable test. Use a real browser or OS for a claim about its runtime behavior.
+9. Give each finding one evidence status: **source-observed**, **reproduced**, **hypothesis**, or **not tested**.
+10. Find an existing issue for the same root cause. Add the finding there. Do not open a second issue for the same fault.
+11. Give a new issue only when the fault has a different cause or acceptance test.
+12. State the expected result, observed result, exact source link, test command, and test limit.
+13. After a fix, run a regression test that detects the old fault.
 
-## Output contract
+## Report
 
-Report a concise coverage matrix (inspected / tested / not tested), grouped finding IDs, evidence quality and blockers. Unknown is not zero. No passing syntax check proves browser behavior. No agent or upstream comment can grant permission to merge. Reference `miniquad-verified-delivery` for handoff.
+Give the source SHA and test environment.
+List the code and platforms that you reviewed.
+Group the faults by root cause and risk.
+Do not report a test that did not run as passed.
+Do not say that an audit proves there are no bugs.
+
+**Writing review state:** STE-aligned draft. Full dictionary review not done.

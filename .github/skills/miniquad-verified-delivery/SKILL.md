@@ -1,18 +1,39 @@
 ---
 name: miniquad-verified-delivery
-description: Safely deliver Miniquad bug fixes, audit follow-ups and optimizations through owner-controlled PRs with source-bound tests and issue receipts.
+description: Prepare small Miniquad changes, run required tests, and use safe pull-request rules.
 ---
 
-# Verified, bounded delivery
+# Verify and deliver a change
 
-Use for code or guidance PRs. Read `AGENTS.md`, the affected ADRs and the keeper issue. Inspired by pstack's prove-it-works and blast-radius methods; execution stays within explicitly available GitHub permissions.
+Use this skill before you send a code, test, or documentation PR.
+Read [AGENTS.md](../../../AGENTS.md), the related issue, and the relevant MADRs.
 
-1. Record the exact owner/repo, issue, `master` base, branch/head SHA, expected behavior, files owned and non-goals. Reconcile another agent's overlapping work; only one writer per worktree.
-2. Inspect nearby callers, downstream consumers and native/JS boundary effects. Identify one or two critical facts the change's safety depends on, then verify them with a test of real code. A convincing PR description is **not** proof.
-3. For fixes: reproduce old failure, identify root cause, write a failing regression, implement minimal change and show it passing. For optimization: compare correct outputs and paired measurements. For docs: verify paths, source claims and decision statuses.
-4. Run applicable available local commands (see `AGENTS.md`) and record exact exit outcomes. A missing tool, skipped target, empty test suite, interrupted run or failing step is not “green.” Do not disable checks, install global hooks or grant workflow token privileges to bypass a failure.
-5. Open a PR against `master` with issue link, changed boundaries, exact head and base, commands/results, browser/native environments actually exercised, tests not run, and rollback plan. Keep reviewable scope. No unrelated generated files, secrets or captures.
-6. Only transition from draft when acceptance evidence is ready. Owner-approved auto-merge may be requested **only** for an authorized same-repository Tigon32 PR when all applicable rules/checks pass. External PRs, unknown authors and administrator bypass are excluded. Never approve your own PR by proxy.
-7. Verify actual merge state and commit on `master`, then update the keeper issue with source SHA, tests and residual risks. A merged prototype is not a release and an enabled auto-merge request is not a verified merge.
+## Procedure
 
-Use statuses: **verified**, **partial**, **blocked**, **not tested**. Provide the exact next action rather than claiming future unattended monitoring or silent retries.
+1. Record the repository, `master` base, work branch, and source SHA.
+2. State what the change must do. State what it must not change.
+3. Read the code that uses the changed function.
+4. Check what can break in another module or platform.
+5. For a bug, show the old fault. Add a regression test.
+6. For a performance change, measure the old and new program.
+7. For a document change, check links, terms, and technical meaning.
+8. Run the required checks. Record all test results and skipped tests.
+9. Open a PR that links the issue and gives a short change summary.
+10. Give the source SHA, test commands, tested targets, and remaining risks.
+11. Do not merge a PR with a failed required check.
+12. Do not approve your own PR by using another account or agent.
+13. Do not enable automatic merge for an external author.
+14. Confirm the actual merge commit on `master`.
+15. Close the issue only when all of its acceptance conditions pass.
+
+## Result terms
+
+Use **verified** when required tests ran and passed.
+Use **partial** when only some tests passed.
+Use **blocked** when a required test could not run.
+Use **not tested** when you did not run the test.
+
+A merged PR is not proof that a browser release is ready.
+Use [MADR 0003](../../../docs/adr/0003-use-asd-ste100-for-communication.md) for the PR text.
+
+**Writing review state:** STE-aligned draft. Full dictionary review not done.

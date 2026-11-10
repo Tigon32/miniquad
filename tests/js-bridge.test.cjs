@@ -74,6 +74,10 @@ function createBrowserBridge() {
     return {
         events,
         messages,
+        async malformedDrop(dataTransfer) {
+            await window.ondrop({ preventDefault() {}, dataTransfer });
+            return events;
+        },
         async dropRaw(files) {
             await window.ondrop({ preventDefault() {}, dataTransfer: { files } });
             return events;
@@ -270,4 +274,20 @@ test("failed drop transactions release a pending queue slot", async () => {
     await harness.drop([["after-error.bin", [2]]]);
     assert.equal(harness.events.at(-2).name, "after-error.bin");
     assert.equal(harness.events.at(-1).kind, "finish");
+});
+
+test("malformed drop lists cannot consume queue capacity", async () => {
+    const harness = createBrowserBridge();
+    for (let n = 0; n < 10; n++) {
+        await harness.malformedDrop(null);
+    }
+    await harness.malformedDrop({ files: { length: -1 } });
+    await harness.malformedDrop({ files: {
+        length: 1,
+        get 0() { throw new Error("bad list"); }
+    } });
+    await harness.drop([["after-invalid.bin", [8]]]);
+    assert.deepEqual(harness.events.map(e => e.kind), ["start", "file", "finish"]);
+    assert.equal(harness.events[1].name, "after-invalid.bin");
+    assert.equal(harness.messages.filter(m => m.kind === "warn").length, 12);
 });

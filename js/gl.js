@@ -1413,9 +1413,21 @@ var importObject = {
                     console.warn("File drop rejected: pending drop limit exceeded");
                     return Promise.resolve();
                 }
+                // Inspect the untrusted DataTransfer before reserving a queue slot.
+                // A malformed drop event must not permanently consume capacity.
+                const fileList = e.dataTransfer && e.dataTransfer.files;
+                if (!fileList || !Number.isSafeInteger(fileList.length) || fileList.length < 0) {
+                    console.warn("File drop rejected: invalid file list");
+                    return Promise.resolve();
+                }
+                let files;
+                try {
+                    files = Array.prototype.slice.call(fileList, 0, MAX_DROPPED_FILES);
+                } catch (error) {
+                    console.warn("File drop rejected: invalid file list", error);
+                    return Promise.resolve();
+                }
                 pendingDrops++;
-                const fileList = e.dataTransfer.files;
-                const files = Array.prototype.slice.call(fileList, 0, MAX_DROPPED_FILES);
                 if (fileList.length > MAX_DROPPED_FILES) {
                     console.warn("File drop rejected: file count limit exceeded");
                 }

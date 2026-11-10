@@ -1,0 +1,11 @@
+{
+  "name": "miniquad-js-tooling",
+  "private": true,
+  "description": "Development-only linting for Miniquad's browser bridge",
+  "scripts": {
+    "lint:js": "eslint js/gl.js"
+  },
+  "devDependencies": {
+    "eslint": "9.39.1"
+  }
+}

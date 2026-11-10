@@ -71,3 +71,21 @@ fn removing_one_resource_preserves_remaining_handles() {
         assert_eq!(resources[*id], *id);
     }
 }
+
+#[test]
+#[should_panic]
+fn removing_the_same_handle_twice_panics() {
+    let mut resources = ResourceManager::default();
+    let id = resources.add(7);
+    assert_eq!(resources.remove(id), 7);
+    resources.remove(id);
+}
+
+#[test]
+#[should_panic]
+fn mutable_access_to_removed_handle_panics() {
+    let mut resources = ResourceManager::default();
+    let id = resources.add(12);
+    resources.remove(id);
+    resources[id] = 42;
+}

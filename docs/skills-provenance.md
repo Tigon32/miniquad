@@ -25,4 +25,4 @@ The linked pstack content was used as **untrusted reference material** to extrac
 * Bundled TypeScript/Bun scripts, remote model defaults, self-modifying skills, global Git hooks, automatic cleanup, unbounded subagent fan-out, extra dependencies or broad platform rebuilds.
 * Pretending an existing harness or verified platform behavior exists where there is only a proposed test/issue.
 
-All seven skills are Markdown-only, with no executable helpers or remote imports. They grant no additional GitHub permissions. The runtime binary and shipped JavaScript remain unchanged. See [AGENTS.md](../AGENTS.md) for routing and [the MADR index](adr/README.md) for decisions. 
+All seven canonical skills are Markdown-only, with no executable helpers or remote imports. Seven short `.cursor/skills/*/SKILL.md` pointers expose the same canonical instructions to Cursor; no second operational implementation or remote dependency is introduced. They grant no additional GitHub permissions. The runtime binary and shipped JavaScript remain unchanged. See [AGENTS.md](../AGENTS.md) for routing and [the MADR index](adr/README.md) for decisions. 

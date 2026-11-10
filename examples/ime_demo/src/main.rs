@@ -443,3 +443,35 @@ fn main() {
         ..Default::default()
     }, || Box::new(Stage::new()));
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod font_tests {
+    use super::*;
+
+    #[test]
+    fn parse_and_rasterize_a_real_font_glyph() {
+        let data = std::fs::read("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+            .expect("Install fonts-dejavu-core for the IME example test");
+        let font = FontRef::from_index(&data, 0).expect("valid TrueType font");
+        let gid = font.charmap().map('A').expect("font has a Latin A glyph");
+        let size = Size::new(22.0);
+        let advance = font
+            .glyph_metrics(size, LocationRef::default())
+            .advance_width(gid)
+            .expect("font has glyph metrics");
+        assert!(advance > 0.0);
+
+        let mut path = GlyphPath::default();
+        font.outline_glyphs()
+            .get(gid)
+            .expect("font has a glyph outline")
+            .draw(DrawSettings::unhinted(size, LocationRef::default()), &mut path)
+            .expect("glyph outline is valid");
+        let (mask, placement) = Mask::new(&path.0)
+            .origin(Origin::BottomLeft)
+            .render();
+        assert!(placement.width > 0 && placement.height > 0);
+        assert_eq!(mask.len(), (placement.width * placement.height) as usize);
+        assert!(mask.iter().any(|&alpha| alpha > 0));
+    }
+}

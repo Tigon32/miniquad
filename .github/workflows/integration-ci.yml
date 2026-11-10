@@ -73,13 +73,9 @@ jobs:
         with:
           path: ~/.cache/ms-playwright
           key: playwright-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}-${{ github.event_name == 'workflow_dispatch' && 'all' || 'chromium' }}
-      - name: Install host browser libraries
-        run: |
-          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
-            npx playwright install-deps chromium firefox webkit
-          else
-            npx playwright install-deps chromium
-          fi
+      - name: Install extra host libraries for the manual browser matrix
+        if: github.event_name == 'workflow_dispatch'
+        run: npx playwright install-deps chromium firefox webkit
       - name: Download browser binaries only on a cache miss
         if: steps.playwright-cache.outputs.cache-hit != 'true'
         run: |

@@ -3,6 +3,7 @@
 * Date: 2026-11-10
 * Source baseline: `a21f651a36d789e28a4213c3ec00311be9821dc0`
 * Ownership details: [wasm-transfer-abi-v3.md](wasm-transfer-abi-v3.md)
+* Complete Rust function declarations: [abi-v3-function-inventory.md](abi-v3-function-inventory.md)
 * Browser confidence: real Playwright Chromium, Firefox and WebKit acceptance is required for each relevant PR
 * Scope: the paired `js/gl.js` and `src/native/wasm.rs`; not a stable API for hostile same-origin JavaScript
 

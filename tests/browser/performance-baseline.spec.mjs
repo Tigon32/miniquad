@@ -117,6 +117,7 @@ test("record browser startup and frame interval baselines without enforcing unca
     limitations:"Warm running browser frame samples. First WASM frame callback is not first visible painted pixel; first GL draw submission may be null when the engine uses extension-backed instanced calls. JS-to-WASM frame call includes CPU GL submission, not GPU completion. Not GPU memory or native device metrics."
   };
   expect(receipt.firstWasmFrameCallbackMs).toBeGreaterThan(0);
+  expect(receipt.firstWebGLDrawSubmissionMs).toBeGreaterThan(0);
   await testInfo.attach("browser-sli-baseline.json",{
     contentType:"application/json",body:JSON.stringify(receipt,null,2)
   });

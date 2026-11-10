@@ -1250,6 +1250,11 @@ var importObject = {
                     wasm_exports.raw_mouse_move(Math.floor(event.movementX), Math.floor(event.movementY));
                 }
             };
+            // The native context menu can consume the matching right-button
+            // mouseup in WebKit. The canvas owns mouse input while running.
+            canvas.oncontextmenu = function (event) {
+                event.preventDefault();
+            };
             canvas.onmousedown = function (event) {
                 var relative_position = mouse_relative_position(event.clientX, event.clientY);
                 var x = relative_position.x;

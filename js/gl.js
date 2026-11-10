@@ -1387,20 +1387,35 @@ var importObject = {
             // The read buffer and WASM copy can coexist in browser memory.
             const MAX_DROPPED_FILE_BYTES = 32 * 1024 * 1024;
             const MAX_DROPPED_TOTAL_BYTES = 64 * 1024 * 1024;
+            const MAX_DROPPED_FILES = 128;
+            const MAX_DROPPED_NAME_BYTES = 4096;
             let dropQueue = Promise.resolve();
 
             window.ondrop = function (e) {
                 e.preventDefault();
-                const files = Array.from(e.dataTransfer.files);
+                const fileList = e.dataTransfer.files;
+                const files = Array.prototype.slice.call(fileList, 0, MAX_DROPPED_FILES);
+                if (fileList.length > MAX_DROPPED_FILES) {
+                    console.warn("File drop rejected: file count limit exceeded");
+                }
 
                 const runDrop = async function () {
                     let totalBytes = 0;
                     wasm_exports.on_files_dropped_start();
                     try {
                         for (const file of files) {
-                            if (file.size > MAX_DROPPED_FILE_BYTES ||
+                            if (!Number.isSafeInteger(file.size) || file.size < 0 ||
+                                file.size > MAX_DROPPED_FILE_BYTES ||
                                 totalBytes + file.size > MAX_DROPPED_TOTAL_BYTES) {
                                 console.warn("File drop rejected: size limit exceeded");
+                                continue;
+                            }
+
+                            // Check filename bytes before allocating a file buffer.
+                            const nameBytes = new TextEncoder().encode(file.name);
+                            const nameLen = nameBytes.byteLength;
+                            if (nameLen > MAX_DROPPED_NAME_BYTES) {
+                                console.warn("File drop rejected: filename limit exceeded");
                                 continue;
                             }
 
@@ -1418,9 +1433,6 @@ var importObject = {
                                 continue;
                             }
 
-                            // JavaScript string.length counts UTF-16 units, not UTF-8 bytes.
-                            const nameBytes = new TextEncoder().encode(file.name);
-                            const nameLen = nameBytes.byteLength;
                             const nameVec = wasm_exports.allocate_vec_u8(nameLen);
                             const fileVec = wasm_exports.allocate_vec_u8(fileLen);
                             // Get memory views after both allocations. Either call can grow WASM memory.

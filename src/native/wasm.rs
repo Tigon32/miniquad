@@ -214,9 +214,12 @@ impl crate::native::Clipboard for Clipboard {
 
 #[no_mangle]
 pub extern "C" fn on_clipboard_paste(msg: *mut u8, len: usize) {
-    let msg = unsafe { String::from_raw_parts(msg, len, len) };
-
-    *CLIPBOARD.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(msg);
+    // The JS bridge allocates the exact byte length and transfers ownership.
+    // Validate UTF-8 before creating a String. Invalid input is discarded.
+    let bytes = unsafe { Vec::from_raw_parts(msg, len, len) };
+    if let Ok(text) = String::from_utf8(bytes) {
+        *CLIPBOARD.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(text);
+    }
 }
 
 #[no_mangle]
@@ -360,9 +363,12 @@ pub extern "C" fn on_file_dropped(
     bytes_len: usize,
 ) {
     let mut d = crate::native_display().lock().unwrap();
-    let path = PathBuf::from(unsafe { String::from_raw_parts(path, path_len, path_len) });
+    // Reclaim both owned allocations, including when the filename is invalid.
+    // Only a verified UTF-8 filename can become a PathBuf.
+    let path_bytes = unsafe { Vec::from_raw_parts(path, path_len, path_len) };
     let bytes = unsafe { Vec::from_raw_parts(bytes, bytes_len, bytes_len) };
-
-    d.dropped_files.paths.push(path);
-    d.dropped_files.bytes.push(bytes);
+    if let Ok(path) = String::from_utf8(path_bytes) {
+        d.dropped_files.paths.push(PathBuf::from(path));
+        d.dropped_files.bytes.push(bytes);
+    }
 }

@@ -192,7 +192,9 @@
   ],
   "dependency": {
     "namespace": "core",
+    "source": "https://github.com/Tigon32/technical-terminology",
+    "commit": "0e755947aed328d5287e19e2f4adf0e46ae0549b",
     "version": "0.1.0",
-    "status": "external-repository-pending"
+    "strategy": "pin the exact commit; review updates before use"
   }
 }

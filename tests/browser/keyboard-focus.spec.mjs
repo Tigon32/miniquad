@@ -38,6 +38,20 @@ test("focused canvas sends a key release when focus is lost", async ({ page }) =
     });
   });
 
+  const calibration = await page.evaluate(() => {
+    wasm_exports.key_up(999, 0);
+    const count = window.__keyTransitions.length;
+    window.__keyTransitions.length = 0;
+    const target = document.querySelector("#glcanvas");
+    window.__handlerCalls = 0;
+    const handler = target.onkeydown;
+    target.onkeydown = function(event) {
+      window.__handlerCalls++;
+      return handler.call(this, event);
+    };
+    return count;
+  });
+  expect(calibration, "WASM export instrumentation must observe direct calls").toBe(1);
   const canvas = page.locator("#glcanvas");
   await canvas.click();
   await expect(canvas).toBeFocused();
@@ -47,9 +61,10 @@ test("focused canvas sends a key release when focus is lost", async ({ page }) =
     focused: document.activeElement?.id,
     dom: window.__domKeyTransitions,
     wasm: window.__keyTransitions,
-    handler: typeof document.querySelector("#glcanvas")?.onkeydown
+    handler: typeof document.querySelector("#glcanvas")?.onkeydown,
+    handlerCalls: window.__handlerCalls
   }));
-  expect(observed.wasm, JSON.stringify(observed)).toContainEqual({
+  expect(observed.wasm, JSON.stringify({ ...observed, errors })).toContainEqual({
     type: "key_down", key: 65
   });
 

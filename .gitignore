@@ -2,3 +2,7 @@
 **/*.rs.bk
 Cargo.lock
 node_modules/
+
+# Keep the standalone example reproducible.
+!examples/ime_demo/Cargo.lock
+/examples/ime_demo/target/

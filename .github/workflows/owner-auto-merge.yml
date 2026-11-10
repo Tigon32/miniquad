@@ -18,16 +18,11 @@ concurrency:
 
 jobs:
   owner:
+    # Keep a cheap, stable trigger. The trusted Node guard checks the full PR event.
     if: >-
-      vars.OWNER_AUTOMERGE_ENABLED == 'true' &&
       github.repository == 'Tigon32/miniquad' &&
-      github.event.sender.login == 'Tigon32' &&
-      github.event.pull_request.user.login == 'Tigon32' &&
-      github.event.pull_request.author_association == 'OWNER' &&
-      github.event.pull_request.head.repo.full_name == 'Tigon32/miniquad' &&
-      github.event.pull_request.base.repo.full_name == 'Tigon32/miniquad' &&
-      github.event.pull_request.base.ref == 'master' &&
-      github.event.pull_request.draft == false
+      github.actor == 'Tigon32' &&
+      github.event.pull_request.base.ref == 'master'
     runs-on: ubuntu-24.04
     timeout-minutes: 3
     steps:

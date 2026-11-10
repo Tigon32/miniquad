@@ -21,6 +21,13 @@ export default defineConfig({
     use: {
       ...devices[name==="chromium"?"Desktop Chrome":name==="firefox"?"Desktop Firefox":"Desktop Safari"],
       viewport:{width:800,height:500},
+      ...(name==="firefox" && process.env.MINIQUAD_FIREFOX_PRIVACY==="1" ? {
+        firefoxUserPrefs: {
+          "privacy.resistFingerprinting": true,
+          "privacy.reduceTimerPrecision": true,
+          "privacy.resistFingerprinting.reduceTimerPrecision.microseconds": 100000
+        }
+      } : {}),
       launchOptions:name==="chromium"?{
         args:["--enable-webgl","--enable-unsafe-swiftshader","--use-gl=angle","--use-angle=swiftshader"]
       }:{}

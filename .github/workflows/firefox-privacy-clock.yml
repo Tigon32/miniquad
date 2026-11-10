@@ -1,0 +1,50 @@
+name: Firefox privacy-clock qualification
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'js/gl.js'
+      - 'tests/browser/clock-privacy.html'
+      - 'tests/browser/clock-privacy.spec.mjs'
+      - 'tests/browser/serve.mjs'
+      - 'playwright.config.mjs'
+      - '.github/workflows/firefox-privacy-clock.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firefox-privacy-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  reduced-precision-clock:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install locked JavaScript tools
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Install Firefox and virtual-display dependencies
+        run: npx playwright install --with-deps firefox
+      - name: Verify actual Firefox reduced precision preference mode
+        env:
+          MINIQUAD_HEADFUL: '1'
+          MINIQUAD_BROWSER: firefox
+          MINIQUAD_FIREFOX_PRIVACY: '1'
+          GITHUB_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: xvfb-run -a npx playwright test tests/browser/clock-privacy.spec.mjs
+      - name: Retain browser precision receipts and failure trace
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: firefox-privacy-clock
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 14

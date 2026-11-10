@@ -52,8 +52,16 @@ Browser privacy modes can quantize `performance.now()` and
 `Date.now()`; repeated readings may be identical. The contract guarantees
 **nondecreasing results**, not submillisecond resolution or a bound on
 timer jitter. `tests/js-clock.test.cjs` explicitly simulates quantization,
-backward readings, fallback and invalid source values. Cross-engine browser
-acceptance must still pass after the change.
+backward readings, fallback and invalid source values.
+
+The separate `firefox-privacy-clock.yml` job runs actual Playwright Firefox
+with `privacy.resistFingerprinting` and `privacy.reduceTimerPrecision`
+preferences enabled. It loads a standalone browser bridge without creating
+a GPU context, collects 300 epoch readings before and after a delay, and
+requires finite, nondecreasing, advancing values with epoch alignment.
+A passing test establishes only the selected Firefox engine/build and
+privacy preference setting in Linux CI. It is not real-device permission,
+timing-resolution or mobile Safari qualification.
 
 ## Promotion and remaining work
 

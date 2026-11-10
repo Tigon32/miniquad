@@ -177,3 +177,52 @@ test("overlapping file-drop events execute one transaction at a time", async () 
     assert.equal(harness.events[1].name, "first.bin");
     assert.equal(harness.events[4].name, "second.bin");
 });
+
+test("file drops cap the file count before reading extra files", async () => {
+    const harness = createBrowserBridge();
+    let reads = 0;
+    const files = Array.from({ length: 130 }, (_, n) => ({
+        name: `file-${n}.bin`,
+        size: 1,
+        async arrayBuffer() {
+            reads++;
+            return Uint8Array.of(1).buffer;
+        }
+    }));
+    await harness.dropRaw(files);
+    assert.equal(reads, 128);
+    assert.equal(harness.events.filter(e => e.kind === "file").length, 128);
+    assert.deepEqual([harness.events[0].kind, harness.events.at(-1).kind], ["start", "finish"]);
+    assert.equal(harness.messages.filter(m => m.kind === "warn").length, 1);
+});
+
+test("file drops reject oversized UTF-8 filename before reading", async () => {
+    const harness = createBrowserBridge();
+    let reads = 0;
+    await harness.dropRaw([{
+        name: "é".repeat(2049),
+        size: 1,
+        async arrayBuffer() { reads++; return Uint8Array.of(1).buffer; }
+    }, {
+        name: "ok.bin",
+        size: 1,
+        async arrayBuffer() { reads++; return Uint8Array.of(2).buffer; }
+    }]);
+    assert.equal(reads, 1);
+    assert.deepEqual(harness.events.map(e => e.kind), ["start", "file", "finish"]);
+    assert.equal(harness.events[1].name, "ok.bin");
+    assert.equal(harness.messages.filter(m => m.kind === "warn").length, 1);
+});
+
+test("file drops reject invalid declared sizes before reading", async () => {
+    const harness = createBrowserBridge();
+    let reads = 0;
+    await harness.dropRaw([NaN, -1, Infinity, 1.5].map((size, i) => ({
+        name: `bad-${i}.bin`,
+        size,
+        async arrayBuffer() { reads++; return Uint8Array.of(1).buffer; }
+    })));
+    assert.equal(reads, 0);
+    assert.deepEqual(harness.events.map(e => e.kind), ["start", "finish"]);
+    assert.equal(harness.messages.filter(m => m.kind === "warn").length, 4);
+});

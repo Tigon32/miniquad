@@ -1367,30 +1367,63 @@ var importObject = {
                 e.preventDefault();
             };
 
-            window.ondrop = async function (e) {
+            // Maximum data copied to WASM by one file drop.
+            // The read buffer and WASM copy can coexist in browser memory.
+            const MAX_DROPPED_FILE_BYTES = 32 * 1024 * 1024;
+            const MAX_DROPPED_TOTAL_BYTES = 64 * 1024 * 1024;
+            let dropQueue = Promise.resolve();
+
+            window.ondrop = function (e) {
                 e.preventDefault();
+                const files = Array.from(e.dataTransfer.files);
 
-                wasm_exports.on_files_dropped_start();
+                const runDrop = async function () {
+                    let totalBytes = 0;
+                    wasm_exports.on_files_dropped_start();
+                    try {
+                        for (const file of files) {
+                            if (file.size > MAX_DROPPED_FILE_BYTES ||
+                                totalBytes + file.size > MAX_DROPPED_TOTAL_BYTES) {
+                                console.warn("File drop rejected: size limit exceeded");
+                                continue;
+                            }
 
-                for (let file of e.dataTransfer.files) {
-                    // JavaScript string.length counts UTF-16 code units, not UTF-8 bytes.
-                    // Rust reconstructs this allocation as a UTF-8 String using nameLen.
-                    const nameBytes = new TextEncoder().encode(file.name);
-                    const nameLen = nameBytes.byteLength;
-                    const nameVec = wasm_exports.allocate_vec_u8(nameLen);
-                    const nameHeap = new Uint8Array(wasm_memory.buffer, nameVec, nameLen);
-                    nameHeap.set(nameBytes);
+                            let fileBuf;
+                            try {
+                                fileBuf = await file.arrayBuffer();
+                            } catch (error) {
+                                console.error("File drop read failed", error);
+                                continue;
+                            }
+                            const fileLen = fileBuf.byteLength;
+                            if (fileLen > MAX_DROPPED_FILE_BYTES ||
+                                totalBytes + fileLen > MAX_DROPPED_TOTAL_BYTES) {
+                                console.warn("File drop rejected: size limit exceeded");
+                                continue;
+                            }
 
-                    const fileBuf = await file.arrayBuffer();
-                    const fileLen = fileBuf.byteLength;
-                    const fileVec = wasm_exports.allocate_vec_u8(fileLen);
-                    const fileHeap = new Uint8Array(wasm_memory.buffer, fileVec, fileLen);
-                    fileHeap.set(new Uint8Array(fileBuf), 0);
+                            // JavaScript string.length counts UTF-16 units, not UTF-8 bytes.
+                            const nameBytes = new TextEncoder().encode(file.name);
+                            const nameLen = nameBytes.byteLength;
+                            const nameVec = wasm_exports.allocate_vec_u8(nameLen);
+                            const fileVec = wasm_exports.allocate_vec_u8(fileLen);
+                            // Get memory views after both allocations. Either call can grow WASM memory.
+                            new Uint8Array(wasm_memory.buffer, nameVec, nameLen).set(nameBytes);
+                            new Uint8Array(wasm_memory.buffer, fileVec, fileLen).set(new Uint8Array(fileBuf));
+                            wasm_exports.on_file_dropped(nameVec, nameLen, fileVec, fileLen);
+                            totalBytes += fileLen;
+                        }
+                    } finally {
+                        wasm_exports.on_files_dropped_finish();
+                    }
+                };
 
-                    wasm_exports.on_file_dropped(nameVec, nameLen, fileVec, fileLen);
-                }
-
-                wasm_exports.on_files_dropped_finish();
+                // Keep a single drop transaction active while file reads are pending.
+                const result = dropQueue.then(runDrop);
+                dropQueue = result.catch(error => {
+                    console.error("File drop failed", error);
+                });
+                return result;
             };
 
             let lastFocus = document.hasFocus();

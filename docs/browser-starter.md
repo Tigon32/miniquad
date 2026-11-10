@@ -1,0 +1,137 @@
+# Browser consumer starter
+
+Status: **implemented generator, blocked full browser build**.
+Addresses [issue #124](https://github.com/Tigon32/miniquad/issues/124).
+Depends on the optional browser adoption layer proposed in
+[MADR 0009](adr/0009-optional-browser-adoption-layer.md) (not yet
+accepted) and on [#19](https://github.com/Tigon32/miniquad/issues/19)
+for release identity and distribution.
+
+Miniquad is a Rust library for windows, input, and graphics. It is not
+a game engine, and it is not a replacement for Canvas 2D. Use Miniquad
+when an application needs direct GPU drawing commands across
+platforms. Use a higher-level graphics or game library when an
+application needs scene graphs, asset pipelines, or UI widgets. Use
+Canvas 2D when an application only needs simple 2D drawing in a
+browser and does not need a shared native/WASM renderer.
+
+## What the generator produces
+
+`scripts/create-browser-project.mjs` writes a fresh, standalone,
+external Rust and browser project. It does not live inside, or depend
+on, the Miniquad repository at run time. The generated project has:
+
+- `Cargo.toml` and `src/main.rs`: a small Rust application that draws
+  one animated quad. It exports an optional, bounded "app parameters"
+  surface (see below). This is a reusable quad structure, not a game
+  engine.
+- `web/index.html`: a semantic host page with a status region, an
+  embedded host `<div>`, and pause/resume/focus controls, plus
+  animation-speed and color controls wired to `setParameters`.
+- `web/gl.js`, `web/miniquad.mjs`, `web/runtime.html`,
+  `web/runtime.mjs`, `web/host-preferences.mjs`: exact copies of the
+  browser bridge and optional embedding module, taken from one
+  selected Miniquad source revision. `web/MANIFEST.json` records the
+  source revision and a SHA-256 hash of each copied file.
+- `scripts/build.mjs`: builds the Rust application for
+  `wasm32-unknown-unknown` and copies the result into `web/app.wasm`.
+- `scripts/serve.mjs`: a traversal-safe static HTTP server with
+  correct MIME types (including `application/wasm`) and subpath
+  support, for local development or for serving the built output
+  directly.
+
+Only `scripts/build.mjs` and `scripts/serve.mjs`, Cargo, and the Rust
+toolchain are developer-only tools. The deployed `web/` output needs
+only a browser; it does not need Rust or Node.js at the user's device.
+
+## Commands
+
+```sh
+# From a Miniquad checkout, generate an external project next to it:
+node scripts/create-browser-project.mjs ../my-app \
+  --source path --miniquad-path "$(pwd)" --name my-app --title "My App"
+
+cd ../my-app
+node scripts/build.mjs
+node scripts/serve.mjs --port 8080
+# Open http://localhost:8080/
+```
+
+Deploy by copying the generated project's `web/` directory to a static
+host. Serve it from a subpath with
+`node scripts/serve.mjs --port 8080 --base /my-app`.
+
+## Dependency pinning
+
+The generator never silently depends on the original upstream project
+(`not-fl3/miniquad`). It requires one explicit source:
+
+- `--source path --miniquad-path <absolute path>`: a Cargo `path`
+  dependency on a local checkout. Use this for local development. The
+  generator also reads the five browser files above from
+  `<path>/js/`.
+- `--source git --git-url <url> --rev <sha> --git-repo <absolute path
+  to a local clone with that revision>`: a Cargo `git` dependency
+  pinned to an immutable revision (`rev = "<sha>"`), for evaluation.
+  `--git-repo` lets the generator read the exact browser file bytes
+  for that revision with `git show <rev>:<path>`, without an
+  additional network fetch during generation. `--rev` defaults to the
+  reviewed baseline `454792c46febefc476e1df153a5efed8bbb2ef79`; the
+  default `--git-url` is the `Tigon32/miniquad` fork, not upstream.
+
+Issue #19 owns the long-term SemVer and release identity for this
+dependency; the pinning options above are an interim, explicit,
+evaluation path and are not a release process.
+
+## Current limitation: generator works, full browser build is blocked
+
+The generator refuses to write a project unless the selected source
+revision has all five required browser files. Today's accepted source
+only has `js/gl.js`. `js/miniquad.mjs`, `js/runtime.html`,
+`js/runtime.mjs`, and `js/host-preferences.mjs` are proposed in MADR
+0009 and are not yet integrated. Running the generator against the
+current repository produces an actionable, itemized error naming the
+missing files; it does not fail silently and does not write a partial
+project.
+
+What is verified in this change:
+
+- The generated `Cargo.toml` and `src/main.rs` compile to
+  `wasm32-unknown-unknown` through a `path` dependency, and the
+  resulting WASM module exports `mq_params_version`,
+  `mq_param_set_f32`, and `mq_param_set_rgba8` (checked by inspecting
+  the compiled module's export list).
+- The static server serves correct MIME types, supports a subpath
+  base, and keeps every request inside the web root, including with
+  `..` segments and percent-encoded separators (checked with raw HTTP
+  requests against a running server, not only an HTTP client that
+  pre-normalizes the URL).
+- Generator preflight and project-writing logic (`tests/starter-generator.test.mjs`).
+
+What remains blocked until the browser adoption layer and #19 land:
+
+- CI proving the external-project path end to end in a real browser
+  (Chromium/Firefox/WebKit), per the acceptance criteria in #124.
+- A rendered-pixel, resize/DPI, keyboard-focus, and startup-error test
+  of the generated `index.html` against `miniquad.mjs` and
+  `runtime.html`, because those files do not exist yet in the source
+  revision.
+- README integration in the main repository (owned by the parent
+  change; out of scope here).
+
+## Optional app-parameters surface
+
+The generated application exports a small, optional surface. It is
+not part of the Miniquad core ABI:
+
+| Export | Meaning |
+| --- | --- |
+| `mq_params_version() -> u32` | Returns `1`. A host checks this once after startup. |
+| `mq_param_set_f32(id: u32, value: f32) -> i32` | `id` 1 sets animation speed, range `0..=2`. Returns `0` on success, `1` for a non-finite or out-of-range value, `2` for an unknown `id`. |
+| `mq_param_set_rgba8(id: u32, color: u32) -> i32` | `id` 1 sets the foreground tint, `id` 2 sets the background clear color. `color` is `0xRRGGBBAA`, straight alpha, sRGB bytes. Returns `0` on success, `2` for an unknown `id`. |
+
+A host page calls these through the `setParameters` function on the
+`mount()` result, once `supportsParameters` is `true`. The embedding
+module `miniquad.mjs` (not owned by this document; see MADR 0009)
+performs the float-range validation and RGBA8 packing before calling
+these exports.

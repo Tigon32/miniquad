@@ -4,6 +4,9 @@ Cargo.lock
 node_modules/
 /test-results/
 
+# Scratch fixtures written and removed by tests/starter-generator.test.mjs.
+/.generator-test-scratch/
+
 # Keep the standalone example reproducible.
 !examples/ime_demo/Cargo.lock
 /examples/ime_demo/target/

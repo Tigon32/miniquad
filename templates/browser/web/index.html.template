@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{TITLE}}</title>
+  <style>
+    html, body {
+      margin: 0;
+      padding: 0;
+      font-family: system-ui, sans-serif;
+      background: #10101a;
+      color: #f0f0f5;
+    }
+    main {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 1rem;
+    }
+    #host {
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      background: #000;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    #status[data-state="error"] {
+      color: #ff6b6b;
+    }
+    fieldset {
+      border: 1px solid #333;
+      border-radius: 4px;
+      margin-top: 1rem;
+    }
+    label {
+      display: block;
+      margin: 0.5rem 0;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>{{TITLE}}</h1>
+    <p id="status" role="status" aria-live="polite" data-state="loading">Starting&hellip;</p>
+    <div id="host"></div>
+    <form id="controls">
+      <fieldset>
+        <legend>Playback</legend>
+        <button type="button" id="pause" disabled>Pause</button>
+        <button type="button" id="resume" disabled>Resume</button>
+        <button type="button" id="focus-app" disabled>Focus</button>
+      </fieldset>
+      <fieldset id="parameters" disabled>
+        <legend>Parameters</legend>
+        <label>
+          Animation speed
+          <input type="range" id="speed" min="0" max="2" step="0.05" value="1" />
+        </label>
+        <label>
+          Foreground color
+          <input type="color" id="foreground" value="#ffffff" />
+        </label>
+        <label>
+          Background color
+          <input type="color" id="background" value="#10101a" />
+        </label>
+      </fieldset>
+    </form>
+  </main>
+  <script type="module">
+    import { mount } from "./miniquad.mjs";
+
+    const statusEl = document.getElementById("status");
+    const host = document.getElementById("host");
+    const pauseBtn = document.getElementById("pause");
+    const resumeBtn = document.getElementById("resume");
+    const focusBtn = document.getElementById("focus-app");
+    const parametersFieldset = document.getElementById("parameters");
+    const speedInput = document.getElementById("speed");
+    const foregroundInput = document.getElementById("foreground");
+    const backgroundInput = document.getElementById("background");
+
+    function setStatus(text, state) {
+      statusEl.textContent = text;
+      statusEl.dataset.state = state;
+    }
+
+    // Converts a "#rrggbb" color input value to [r, g, b, a] floats in
+    // range 0..1, with alpha fixed at 1 (opaque).
+    function hexToRgbaFloats(hex) {
+      const value = hex.replace("#", "");
+      const r = parseInt(value.slice(0, 2), 16) / 255;
+      const g = parseInt(value.slice(2, 4), 16) / 255;
+      const b = parseInt(value.slice(4, 6), 16) / 255;
+      return [r, g, b, 1];
+    }
+
+    function sendParameters(app) {
+      if (!app.supportsParameters) {
+        return;
+      }
+      app.setParameters({
+        speed: Number(speedInput.value),
+        foreground: hexToRgbaFloats(foregroundInput.value),
+        background: hexToRgbaFloats(backgroundInput.value),
+      });
+    }
+
+    const app = mount({
+      container: host,
+      wasmURL: new URL("./app.wasm", import.meta.url),
+      title: "{{TITLE}}",
+    });
+
+    app.ready
+      .then(() => {
+        setStatus("Running", "running");
+        pauseBtn.disabled = false;
+        resumeBtn.disabled = false;
+        focusBtn.disabled = false;
+        if (app.supportsParameters) {
+          parametersFieldset.disabled = false;
+        }
+      })
+      .catch((error) => {
+        setStatus("Error: " + error.message, "error");
+      });
+
+    pauseBtn.addEventListener("click", () => {
+      app.pause();
+      setStatus("Paused", "paused");
+    });
+    resumeBtn.addEventListener("click", () => {
+      app.resume();
+      setStatus("Running", "running");
+    });
+    focusBtn.addEventListener("click", () => {
+      app.focus();
+    });
+    for (const input of [speedInput, foregroundInput, backgroundInput]) {
+      input.addEventListener("input", () => sendParameters(app));
+    }
+
+    window.addEventListener("beforeunload", () => {
+      app.dispose();
+    });
+  </script>
+</body>
+</html>

@@ -103,3 +103,32 @@ fn resource_id_overflow_does_not_mutate_live_resources() {
     assert_eq!(resources.resources.len(), 1);
     assert_eq!(resources.id, usize::MAX);
 }
+
+#[test]
+fn deterministic_mixed_operations_preserve_live_resource_identity() {
+    let mut resources = ResourceManager::default();
+    let mut live = std::collections::BTreeMap::new();
+    let mut stale = Vec::new();
+    let mut seed: u32 = 0x1234_5678;
+
+    for step in 0..512_u32 {
+        seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        if live.is_empty() || seed % 3 != 0 {
+            let id = resources.add(step);
+            assert!(!live.contains_key(&id));
+            assert!(!stale.contains(&id), "a stale ID must never be reused");
+            live.insert(id, step);
+        } else {
+            let position = (seed as usize) % live.len();
+            let id = *live.keys().nth(position).unwrap();
+            let expected = live.remove(&id).unwrap();
+            assert_eq!(resources.remove(id), expected);
+            stale.push(id);
+        }
+
+        for (&id, &value) in &live {
+            assert_eq!(resources[id], value);
+        }
+        assert_eq!(resources.resources.len(), live.len());
+    }
+}

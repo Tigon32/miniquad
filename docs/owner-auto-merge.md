@@ -51,6 +51,9 @@ These are **authorization logic tests**.
 They cannot prove GitHub token permissions or server-side branch enforcement.
 
 Record the actual first owner PR that auto-merges.
+Before you close #17, record the workflow result for an owner PR after the permission correction in PR #51.
+The earlier real run 42796237083 failed to enable auto-merge with an integration permission error.
+Keep a failed or missing required check as a merge blocker.
 Record a failed-required-check test before you close delivery issue #17.
 Do not claim that an untested external PR was rejected by GitHub.
 

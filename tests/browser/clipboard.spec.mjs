@@ -26,10 +26,17 @@ test("real browser transfers focused Unicode clipboard paste into WASM", async (
       }
     };
 
-    const clipboardData = new DataTransfer();
-    clipboardData.setData("text/plain", "é🎮\u0000z");
-    const event = new ClipboardEvent("paste", {
-      bubbles: true, cancelable: true, clipboardData
+    // Browser ClipboardEvent constructors sanitize synthetic DataTransfer
+    // content differently. Exercise the checked-in bridge and real WASM with
+    // a deterministic synthetic ClipboardEvent data contract instead.
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", {
+      value: {
+        getData(type) {
+          if (type !== "text/plain") throw Error("Unexpected clipboard MIME type: " + type);
+          return "é🎮\u0000z";
+        }
+      }
     });
     window.dispatchEvent(event);
     return { calls, prevented: event.defaultPrevented, focused: document.activeElement === canvas };
@@ -60,10 +67,14 @@ test("real browser rejects oversized clipboard paste without a WASM allocation",
         return actual.allocate_vec_u8(len);
       }
     };
-    const clipboardData = new DataTransfer();
-    clipboardData.setData("text/plain", "a".repeat(1024 * 1024 + 1));
-    const event = new ClipboardEvent("paste", {
-      bubbles: true, cancelable: true, clipboardData
+    const event = new Event("paste", { bubbles: true, cancelable: true });
+    Object.defineProperty(event, "clipboardData", {
+      value: {
+        getData(type) {
+          if (type !== "text/plain") throw Error("Unexpected clipboard MIME type: " + type);
+          return "a".repeat(1024 * 1024 + 1);
+        }
+      }
     });
     window.dispatchEvent(event);
     return { allocations, prevented: event.defaultPrevented };

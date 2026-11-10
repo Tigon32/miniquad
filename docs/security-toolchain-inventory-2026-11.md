@@ -76,7 +76,7 @@ Do not suppress the warning or describe it as a confirmed exploitable vulnerabil
 ## External assets and runner inputs
 
 * `docs/terminology/miniquad.json` references the independent shared terminology registry at commit `0e755947aed328d5287e19e2f4adf0e46ae0549b`.
-* The manual Android workflow uses `notfl3/cargo-apk` without a digest pin. Treat it as an unresolved supply-chain risk.
+* The unverified `notfl3/cargo-apk` container has been removed from the manual workflow. The Android backend remains **unqualified**. See [native platform qualification](native-platform-qualification.md).
 * GitHub-hosted runner images and `rustup stable` can change between runs.
 * No external browser JavaScript CDN is required for the checked-in `js/gl.js` fixture.
 

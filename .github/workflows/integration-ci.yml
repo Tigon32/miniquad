@@ -36,6 +36,8 @@ jobs:
           restore-keys: |
             cargo-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.toml') }}-
             cargo-v2-${{ runner.os }}-${{ runner.arch }}-
+      - name: Check immutable GitHub Action references
+        run: node scripts/check-actions.mjs
       - name: Rust library tests
         run: cargo test --lib
       - name: WASM library check

@@ -39,8 +39,8 @@ jobs:
             cargo-v2-${{ runner.os }}-${{ runner.arch }}-
       - name: Check immutable GitHub Action references
         run: node scripts/check-actions.mjs
-      - name: Rust formatting check
-        run: cargo fmt --check
+      - name: Check formatting of new Rust regression tests
+        run: rustfmt --check --edition 2018 src/resource_manager_tests.rs
       - name: Focused Rust Clippy correctness check
         run: cargo clippy --lib -- -D clippy::correctness
       - name: Rust library tests

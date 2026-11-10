@@ -4,6 +4,14 @@ import { PNG } from "pngjs";
 test("compiled WASM renders visible pixels through the checked-in JS bridge",async({page},testInfo)=>{
   const failures=[];
   const requested=new Set();
+  const browserMessages=[];
+  page.on("console",message=>{
+    if (browserMessages.length < 25) browserMessages.push(message.type()+": "+message.text());
+  });
+  page.on("dialog",async dialog=>{
+    failures.push("dialog: "+dialog.message());
+    await dialog.dismiss();
+  });
   page.on("console",message=>{
     if (message.type()==="error") failures.push("console: "+message.text());
   });
@@ -15,6 +23,14 @@ test("compiled WASM renders visible pixels through the checked-in JS bridge",asy
 
   await page.addInitScript(()=>{
     window.__miniquadDrawCount=0;
+    window.__miniquadRAFCount=0;
+    const originalRAF=window.requestAnimationFrame;
+    window.requestAnimationFrame=function(callback){
+      return originalRAF.call(this,(timestamp)=>{
+        window.__miniquadRAFCount++;
+        return callback(timestamp);
+      });
+    };
     const instrument=klass=>{
       if (!klass) return;
       for(const name of ["drawElements","drawArrays","drawElementsInstanced","drawArraysInstanced"]){
@@ -37,13 +53,17 @@ test("compiled WASM renders visible pixels through the checked-in JS bridge",asy
   } catch (error) {
     const state=await page.evaluate(()=>({
       drawCalls:window.__miniquadDrawCount,
+      animationCallbacks:window.__miniquadRAFCount,
       wasmExports:typeof wasm_exports,
+      frameExport:typeof wasm_exports === "object" ? typeof wasm_exports.frame : "missing",
       wasmMemory:typeof wasm_memory,
-      glContext:typeof gl,
+      glContext:typeof gl === "undefined" ? "missing" : gl===null ? "null" : "available",
+      visibility:document.visibilityState,
+      blockingEventLoop:window.blocking_event_loop,
       canvasWidth:document.querySelector("#glcanvas")?.width,
       canvasHeight:document.querySelector("#glcanvas")?.height
     }));
-    throw new Error("No WASM draw call. "+JSON.stringify({state,failures,wasmResponses:[...requested],timeout:error.message}));
+    throw new Error("No WASM draw call. "+JSON.stringify({state,failures,browserMessages,wasmResponses:[...requested],timeout:error.message}));
   }
   await page.waitForTimeout(300);
 

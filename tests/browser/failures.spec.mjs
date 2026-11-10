@@ -72,21 +72,38 @@ test("a wrong ABI version stops the real compiled WASM before main", async ({pag
       window.__frameCount++;
       return originalRAF.apply(this,args);
     };
+    window.__instantiateCount = 0;
+    window.__versionCallCount = 0;
     const originalInstantiate = WebAssembly.instantiate;
-    WebAssembly.instantiate = async function(...args) {
-      const result = await originalInstantiate.apply(this,args);
-      return {
-        exports: new Proxy(result.exports,{
-          get(target,name) {
-            if (name === "crate_version") return () => 999;
-            return Reflect.get(target,name);
-          }
-        })
-      };
-    };
+    Object.defineProperty(WebAssembly, "instantiate", {
+      configurable: true,
+      writable: true,
+      value: async function(...args) {
+        window.__instantiateCount++;
+        const result = await originalInstantiate.apply(this,args);
+        return {
+          exports: new Proxy(result.exports,{
+            get(target,name) {
+              if (name === "crate_version") {
+                window.__versionCallCount++;
+                return () => 999;
+              }
+              return Reflect.get(target,name);
+            }
+          })
+        };
+      }
+    });
   });
   await page.goto("/", {waitUntil:"load"});
-  await expect.poll(() => errors.some(message =>
-    message.includes("WASM ABI version mismatch"))).toBe(true);
-  expect(await page.evaluate(() => window.__frameCount)).toBe(0);
+  await page.waitForTimeout(1500);
+  const state = await page.evaluate(() => ({
+    instantiateCount: window.__instantiateCount,
+    versionCallCount: window.__versionCallCount,
+    frameCount: window.__frameCount,
+    exportsType: typeof wasm_exports
+  }));
+  expect(errors.some(message => message.includes("WASM ABI version mismatch")),
+    "A wrong ABI must fail startup. " + JSON.stringify({state, errors})).toBe(true);
+  expect(state.frameCount).toBe(0);
 });

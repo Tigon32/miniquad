@@ -14,7 +14,8 @@ function fixture() {
     const context = vm.createContext({
         window: {},
         document: { querySelector: () => canvas, exitPointerLock() {} },
-        console
+        console,
+        TextDecoder
     });
     vm.runInContext(source, context, { filename: "js/gl.js" });
     context.wasm_memory = memory;
@@ -56,4 +57,18 @@ test("invalid pointers and lengths reject before reading", () => {
     ]) {
         assert.throws(() => f.read(ptr, length), /Invalid WASM UTF-8 memory range/);
     }
+});
+
+test("malformed and truncated UTF-8 is decoded without reading adjacent bytes", () => {
+    const f = fixture();
+    new Uint8Array(f.memory.buffer, 8, 5).set([0xc3, 0x28, 0xf0, 0x9f, 0x8e]);
+    assert.equal(f.read(8, 2), "\ufffd(");
+    assert.equal(f.read(10, 3), "\ufffd");
+});
+
+test("valid multibyte text preserves full codepoints inside the byte range", () => {
+    const f = fixture();
+    new Uint8Array(f.memory.buffer, 12, 6).set([0xc3, 0xa9, 0xf0, 0x9f, 0x8e, 0xae]);
+    assert.equal(f.read(12, 6), "é🎮");
+    assert.equal(f.read(12, 2), "é");
 });

@@ -576,15 +576,48 @@ function into_sapp_keycode(key_code) {
         case "ShiftLeft": return 340;
         case "ControlLeft": return 341;
         case "AltLeft": return 342;
-        case "OSLeft": return 343;
+        // Cmd and the Windows key: "Meta" in every browser, and "OS" in
+        // Firefox before version 118.
+        case "MetaLeft": case "OSLeft": return 343;
         case "ShiftRight": return 344;
         case "ControlRight": return 345;
         case "AltRight": return 346;
-        case "OSRight": return 347;
+        case "MetaRight": case "OSRight": return 347;
         case "ContextMenu": return 348;
     }
 
     console.log("Unsupported keyboard key: ", key_code)
+}
+
+function into_sapp_modifiers(event) {
+    var modifiers = 0;
+    if (event.ctrlKey) {
+        modifiers |= SAPP_MODIFIER_CTRL;
+    }
+    if (event.shiftKey) {
+        modifiers |= SAPP_MODIFIER_SHIFT;
+    }
+    if (event.altKey) {
+        modifiers |= SAPP_MODIFIER_ALT;
+    }
+    if (event.metaKey) {
+        modifiers |= SAPP_MODIFIER_SUPER;
+    }
+    return modifiers;
+}
+
+// The keys the app was told went down, and not yet that they came up.
+var keys_down = new Set();
+
+// Tell the app the keys `released` picks came up, as browsers don't
+// always say.
+function release_keys(released, modifiers) {
+    keys_down.forEach(function (key) {
+        if (released(key)) {
+            keys_down.delete(key);
+            wasm_exports.key_up(key, modifiers);
+        }
+    });
 }
 
 function dpi_scale() {
@@ -1203,14 +1236,14 @@ var importObject = {
                     event.preventDefault();
                     wasm_exports.mouse_wheel(-event.deltaX, -event.deltaY);
                 });
-            canvas.onmouseup = function (event) {
+            window.addEventListener('mouseup', function (event) {
                 var relative_position = mouse_relative_position(event.clientX, event.clientY);
                 var x = relative_position.x;
                 var y = relative_position.y;
 
                 var btn = into_sapp_mousebutton(event.button);
                 wasm_exports.mouse_up(x, y, btn);
-            };
+            });
             canvas.onkeydown = function (event) {
                 var sapp_key_code = into_sapp_keycode(event.code);
                 switch (sapp_key_code) {
@@ -1228,17 +1261,8 @@ var importObject = {
                         break;
                 }
 
-                var modifiers = 0;
-                if (event.ctrlKey) {
-                    modifiers |= SAPP_MODIFIER_CTRL;
-                }
-                if (event.shiftKey) {
-                    modifiers |= SAPP_MODIFIER_SHIFT;
-                }
-                if (event.altKey) {
-                    modifiers |= SAPP_MODIFIER_ALT;
-                }
-                wasm_exports.key_down(sapp_key_code, modifiers, event.repeat);
+                keys_down.add(sapp_key_code);
+                wasm_exports.key_down(sapp_key_code, into_sapp_modifiers(event), event.repeat);
                 // for "space", "quote", and "slash" preventDefault will prevent
                 // key_press event, so send it here instead
                 if (sapp_key_code == 32 || sapp_key_code == 39 || sapp_key_code == 47) {
@@ -1247,20 +1271,22 @@ var importObject = {
             };
             canvas.onkeyup = function (event) {
                 var sapp_key_code = into_sapp_keycode(event.code);
+                var modifiers = into_sapp_modifiers(event);
 
-                var modifiers = 0;
-                if (event.ctrlKey) {
-                    modifiers |= SAPP_MODIFIER_CTRL;
-                }
-                if (event.shiftKey) {
-                    modifiers |= SAPP_MODIFIER_SHIFT;
-                }
-                if (event.altKey) {
-                    modifiers |= SAPP_MODIFIER_ALT;
-                }
-
+                keys_down.delete(sapp_key_code);
                 wasm_exports.key_up(sapp_key_code, modifiers);
+                // macOS browsers send no keyup for a key released while Cmd
+                // is down, so every key but the modifiers (340 to 347),
+                // which do send one, comes up with Cmd.
+                if (sapp_key_code == 343 || sapp_key_code == 347) {
+                    release_keys(function (key) { return key < 340 || key > 347; }, modifiers);
+                }
             };
+            // Once the canvas loses focus, as when Cmd+Tab switches apps or
+            // Ctrl+Tab switches tabs, its keys come up elsewhere.
+            canvas.addEventListener("blur", function () {
+                release_keys(function () { return true; }, 0);
+            });
             canvas.onkeypress = function (event) {
                 var sapp_key_code = into_sapp_keycode(event.code);
 
@@ -1308,20 +1334,26 @@ var importObject = {
             window.onresize = function () {
                 resize(canvas, wasm_exports.resize);
             };
+            // Only while the canvas has the focus, so a text field on the page
+            // keeps its own. Browsers can send these to the body or to the
+            // page's selection rather than the focused canvas.
             window.addEventListener("copy", function (e) {
-                if (clipboard != null) {
-                    event.clipboardData.setData('text/plain', clipboard);
-                    event.preventDefault();
+                if (document.activeElement == canvas && clipboard != null) {
+                    e.clipboardData.setData('text/plain', clipboard);
+                    e.preventDefault();
                 }
             });
             window.addEventListener("cut", function (e) {
-                if (clipboard != null) {
-                    event.clipboardData.setData('text/plain', clipboard);
-                    event.preventDefault();
+                if (document.activeElement == canvas && clipboard != null) {
+                    e.clipboardData.setData('text/plain', clipboard);
+                    e.preventDefault();
                 }
             });
 
             window.addEventListener("paste", function (e) {
+                if (document.activeElement != canvas) {
+                    return;
+                }
                 e.stopPropagation();
                 e.preventDefault();
                 var clipboardData = e.clipboardData || window.clipboardData;

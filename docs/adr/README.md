@@ -5,6 +5,7 @@ Use lightweight [MADR](https://adr.github.io/madr/) records to capture durable a
 ## Index
 
 * [0001 — Adopt MADR and a ubiquitous language](0001-use-madr-and-ubiquitous-language.md) — **Proposed**
+* [0002 — Risk-based verification with selective TDD](0002-risk-based-verification-and-selective-tdd.md) — **Proposed**
 
 ## How to contribute
 

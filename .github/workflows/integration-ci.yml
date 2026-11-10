@@ -27,6 +27,8 @@ jobs:
         run: cargo build --release --target wasm32-unknown-unknown --example quad
       - name: JavaScript syntax check
         run: node --check js/gl.js
+      - name: Browser bridge regression tests
+        run: node --test tests/*.test.cjs
       - name: Install locked JavaScript lint tools
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: ESLint browser bridge

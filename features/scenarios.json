@@ -152,6 +152,36 @@
       "testFile": "tests/js-loader.test.cjs",
       "testTitle": "a required export must exist before startup",
       "mode": "node"
+    },
+    {
+      "id": "LOAD-004",
+      "group": "loader",
+      "given": "two calls request the same WASM module for one canvas",
+      "when": "both loads are pending",
+      "then": "one fetch, compilation, instantiation and Rust main occur",
+      "testFile": "tests/js-loader.test.cjs",
+      "testTitle": "concurrent WASM loads share one initialization transaction",
+      "mode": "node"
+    },
+    {
+      "id": "LOAD-005",
+      "group": "loader",
+      "given": "a canvas is already running its WASM module",
+      "when": "a second module is requested",
+      "then": "the loader rejects it without another fetch or runtime",
+      "testFile": "tests/js-loader.test.cjs",
+      "testTitle": "loading another module into the initialized canvas fails explicitly",
+      "mode": "node"
+    },
+    {
+      "id": "RESIL-004",
+      "group": "resilience",
+      "given": "the previous WASM fetch failed",
+      "when": "the same module is requested again",
+      "then": "the failed loader state is cleared and a single retry starts",
+      "testFile": "tests/js-loader.test.cjs",
+      "testTitle": "a failed load releases its transaction so one retry can succeed",
+      "mode": "node"
     }
   ]
 }

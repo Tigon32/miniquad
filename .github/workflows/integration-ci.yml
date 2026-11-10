@@ -41,6 +41,16 @@ jobs:
         run: node scripts/check-actions.mjs
       - name: Check formatting of new Rust regression tests
         run: rustfmt --check --edition 2018 src/resource_manager_tests.rs
+      - name: Observe repository-wide rustfmt differences (legacy baseline; non-blocking)
+        id: full-rustfmt
+        continue-on-error: true
+        run: cargo fmt --all -- --check
+      - name: Report full rustfmt baseline status
+        if: always()
+        run: |
+          echo "Repository-wide rustfmt audit outcome: ${{ steps.full-rustfmt.outcome }}"
+          echo "This audit is non-blocking while legacy platform formatting is reviewed."
+          echo "Do not infer repository-wide format compliance from green required CI."
       - name: Focused Rust Clippy correctness check
         run: cargo clippy --lib -- -D clippy::correctness
       - name: Rust library tests

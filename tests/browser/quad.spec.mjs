@@ -32,7 +32,19 @@ test("compiled WASM renders visible pixels through the checked-in JS bridge",asy
 
   await page.goto("/",{waitUntil:"load"});
   await expect(page.locator("#glcanvas")).toBeVisible();
-  await page.waitForFunction(()=>window.__miniquadDrawCount>0,{timeout:30000});
+  try {
+    await page.waitForFunction(()=>window.__miniquadDrawCount>0,null,{timeout:10000});
+  } catch (error) {
+    const state=await page.evaluate(()=>({
+      drawCalls:window.__miniquadDrawCount,
+      wasmExports:typeof wasm_exports,
+      wasmMemory:typeof wasm_memory,
+      glContext:typeof gl,
+      canvasWidth:document.querySelector("#glcanvas")?.width,
+      canvasHeight:document.querySelector("#glcanvas")?.height
+    }));
+    throw new Error("No WASM draw call. "+JSON.stringify({state,failures,wasmResponses:[...requested],timeout:error.message}));
+  }
   await page.waitForTimeout(300);
 
   const sample=PNG.sync.read(await page.locator("#glcanvas").screenshot());

@@ -44,7 +44,7 @@ jobs:
         run: |
           mkdir -p target/experiment/wasm32-unknown-unknown/release/examples
           for example in quad offscreen; do
-            ./binaryen-version_133/bin/wasm-opt -Oz --enable-bulk-memory --enable-bulk-memory-opt \
+            ./binaryen-version_133/bin/wasm-opt -Oz --enable-bulk-memory --enable-bulk-memory-opt --enable-nontrapping-float-to-int \
               "target/wasm32-unknown-unknown/release/examples/$example.wasm" \
               -o "target/experiment/wasm32-unknown-unknown/release/examples/$example.wasm"
           done

@@ -1,0 +1,35 @@
+name: IME demo font checks
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - 'examples/ime_demo/**'
+      - 'examples/ime_test.rs'
+      - 'Cargo.toml'
+      - '.github/workflows/ime-demo-ci.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+jobs:
+  font-example:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Use supported Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Check independent IME example
+        run: cargo check --manifest-path examples/ime_demo/Cargo.toml --locked
+      - name: Rasterize a real glyph
+        run: cargo test --manifest-path examples/ime_demo/Cargo.toml --locked
+      - name: Refuse abandoned font parser in the example graph
+        run: |
+          if cargo tree --manifest-path examples/ime_demo/Cargo.toml -i ttf-parser; then
+            echo "Obsolete ttf-parser returned to the example dependency graph"
+            exit 1
+          fi

@@ -741,7 +741,11 @@ var importObject = {
             gl.activeTexture(texture)
         },
         glBindTexture: function (target, texture) {
-            GL.validateGLObjectID(GL.textures, texture, 'glBindTexture', 'texture');
+            if (texture !== 0 && !GL.textures[texture]) {
+                // Never forward stale or unknown IDs into the host WebGL API.
+                GL.validateGLObjectID(GL.textures, texture, 'glBindTexture', 'texture');
+                return;
+            }
             gl.bindTexture(target, GL.textures[texture]);
         },
         glTexImage2D: function (target, level, internalFormat, width, height, border, format, type, pixels) {
@@ -1222,11 +1226,17 @@ var importObject = {
             return gl.checkFramebufferStatus(target);
         },
         glReadBuffer: function(source) {
-            gl.readBuffer(source)
+            if (typeof gl.readBuffer !== "function") {
+                throw new Error("glReadBuffer requires a WebGL2 context");
+            }
+            gl.readBuffer(source);
         },
         glBlitFramebuffer: function(srcX0, srcY0, srcX1, srcY1,
                                     dstX0, dstY0, dstX1, dstY1,
                                     mask, filter) {
+            if (typeof gl.blitFramebuffer !== "function") {
+                throw new Error("glBlitFramebuffer requires a WebGL2 context");
+            }
             gl.blitFramebuffer(srcX0, srcY0, srcX1, srcY1,
                                dstX0, dstY0, dstX1, dstY1,
                                mask, filter);

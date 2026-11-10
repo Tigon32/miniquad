@@ -40,3 +40,34 @@ fn removed_handle_cannot_be_indexed() {
     resources.remove(first);
     let _ = resources[first];
 }
+
+#[test]
+fn repeated_resource_churn_never_revives_stale_handles() {
+    let mut resources = ResourceManager::default();
+    let mut removed = Vec::new();
+
+    for value in 0..256 {
+        let id = resources.add(value);
+        assert!(!removed.contains(&id), "a removed ID must not be reused");
+        assert_eq!(resources.remove(id), value);
+        removed.push(id);
+    }
+
+    let current = resources.add(999);
+    assert!(!removed.contains(&current));
+    assert_eq!(resources[current], 999);
+}
+
+#[test]
+fn removing_one_resource_preserves_remaining_handles() {
+    let mut resources = ResourceManager::default();
+    let ids: Vec<_> = (0..32).map(|value| resources.add(value)).collect();
+
+    for id in ids.iter().step_by(2) {
+        let removed = resources.remove(*id);
+        assert_eq!(removed, *id);
+    }
+    for id in ids.iter().skip(1).step_by(2) {
+        assert_eq!(resources[*id], *id);
+    }
+}

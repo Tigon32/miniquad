@@ -1,6 +1,6 @@
-on: [push, pull_request]
+on: workflow_dispatch
 
-name: Cross-compile
+name: Cross-compile (manual compatibility)
 
 jobs:
   build:

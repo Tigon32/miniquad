@@ -183,3 +183,21 @@ test("clipboard paste ignores non-string data without allocating", () => {
     assert.equal(f.allocations, 0);
     assert.deepEqual(f.received, []);
 });
+
+test("clipboard paste prefers standards-based text/plain MIME", () => {
+    const f = fixture();
+    const requested = [];
+    const event = {
+        clipboardData: {
+            getData(type) {
+                requested.push(type);
+                return type === "text/plain" ? "é🎮" : "";
+            }
+        },
+        preventDefault() {},
+        stopPropagation() {}
+    };
+    f.windowEvents.get("paste")(event);
+    assert.deepEqual(requested, ["text/plain"]);
+    assert.equal(f.received.at(-1).text, "é🎮");
+});

@@ -711,7 +711,24 @@ var importObject = {
             return Math.floor(Math.random() * 2147483647);
         },
         now: function () {
-            return Date.now() / 1000.0;
+            // Preserve epoch-seconds semantics of Rust date::now while using
+            // the monotonic browser clock when it is available. Firefox can
+            // reduce timer precision; no sub-millisecond accuracy is promised.
+            const perf = window.performance;
+            const milliseconds = perf && Number.isFinite(perf.timeOrigin) &&
+                typeof perf.now === "function"
+                ? perf.timeOrigin + perf.now()
+                : Date.now();
+            if (!Number.isFinite(milliseconds)) {
+                throw new Error("Browser time source is unavailable");
+            }
+            const seconds = milliseconds / 1000.0;
+            // A changed system clock must not move the game clock backward.
+            if (this.__last_now_seconds === undefined ||
+                seconds > this.__last_now_seconds) {
+                this.__last_now_seconds = seconds;
+            }
+            return this.__last_now_seconds;
         },
         canvas_width: function () {
             return Math.floor(canvas.width);

@@ -1,0 +1,26 @@
+name: Windows file-drop checks
+
+on:
+  pull_request:
+    branches:
+      - master
+    paths:
+      - src/native/windows.rs
+      - .github/workflows/windows-file-drop-ci.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  windows-file-drop:
+    runs-on: windows-2022
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run focused Windows Rust library tests
+        run: cargo test --lib --target x86_64-pc-windows-msvc

@@ -66,3 +66,41 @@ test("GL validation does not reject a zero texture handle",()=>{
     assert.equal(f.errors.length,0);
     assert.equal(f.bound.length,1);
 });
+
+test("invalid and deleted texture handles do not reach host WebGL", () => {
+    const f=createFixture();
+    f.env.glBindTexture(3553,999);
+    vm.runInContext("GL.textures[7] = null",f.context);
+    f.env.glBindTexture(3553,7);
+    assert.deepEqual(f.bound,[]);
+    assert.match(f.errors[0],/invalid texture ID 999/);
+    assert.match(f.errors[1],/already deleted texture ID 7/);
+});
+
+test("valid texture handles still bind through WebGL", () => {
+    const f=createFixture();
+    vm.runInContext("GL.textures[4] = {name:4}",f.context);
+    f.env.glBindTexture(3553,4);
+    assert.equal(f.bound.length,1);
+    assert.equal(f.bound[0].texture.name,4);
+});
+
+test("WebGL2-only framebuffer imports fail explicitly in WebGL1", () => {
+    const f=createFixture();
+    assert.throws(()=>f.env.glReadBuffer(0x8ce0),/glReadBuffer requires a WebGL2 context/);
+    assert.throws(()=>f.env.glBlitFramebuffer(0,0,2,2,0,0,2,2,0x4000,0x2600),
+        /glBlitFramebuffer requires a WebGL2 context/);
+});
+
+test("WebGL2 framebuffer operations forward parameters unchanged", () => {
+    const f=createFixture();
+    const calls=[];
+    f.context.gl.readBuffer=(source)=>calls.push({name:"read",source});
+    f.context.gl.blitFramebuffer=(...args)=>calls.push({name:"blit",args});
+    f.env.glReadBuffer(0x8ce0);
+    f.env.glBlitFramebuffer(0,0,2,2,0,0,2,2,0x4000,0x2600);
+    assert.deepEqual(calls,[
+        {name:"read",source:0x8ce0},
+        {name:"blit",args:[0,0,2,2,0,0,2,2,0x4000,0x2600]}
+    ]);
+});

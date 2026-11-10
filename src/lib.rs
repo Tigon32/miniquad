@@ -43,9 +43,12 @@ impl<T> Default for ResourceManager<T> {
 
 impl<T> ResourceManager<T> {
     pub fn add(&mut self, resource: T) -> usize {
-        self.resources.insert(self.id, resource);
-        self.id += 1;
-        self.id - 1
+        // Check before mutation so overflow cannot replace an existing handle.
+        let next_id = self.id.checked_add(1).expect("resource ID exhausted");
+        let id = self.id;
+        self.resources.insert(id, resource);
+        self.id = next_id;
+        id
     }
 
     pub fn remove(&mut self, id: usize) -> T {

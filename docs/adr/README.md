@@ -12,6 +12,7 @@ The documents are **STE-aligned drafts**. We have not completed a full ASD-STE10
 * [0003 — Use ASD-STE100 for project communication](0003-use-asd-ste100-for-communication.md) — **Accepted**
 * [0004 — Keep shared terminology in a separate repository](0004-reusable-concept-registry.md) — **Proposed**
 * [0005 — Use low-cost CI and risk-based test lanes](0005-low-cost-ci-and-risk-based-test-lanes.md) — **Accepted**
+* [0006 — Use a distinct project identity and retain Miniquad credits](0006-distinct-project-identity-and-upstream-attribution.md) — **Proposed**
 
 ## Write a new decision
 

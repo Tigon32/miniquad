@@ -26,7 +26,7 @@ export function checkCatalog(catalog,read=path=>readFileSync(resolve(root,path),
     // All mapped titles must be literal, executable test() definitions,
     // not comments, skip/todo or a documentation-only claim.
     const title=scenario.testTitle;
-    const names=[...source.matchAll(/\btest\s*\(\s*["']([^"'\n]+)["']/gu)].map(x=>x[1]);
+    const names=[...source.matchAll(/^\s*test\s*\(\s*["']([^"'\n]+)["']/gmu)].map(x=>x[1]);
     if(!names.includes(title))errors.push("No runnable test title "+scenario.id+": "+title);
     if(scenario.mode!==(scenario.testFile.startsWith("tests/browser/")?"browser":"node"))
       errors.push("Incorrect execution lane: "+scenario.id);

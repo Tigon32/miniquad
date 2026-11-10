@@ -11,6 +11,9 @@
 const version = 2;
 
 const canvas = document.querySelector("#glcanvas");
+if (!canvas) {
+    throw new Error("Miniquad requires a #glcanvas element before loading js/gl.js");
+}
 var gl;
 
 var clipboard = null;
@@ -27,6 +30,9 @@ var blocking_event_loop = false;
 function init_webgl(version) {
     if (version == 1) {
         gl = canvas.getContext("webgl");
+        if (!gl) {
+            throw new Error("WebGL1 context is unavailable");
+        }
 
         function acquireVertexArrayObjectExtension(ctx) {
             // Extension available in WebGL 1 from Firefox 25 and WebKit 536.28/desktop Safari 6.0.3 onwards. Core feature in WebGL 2.
@@ -87,11 +93,13 @@ function init_webgl(version) {
         if (gl.getExtension('WEBGL_depth_texture') == null) {
             alert("Cant initialize WEBGL_depth_texture extension");
         }
-    } else {
+    } else if (version == 2) {
         gl = canvas.getContext("webgl2");
-    }
-    if (gl === null) {
-        alert("Unable to initialize WebGL. Your browser or machine may not support it.");
+        if (!gl) {
+            throw new Error("WebGL2 context is unavailable");
+        }
+    } else {
+        throw new Error("Unsupported WebGL version: " + version);
     }
 }
 
@@ -1601,6 +1609,9 @@ function start_wasm(instance) {
 }
 
 function load(wasm_path) {
+    if (!canvas) {
+        throw new Error("Miniquad requires a #glcanvas element before loading WASM");
+    }
     register_plugins(plugins);
 
     const response = fetch(wasm_path).then(function (result) {

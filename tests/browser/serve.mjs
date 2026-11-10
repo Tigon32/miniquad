@@ -6,7 +6,9 @@ const root = process.cwd();
 const files = new Map([
   ["/", {file:"tests/browser/smoke.html",type:"text/html; charset=utf-8"}],
   ["/js/gl.js", {file:"js/gl.js",type:"text/javascript; charset=utf-8"}],
-  ["/quad.wasm", {file:"target/wasm32-unknown-unknown/release/examples/quad.wasm",type:"application/wasm"}]
+  ["/quad.wasm", {file:"target/wasm32-unknown-unknown/release/examples/quad.wasm",type:"application/wasm"}],
+  ["/offscreen", {file:"tests/browser/offscreen.html",type:"text/html; charset=utf-8"}],
+  ["/offscreen.wasm", {file:"target/wasm32-unknown-unknown/release/examples/offscreen.wasm",type:"application/wasm"}]
 ]);
 const host = "127.0.0.1";
 const port = 4173;

@@ -15,6 +15,7 @@ if (!canvas) {
     throw new Error("Miniquad requires a #glcanvas element before loading js/gl.js");
 }
 var gl;
+var webgl_context_lost = false;
 
 var clipboard = null;
 
@@ -101,6 +102,19 @@ function init_webgl(version) {
     } else {
         throw new Error("Unsupported WebGL version: " + version);
     }
+    // GPU resources cannot be used after context loss. This bridge does not
+    // currently rebuild textures, buffers, and pipelines on restoration.
+    canvas.addEventListener("webglcontextlost", function () {
+        webgl_context_lost = true;
+        if (animation_frame_timeout) {
+            window.cancelAnimationFrame(animation_frame_timeout);
+            animation_frame_timeout = null;
+        }
+        console.error("WebGL context lost; reload is required");
+    });
+    canvas.addEventListener("webglcontextrestored", function () {
+        console.warn("WebGL context restored; reload is required to rebuild GPU resources");
+    });
 }
 
 canvas.focus();
@@ -454,6 +468,7 @@ function resize(canvas, on_resize) {
 }
 
 function animation() {
+    if (webgl_context_lost) return;
     wasm_exports.frame();
     if (!window.blocking_event_loop) {
         if (animation_frame_timeout) {

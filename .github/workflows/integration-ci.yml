@@ -1,9 +1,6 @@
 name: Miniquad integration CI
 
 on:
-  push:
-    branches:
-      - 'integration/**'
   pull_request:
     branches:
       - master

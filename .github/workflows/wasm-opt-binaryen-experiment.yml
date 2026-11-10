@@ -1,0 +1,94 @@
+name: Pinned Binaryen wasm-opt experiment
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - '.github/workflows/wasm-opt-binaryen-experiment.yml'
+      - 'scripts/compare-rust-wasm-opts.mjs'
+      - 'Cargo.toml'
+      - 'src/**'
+      - 'examples/quad.rs'
+      - 'examples/offscreen.rs'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: binaryen-wasm-opt-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  binaryen:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install stable Rust and compile release fixtures
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add wasm32-unknown-unknown
+          echo "EXPERIMENT_RUSTC_VERSION=$(rustc --version)" >> "$GITHUB_ENV"
+          cargo build --release --target wasm32-unknown-unknown --example quad --example offscreen
+      - name: Download and verify pinned Binaryen version 133
+        run: |
+          curl --fail --location --retry 3 \
+            "https://github.com/WebAssembly/binaryen/releases/download/version_133/binaryen-version_133-x86_64-linux.tar.gz" \
+            --output binaryen-version_133-x86_64-linux.tar.gz
+          echo "2dc9c7813f5375db93d96ead4b78222fcc3e2677bbb832297af4797782a37489  binaryen-version_133-x86_64-linux.tar.gz" | sha256sum --check
+          tar -xzf binaryen-version_133-x86_64-linux.tar.gz
+          ./binaryen-version_133/bin/wasm-opt --version
+      - name: Optimize only the release fixtures
+        run: |
+          mkdir -p target/experiment/wasm32-unknown-unknown/release/examples
+          for example in quad offscreen; do
+            ./binaryen-version_133/bin/wasm-opt -Oz \
+              "target/wasm32-unknown-unknown/release/examples/$example.wasm" \
+              -o "target/experiment/wasm32-unknown-unknown/release/examples/$example.wasm"
+          done
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Compare size, compression, SHA-256 and deltas
+        env:
+          GITHUB_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MINIQUAD_EXPERIMENT_KIND: binaryen-oz
+        run: node scripts/compare-rust-wasm-opts.mjs
+      - name: Install locked browser tooling
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Install browser dependencies
+        run: npx playwright install --with-deps chromium firefox webkit
+      - name: Replace browser fixtures with verified wasm-opt candidates
+        run: |
+          for example in quad offscreen; do
+            cp "target/experiment/wasm32-unknown-unknown/release/examples/$example.wasm" \
+              "target/wasm32-unknown-unknown/release/examples/$example.wasm"
+          done
+      - name: Verify candidate in Chromium
+        env:
+          MINIQUAD_BROWSER: chromium
+          GITHUB_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: npm run test:browser
+      - name: Verify candidate in Firefox
+        env:
+          MINIQUAD_BROWSER: firefox
+          MINIQUAD_HEADFUL: '1'
+          GITHUB_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: xvfb-run -a npm run test:browser
+      - name: Verify candidate in WebKit
+        env:
+          MINIQUAD_BROWSER: webkit
+          MINIQUAD_HEADFUL: '1'
+          GITHUB_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: xvfb-run -a npm run test:browser
+      - name: Retain size comparisons and browser traces
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: binaryen-wasm-opt-experiment
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 14

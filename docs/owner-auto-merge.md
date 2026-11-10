@@ -25,7 +25,10 @@ Do not add a broad personal token or turn off branch rules to correct that error
 The workflow uses `pull_request_target`.
 It checks out **only trusted `master` source**.
 It never checks out or executes code from the PR head.
-It has `contents: read` and `pull-requests: write` permissions.
+It has `contents: write` and `pull-requests: write` permissions.
+GitHub refused the first real request with `Resource not accessible by integration`.
+The policy uses repository write permission only to request GitHub gated auto-merge.
+It does not execute PR code or bypass required checks.
 It does not use a personal access token or any additional secret.
 
 ## Merge gate

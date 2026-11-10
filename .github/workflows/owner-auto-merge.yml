@@ -1,0 +1,43 @@
+name: Owner-only auto-merge
+
+# This workflow uses trusted code from master.
+# It never checks out a PR head or executes PR-provided commands.
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+concurrency:
+  group: owner-automerge-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  owner:
+    if: >-
+      github.repository == 'Tigon32/miniquad' &&
+      github.event.sender.login == 'Tigon32' &&
+      github.event.pull_request.user.login == 'Tigon32' &&
+      github.event.pull_request.author_association == 'OWNER' &&
+      github.event.pull_request.head.repo.full_name == 'Tigon32/miniquad' &&
+      github.event.pull_request.base.repo.full_name == 'Tigon32/miniquad' &&
+      github.event.pull_request.base.ref == 'master' &&
+      github.event.pull_request.draft == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - name: Get trusted owner policy
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          persist-credentials: false
+      - name: Confirm owner PR metadata
+        run: node scripts/owner-automerge.mjs "$GITHUB_EVENT_PATH"
+      - name: Enable GitHub gated auto-merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: Tigon32/miniquad
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+        run: gh pr merge "$PR_NUMBER" --auto --squash --repo "$GH_REPO"

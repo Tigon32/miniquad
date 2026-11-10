@@ -73,7 +73,7 @@ The committed lockfile fixes package resolution but does not prove that every pa
 ## Required next checks
 
 1. Run `npm audit --audit-level=high` against the lockfile. Review each finding.
-2. Run a version-pinned RustSec advisory checker and record its database revision and affected target.
+2. Run the scheduled or manual `Security advisory review` workflow. It installs `cargo-audit` 0.22.2 with `--locked`, generates a temporary `Cargo.lock` and scans the resolved Rust dependency graph against RustSec. Record the actual scan output and advisory database revision before declaring this work verified. This scan has **not run** as part of this document update.
 3. Review the Android image. Replace it with a digest-pinned image or a reviewed native build.
 4. Check support and advisories for Node, ESLint, Playwright, Rust, and all third-party Actions.
 5. Review `pull_request_target` token access and test that untrusted PR code cannot execute.

@@ -10,7 +10,8 @@ The documents are **STE-aligned drafts**. We have not completed a full ASD-STE10
 * [0001 — Use MADR and one technical glossary](0001-use-madr-and-ubiquitous-language.md) — **Proposed**
 * [0002 — Use risk-based tests and selective TDD](0002-risk-based-verification-and-selective-tdd.md) — **Proposed**
 * [0003 — Use ASD-STE100 for project communication](0003-use-asd-ste100-for-communication.md) — **Accepted**
-* [0004 — Use a reusable concept registry](0004-reusable-concept-registry.md) — **Proposed**
+* [0004 — Keep shared terminology in a separate repository](0004-reusable-concept-registry.md) — **Proposed**
+* [0005 — Use low-cost CI and risk-based test lanes](0005-low-cost-ci-and-risk-based-test-lanes.md) — **Accepted**
 
 ## Write a new decision
 

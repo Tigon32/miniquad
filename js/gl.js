@@ -22,6 +22,8 @@ var clipboard = null;
 
 var plugins = [];
 var wasm_memory;
+// Shared state is independent of the import function's this binding.
+var last_browser_now_seconds = null;
 var animation_frame_timeout;
 
 var high_dpi = false;
@@ -724,11 +726,11 @@ var importObject = {
             }
             const seconds = milliseconds / 1000.0;
             // A changed system clock must not move the game clock backward.
-            if (this.__last_now_seconds === undefined ||
-                seconds > this.__last_now_seconds) {
-                this.__last_now_seconds = seconds;
+            if (last_browser_now_seconds === null ||
+                seconds > last_browser_now_seconds) {
+                last_browser_now_seconds = seconds;
             }
-            return this.__last_now_seconds;
+            return last_browser_now_seconds;
         },
         canvas_width: function () {
             return Math.floor(canvas.width);

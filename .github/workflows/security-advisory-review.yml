@@ -5,7 +5,14 @@ on:
     branches: [master]
     paths:
       - Cargo.toml
+      - examples/ime_demo/Cargo.lock
       - package-lock.json
+      - .github/workflows/security-advisory-review.yml
+  pull_request:
+    branches: [master]
+    paths:
+      - Cargo.toml
+      - examples/ime_demo/Cargo.lock
       - .github/workflows/security-advisory-review.yml
   workflow_dispatch:
   schedule:
@@ -15,8 +22,8 @@ permissions:
   contents: read
 
 concurrency:
-  group: security-advisory-review
-  cancel-in-progress: true
+  group: security-advisory-review-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   npm-advisories:
@@ -44,8 +51,10 @@ jobs:
           cargo install cargo-audit --version 0.22.2 --locked --no-default-features
       - name: Resolve library dependencies for the audit
         run: cargo generate-lockfile
-      - name: Scan resolved Rust dependencies against RustSec
-        run: cargo audit --file Cargo.lock
+      - name: Scan root Rust dependencies and reject unmaintained crates
+        run: cargo audit --file Cargo.lock --deny unmaintained
+      - name: Scan isolated font example and reject unmaintained crates
+        run: cargo audit --file examples/ime_demo/Cargo.lock --deny unmaintained
       - name: State audit scope
         if: always()
         run: |

@@ -1,58 +1,71 @@
-# Adopt MADR and a ubiquitous language
+# Use MADR and one technical glossary
 
 * Status: **Proposed**
 * Date: 2026-11-10
-* Decision scope: Miniquad fork and its agentic development workflow
+* Scope: Miniquad development
 
 ## Context and Problem Statement
 
-Miniquad spans Rust, the JavaScript browser bridge, and platform-specific integrations such as Android Java. Contributors and coding agents may use different names for the same concept, or the same name for different concepts. This makes implementation, reviews, automated changes, and cross-platform testing harder to reason about.
+Miniquad has Rust, JavaScript, WebAssembly, and native code.
+Different terms for the same part can cause errors.
+A person or an agent can also use one word for two different parts.
 
-How should we capture important engineering decisions and keep the vocabulary consistent across code, issues, pull requests, agents, and documentation?
+We need a record of important technical decisions.
+We also need one source for the meanings of technical terms.
 
 ## Decision Drivers
 
-* Lightweight, repository-local documentation compatible with GitHub and AI coding agents.
-* Consistent meanings across Rust, WebAssembly, JavaScript, WebGL, and native targets.
-* Ability to revisit an architectural choice without rewriting history.
-* Minimal build-time and runtime dependencies.
+* Keep project instructions in the repository.
+* Use the same words in issues, pull requests, and code reviews.
+* Record why a technical decision was made.
+* Let reviewers find and change an old decision.
+* Do not add runtime dependencies for documentation.
 
 ## Considered Options
 
-* No formal vocabulary or decision record process.
-* Only an informal glossary.
-* **MADR-style architectural decision records plus one maintained glossary**.
+| Option | Benefit | Problem |
+| --- | --- | --- |
+| No formal records | No extra documentation | A reason for a decision can become lost |
+| A glossary only | One set of terms | No record of decisions |
+| **MADR records and one glossary** | One record of decisions and terms | Writers must keep both current |
 
 ## Decision Outcome
 
-**Proposed:** Use Markdown Architectural Decision Records (MADR) for important decisions and keep the canonical glossary in [../glossary.md](../glossary.md).
+**Proposed:** Use Markdown architecture decision records (MADR).
+Keep them in `docs/adr/`.
+Use [the project glossary](../glossary.md) for technical terms.
 
-* Create numbered decision records in `docs/adr/`, using the sections **Context and Problem Statement**, **Decision Drivers**, **Considered Options**, **Decision Outcome**, and **Consequences**.
-* Use statuses **Proposed**, **Accepted**, **Deprecated**, or **Superseded**; never silently rewrite the rationale for an accepted decision. Record a successor decision instead.
-* Use the glossary's preferred terminology in code reviews, issues, PR descriptions, agent prompts, and documentation. Existing public API names are not automatically renamed.
-* If a term is missing or ambiguous, propose its definition in the same PR as the change that introduces it.
-* Scope the glossary to Miniquad's graphics/runtime concepts. Any future game can extend it in its own repository rather than conflating game and rendering terminology.
-* Changes to `master` still follow required PR and CI rules; this documentation does not replace code tests.
+1. Give each new decision a number.
+2. Record the problem, options, decision, and effects.
+3. Use the status **Proposed**, **Accepted**, **Deprecated**, or **Superseded**.
+4. When a decision changes, add a new MADR. Do not remove the old reason.
+5. Use the glossary terms in project instructions and reviews.
+6. If a change adds a technical term, define it in the glossary.
+7. Do not change existing public API names for an editorial reason only.
+8. Keep this glossary about Miniquad. A game can have a separate glossary.
+9. Use [MADR 0003](0003-use-asd-ste100-for-communication.md) for controlled English.
+10. Use a protected pull request and the required tests for changes to `master`.
 
 ## Consequences
 
 ### Positive
 
-* Faster review and more reliable agentic changes thanks to explicit shared meaning.
-* Decisions become discoverable, auditable and easy to supersede.
-* No production code or runtime footprint is added.
+* Reviewers can find a decision and its reason.
+* Agents can use one set of technical terms.
+* Documentation does not change the runtime binary.
 
 ### Negative
 
-* PR authors need to keep terms and decisions updated.
-* Documentation can become stale if reviews do not enforce it.
+* Writers must keep the records current.
+* Out-of-date terms can cause errors.
 
 ## Confirmation
 
-* Review whether new public concepts are reflected in `docs/glossary.md`.
-* Link relevant ADRs from future architecture-changing PRs.
-* Revisit this decision after several real PRs to see whether the process is helping.
+1. Check new technical terms against the glossary.
+2. Link relevant decisions from a PR.
+3. Review this method after several PRs.
 
 ## References
 
-* https://adr.github.io/madr/
+* [MADR](https://adr.github.io/madr/)
+* [Technical glossary](../glossary.md)

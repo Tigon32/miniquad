@@ -34,6 +34,10 @@ function createBrowserBridge() {
         activeElement: canvas
     };
     const wasm = {
+        allocate_transfer_vec_u8(n) {
+            return this.allocate_vec_u8(n);
+        },
+        discard_transfer_vec_u8() {},
         allocate_vec_u8(n) {
             assert.ok(Number.isInteger(n) && n >= 0, "allocation size must be an unsigned byte count");
             const ptr = cursor;

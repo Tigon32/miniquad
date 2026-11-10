@@ -5,6 +5,7 @@ mod keycodes;
 
 use std::{
     cell::RefCell,
+    collections::HashMap,
     path::PathBuf,
     sync::{mpsc::Receiver, Mutex, OnceLock},
     thread_local,
@@ -28,6 +29,7 @@ use crate::{
 thread_local! {
     static EVENT_HANDLER: RefCell<Option<Box<dyn EventHandler>>> = RefCell::new(None);
     static REQUESTS: RefCell<Option<Receiver<Request>>> = const { RefCell::new(None) };
+    static TRANSFER_BUFFERS: RefCell<TransferRegistry> = RefCell::new(TransferRegistry::default());
 }
 fn tl_event_handler<T, F: FnOnce(&mut dyn EventHandler) -> T>(f: F) -> T {
     EVENT_HANDLER.with(|globals| {
@@ -183,7 +185,7 @@ pub unsafe fn update_cursor() {
 // "crate_version" is a misleading, but it can't be changed for legacy reasons.
 #[no_mangle]
 pub extern "C" fn crate_version() -> u32 {
-    2
+    3
 }
 
 #[no_mangle]
@@ -192,6 +194,69 @@ pub extern "C" fn allocate_vec_u8(len: usize) -> *mut u8 {
     let ptr = string.as_mut_ptr();
     string.leak();
     ptr
+}
+
+// Only buffers created by this allocator may cross the JS-to-Rust ownership
+// boundary. Unknown pointers and duplicate transfers never reach a raw-parts
+// constructor. An allocation with zero logical bytes still gets a unique pointer.
+const MAX_TRANSFER_ALLOCATION: usize = 64 * 1024 * 1024;
+const MAX_TRANSFER_OUTSTANDING: usize = 64 * 1024 * 1024 + 4096;
+const MAX_TRANSFER_COUNT: usize = 256;
+
+#[derive(Default)]
+struct TransferRegistry {
+    buffers: HashMap<usize, (usize, Vec<u8>)>,
+    reserved: usize,
+}
+
+#[no_mangle]
+pub extern "C" fn allocate_transfer_vec_u8(len: usize) -> *mut u8 {
+    if len > MAX_TRANSFER_ALLOCATION {
+        return std::ptr::null_mut();
+    }
+    TRANSFER_BUFFERS.with(|registry| {
+        let mut registry = registry.borrow_mut();
+        let size = len.max(1);
+        if registry.buffers.len() >= MAX_TRANSFER_COUNT
+            || size > MAX_TRANSFER_OUTSTANDING.saturating_sub(registry.reserved)
+        {
+            return std::ptr::null_mut();
+        }
+        let mut bytes = Vec::new();
+        if bytes.try_reserve_exact(size).is_err() {
+            return std::ptr::null_mut();
+        }
+        bytes.resize(size, 0);
+        let ptr = bytes.as_mut_ptr();
+        registry.reserved += size;
+        registry.buffers.insert(ptr as usize, (len, bytes));
+        ptr
+    })
+}
+
+// A claim consumes the allocation exactly once. A mismatched length also
+// removes and drops the registered allocation rather than trusting its metadata.
+fn take_transfer_vec_u8(ptr: *mut u8, len: usize) -> Option<Vec<u8>> {
+    TRANSFER_BUFFERS.with(|registry| {
+        let mut registry = registry.borrow_mut();
+        let (expected_len, mut bytes) = registry.buffers.remove(&(ptr as usize))?;
+        registry.reserved -= bytes.len();
+        if expected_len != len {
+            return None;
+        }
+        bytes.truncate(len);
+        Some(bytes)
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn discard_transfer_vec_u8(ptr: *mut u8) {
+    TRANSFER_BUFFERS.with(|registry| {
+        let mut registry = registry.borrow_mut();
+        if let Some((_, bytes)) = registry.buffers.remove(&(ptr as usize)) {
+            registry.reserved -= bytes.len();
+        }
+    });
 }
 
 static CLIPBOARD: OnceLock<Mutex<Option<String>>> = OnceLock::new();
@@ -214,9 +279,11 @@ impl crate::native::Clipboard for Clipboard {
 
 #[no_mangle]
 pub extern "C" fn on_clipboard_paste(msg: *mut u8, len: usize) {
-    // The JS bridge allocates the exact byte length and transfers ownership.
-    // Validate UTF-8 before creating a String. Invalid input is discarded.
-    let bytes = unsafe { Vec::from_raw_parts(msg, len, len) };
+    // Reject forged, repeated or incorrectly sized transfers without
+    // dereferencing caller-provided raw pointers.
+    let Some(bytes) = take_transfer_vec_u8(msg, len) else {
+        return;
+    };
     if let Ok(text) = String::from_utf8(bytes) {
         *CLIPBOARD.get_or_init(|| Mutex::new(None)).lock().unwrap() = Some(text);
     }
@@ -362,13 +429,15 @@ pub extern "C" fn on_file_dropped(
     bytes: *mut u8,
     bytes_len: usize,
 ) {
-    let mut d = crate::native_display().lock().unwrap();
-    // Reclaim both owned allocations, including when the filename is invalid.
-    // Only a verified UTF-8 filename can become a PathBuf.
-    let path_bytes = unsafe { Vec::from_raw_parts(path, path_len, path_len) };
-    let bytes = unsafe { Vec::from_raw_parts(bytes, bytes_len, bytes_len) };
-    if let Ok(path) = String::from_utf8(path_bytes) {
-        d.dropped_files.paths.push(PathBuf::from(path));
-        d.dropped_files.bytes.push(bytes);
+    // Consume both allocations even if one is invalid, so a malformed
+    // transfer does not leave the second buffer registered indefinitely.
+    let path_bytes = take_transfer_vec_u8(path, path_len);
+    let bytes = take_transfer_vec_u8(bytes, bytes_len);
+    if let (Some(path_bytes), Some(bytes)) = (path_bytes, bytes) {
+        if let Ok(path) = String::from_utf8(path_bytes) {
+            let mut d = crate::native_display().lock().unwrap();
+            d.dropped_files.paths.push(PathBuf::from(path));
+            d.dropped_files.bytes.push(bytes);
+        }
     }
 }

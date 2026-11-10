@@ -28,7 +28,7 @@ jobs:
         with:
           node-version: '24'
       - name: Audit locked npm dependencies
-        run: npm audit --package-lock-only --audit-level=high
+        run: npm audit --package-lock-only --audit-level=moderate
       - name: Check immutable Action references
         run: node scripts/check-actions.mjs
 

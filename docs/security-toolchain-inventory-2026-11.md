@@ -61,8 +61,17 @@ The Playwright package selects browser revisions from its own metadata.
 The required PR lane runs Chromium. Firefox and WebKit use a manual test lane.
 No runtime npm package is bundled into the WASM application.
 
-**A fresh npm advisory report has not yet been recorded.**
-The committed lockfile fixes package resolution but does not prove that every package is secure.
+A security workflow run on `master` found **three moderate npm advisory paths** through `minimatch` 10.2.6: [GHSA-g3hv-75wg-m249](https://github.com/advisories/GHSA-g3hv-75wg-m249).
+The high-severity threshold passed, but that did **not** mean no findings.
+A correction in this PR overrides the development-only `minimatch` dependency to patched version `11.0.1`.
+The one-shot lockfile generation CI verified `npm audit --package-lock-only --audit-level=moderate`, `npm ci`, ESLint and Node tests on the branch.
+Confirm the required PR-head checks and the post-merge advisory run before declaring this correction complete.
+
+The RustSec scan in [run 42799699457](https://github.com/Tigon32/miniquad/actions/runs/42799699457) loaded 1,430 advisories and scanned 24 resolved crates.
+It reported no blocking Rust vulnerabilities but flagged `ttf-parser` 0.20.0 as **unmaintained** under [RUSTSEC-2026-0192](https://rustsec.org/advisories/RUSTSEC-2026-0192).
+The parser is brought in through the `fontdue` development/example dependency.
+The advisory lists no patched release. Replacing that parser requires a separate compatibility review.
+Do not suppress the warning or describe it as a confirmed exploitable vulnerability.
 
 ## External assets and runner inputs
 

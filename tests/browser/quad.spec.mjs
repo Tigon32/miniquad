@@ -49,7 +49,9 @@ test("compiled WASM renders visible pixels through the checked-in JS bridge",asy
   await page.goto("/",{waitUntil:"load"});
   await expect(page.locator("#glcanvas")).toBeVisible();
   try {
-    await page.waitForFunction(()=>window.__miniquadDrawCount>0,null,{timeout:10000});
+    // WebGL1 ANGLE extension functions can bypass WebGL prototype wrappers.
+    // A scheduled WASM frame and actual canvas pixels are the required evidence.
+    await page.waitForFunction(()=>window.__miniquadRAFCount>3,null,{timeout:10000});
   } catch (error) {
     const state=await page.evaluate(()=>({
       drawCalls:window.__miniquadDrawCount,
@@ -63,7 +65,7 @@ test("compiled WASM renders visible pixels through the checked-in JS bridge",asy
       canvasWidth:document.querySelector("#glcanvas")?.width,
       canvasHeight:document.querySelector("#glcanvas")?.height
     }));
-    throw new Error("No WASM draw call. "+JSON.stringify({state,failures,browserMessages,wasmResponses:[...requested],timeout:error.message}));
+    throw new Error("No WASM animation frames. "+JSON.stringify({state,failures,browserMessages,wasmResponses:[...requested],timeout:error.message}));
   }
   await page.waitForTimeout(300);
 

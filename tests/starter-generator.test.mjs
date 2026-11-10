@@ -179,8 +179,22 @@ test("generateProject writes a fresh project with a path dependency, copied asse
     const indexHtml = readFileSync(join(destinationDir, "web", "index.html"), "utf8");
     assert.match(indexHtml, /Demo App/);
     assert.match(indexHtml, /import \{ mount \} from "\.\/miniquad\.mjs"/);
-    assert.match(indexHtml, /app\.setParameters/);
+    assert.match(
+      indexHtml,
+      /import \{ createHostPreferences, parseHostURLState \} from "\.\/host-preferences\.mjs"/
+    );
     assert.match(indexHtml, /app\.supportsParameters/);
+    assert.match(indexHtml, /paused: window\.matchMedia\("\(prefers-reduced-motion: reduce\)"\)\.matches/);
+    assert.match(indexHtml, /prefs\?\.setMotionOverride\("paused"\)/);
+    assert.match(indexHtml, /prefs\?\.setMotionOverride\("running"\)/);
+    assert.match(indexHtml, /prefs\?\.setSpeed/);
+    assert.match(indexHtml, /prefs\?\.refreshPalette/);
+    assert.match(indexHtml, /--miniquad-foreground/);
+    assert.match(indexHtml, /--miniquad-background/);
+    assert.match(indexHtml, /miniquaderror/);
+    assert.match(indexHtml, /window\.addEventListener\("pagehide"/);
+    assert.doesNotMatch(indexHtml, /app\.setParameters/);
+    assert.doesNotMatch(indexHtml, /beforeunload/);
 
     const manifest = JSON.parse(
       readFileSync(join(destinationDir, "web", "MANIFEST.json"), "utf8")

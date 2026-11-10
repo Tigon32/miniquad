@@ -5,12 +5,39 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{{TITLE}}</title>
   <style>
+    /* --miniquad-foreground / --miniquad-background are read by the host
+       preference adapter (createHostPreferences) via getComputedStyle on
+       <html>. Each block below only changes these two custom properties
+       plus the page chrome; the adapter (not this stylesheet) forwards the
+       values on to the running application through setParameters(). */
+    :root {
+      --miniquad-foreground: #ffffff;
+      --miniquad-background: #10101a;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --miniquad-foreground: #10101a;
+        --miniquad-background: #f5f5f5;
+      }
+    }
+    @media (prefers-contrast: more) {
+      :root {
+        --miniquad-foreground: #ffffff;
+        --miniquad-background: #000000;
+      }
+    }
+    @media (forced-colors: active) {
+      :root {
+        --miniquad-foreground: #ffffff;
+        --miniquad-background: #000000;
+      }
+    }
     html, body {
       margin: 0;
       padding: 0;
       font-family: system-ui, sans-serif;
-      background: #10101a;
-      color: #f0f0f5;
+      background: var(--miniquad-background);
+      color: var(--miniquad-foreground);
     }
     main {
       max-width: 720px;
@@ -69,6 +96,7 @@
   </main>
   <script type="module">
     import { mount } from "./miniquad.mjs";
+    import { createHostPreferences, parseHostURLState } from "./host-preferences.mjs";
 
     const statusEl = document.getElementById("status");
     const host = document.getElementById("host");
@@ -85,41 +113,88 @@
       statusEl.dataset.state = state;
     }
 
-    // Converts a "#rrggbb" color input value to [r, g, b, a] floats in
-    // range 0..1, with alpha fixed at 1 (opaque).
-    function hexToRgbaFloats(hex) {
-      const value = hex.replace("#", "");
-      const r = parseInt(value.slice(0, 2), 16) / 255;
-      const g = parseInt(value.slice(2, 4), 16) / 255;
-      const b = parseInt(value.slice(4, 6), 16) / 255;
-      return [r, g, b, 1];
+    // onError for createHostPreferences: an invalid or rejected host value
+    // must stay visible, never fail silently.
+    function showHostPreferenceError(error) {
+      setStatus("Error: " + error.message, "error");
     }
 
-    function sendParameters(app) {
-      if (!app.supportsParameters) {
-        return;
+    // Mirrors the real app.state ("running" / "paused") into the status
+    // region. Called once after ready, and again on every adapter
+    // notification (reduced-motion changes, overrides, palette refreshes).
+    function syncStatusFromAppState() {
+      if (app.state === "running") {
+        setStatus("Running", "running");
+      } else if (app.state === "paused") {
+        setStatus("Paused", "paused");
       }
-      app.setParameters({
-        speed: Number(speedInput.value),
-        foreground: hexToRgbaFloats(foregroundInput.value),
-        background: hexToRgbaFloats(backgroundInput.value),
-      });
     }
 
     const app = mount({
       container: host,
       wasmURL: new URL("./app.wasm", import.meta.url),
       title: "{{TITLE}}",
+      paused: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
     });
+
+    let prefs = null;
+    const extraPaletteListeners = [];
 
     app.ready
       .then(() => {
-        setStatus("Running", "running");
         pauseBtn.disabled = false;
         resumeBtn.disabled = false;
         focusBtn.disabled = false;
         if (app.supportsParameters) {
           parametersFieldset.disabled = false;
+        }
+
+        // A lost WebGL context is reported out-of-band on the mount
+        // handle's frame, not through the ready/rejected promise.
+        app.frame.addEventListener("miniquaderror", (event) => {
+          showHostPreferenceError(event.detail);
+        });
+
+        prefs = createHostPreferences({
+          element: document.documentElement,
+          application: app,
+          onError: showHostPreferenceError,
+        });
+        prefs.subscribe(syncStatusFromAppState);
+        syncStatusFromAppState();
+
+        // The adapter only re-reads the --miniquad-* palette on its own
+        // when prefers-color-scheme changes. prefers-contrast and
+        // forced-colors also recolor this page (see the <style> above), so
+        // this starter asks the adapter to refresh explicitly whenever one
+        // of those two media features changes.
+        for (const condition of [
+          "(prefers-contrast: more)",
+          "(prefers-contrast: less)",
+          "(prefers-contrast: custom)",
+          "(forced-colors: active)",
+        ]) {
+          const list = window.matchMedia(condition);
+          const refresh = () => prefs.refreshPalette();
+          if (typeof list.addEventListener === "function") {
+            list.addEventListener("change", refresh);
+            extraPaletteListeners.push(() => list.removeEventListener("change", refresh));
+          } else if (typeof list.addListener === "function") {
+            // Safari < 14 fallback.
+            list.addListener(refresh);
+            extraPaletteListeners.push(() => list.removeListener(refresh));
+          }
+        }
+
+        // This starter only honors the "speed" host URL state key. The
+        // adapter also recognizes scene/look/view/resolution for richer
+        // hosts, but this starter has no such scenes or views, so those
+        // keys (and their validation errors) are intentionally ignored
+        // here rather than implied to exist.
+        const { values } = parseHostURLState(window.location.search);
+        if (values.speed !== undefined) {
+          speedInput.value = String(values.speed);
+          prefs.setSpeed(values.speed);
         }
       })
       .catch((error) => {
@@ -127,21 +202,33 @@
       });
 
     pauseBtn.addEventListener("click", () => {
-      app.pause();
-      setStatus("Paused", "paused");
+      prefs?.setMotionOverride("paused");
     });
     resumeBtn.addEventListener("click", () => {
-      app.resume();
-      setStatus("Running", "running");
+      prefs?.setMotionOverride("running");
     });
     focusBtn.addEventListener("click", () => {
       app.focus();
     });
-    for (const input of [speedInput, foregroundInput, backgroundInput]) {
-      input.addEventListener("input", () => sendParameters(app));
+
+    speedInput.addEventListener("input", () => {
+      prefs?.setSpeed(Number(speedInput.value));
+    });
+    for (const [input, property] of [
+      [foregroundInput, "--miniquad-foreground"],
+      [backgroundInput, "--miniquad-background"],
+    ]) {
+      input.addEventListener("input", () => {
+        document.documentElement.style.setProperty(property, input.value);
+        prefs?.refreshPalette();
+      });
     }
 
-    window.addEventListener("beforeunload", () => {
+    window.addEventListener("pagehide", () => {
+      for (const removeListener of extraPaletteListeners.splice(0)) {
+        removeListener();
+      }
+      prefs?.dispose();
       app.dispose();
     });
   </script>

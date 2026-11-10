@@ -27,7 +27,9 @@ on, the Miniquad repository at run time. The generated project has:
   engine.
 - `web/index.html`: a semantic host page with a status region, an
   embedded host `<div>`, and pause/resume/focus controls, plus
-  animation-speed and color controls wired to `setParameters`.
+  animation-speed and color controls. The controls call the host
+  preference adapter (`createHostPreferences`, see below), not
+  `setParameters` directly.
 - `web/gl.js`, `web/miniquad.mjs`, `web/runtime.html`,
   `web/runtime.mjs`, `web/host-preferences.mjs`: exact copies of the
   browser bridge and optional embedding module, taken from one
@@ -135,3 +137,37 @@ A host page calls these through the `setParameters` function on the
 module `miniquad.mjs` (not owned by this document; see MADR 0009)
 performs the float-range validation and RGBA8 packing before calling
 these exports.
+
+## Host preference adapter wiring
+
+`web/index.html` does not call `setParameters` directly. It calls
+`createHostPreferences` (from `web/host-preferences.mjs`, not owned by
+this document) once, right after `app.ready` resolves, and routes its
+own controls through the returned adapter instead:
+
+- Mounts with `paused: window.matchMedia("(prefers-reduced-motion:
+  reduce)").matches`, so a reduced-motion host never auto-starts the
+  animation.
+- The Pause/Resume buttons call `adapter.setMotionOverride("paused")`
+  / `adapter.setMotionOverride("running")`; they never call
+  `app.pause()` / `app.resume()` directly.
+- The speed slider calls `adapter.setSpeed(value)`.
+- The foreground/background color inputs set the
+  `--miniquad-foreground` / `--miniquad-background` CSS custom
+  properties on `<html>`, then call `adapter.refreshPalette()`. The
+  stylesheet also sets those two properties under
+  `prefers-color-scheme: light`, `prefers-contrast: more`, and
+  `forced-colors: active`; because the adapter only re-reads the
+  palette on its own for `prefers-color-scheme`, this page adds its
+  own `prefers-contrast` and `forced-colors` listeners that call
+  `adapter.refreshPalette()` so those two also take visible effect.
+- `app.frame`'s `"miniquaderror"` event (for example a lost WebGL
+  context) and `adapter`'s `onError` callback both route to the same
+  visible status-region error display; nothing fails silently.
+- Only the `speed` key from `parseHostURLState(location.search)` is
+  applied (via `adapter.setSpeed`). The adapter also recognizes
+  `scene`, `look`, `view`, and `resolution` for richer hosts; this
+  starter has no such scenes or views, so it does not read, validate,
+  or expose those keys.
+- `pagehide` disposes the adapter, then the application, in that
+  order.

@@ -24,6 +24,12 @@ when the architecture changes.
 
 ## Source and qualification limits
 
+The optional [embedding module](../browser-embedding.md) creates a runtime frame
+inside a host container. The host owns semantic HTML controls. The runtime frame
+owns one classic bridge, canvas, WASM instance, and GPU context.
+See [MADR 0009](../adr/0009-optional-browser-adoption-layer.md) for the proposed
+resource boundary. This does not change the core ABI or standalone startup.
+
 The browser demo is [examples/index.html](../../examples/index.html). The
 compiled browser acceptance fixtures and three-engine checks cover the
 ordinary frame, input, offscreen rendering and failure paths. They do not

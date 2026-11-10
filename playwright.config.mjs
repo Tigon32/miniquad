@@ -29,6 +29,9 @@ export default defineConfig({
         }
       } : {}),
       launchOptions:name==="chromium"?{
+        ...(process.env.MINIQUAD_CHROMIUM_EXECUTABLE ? {
+          executablePath: process.env.MINIQUAD_CHROMIUM_EXECUTABLE
+        } : {}),
         args:["--enable-webgl","--enable-unsafe-swiftshader","--use-gl=angle","--use-angle=swiftshader"]
       }:{}
     }

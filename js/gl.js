@@ -125,7 +125,7 @@ function init_webgl(version) {
     });
 }
 
-canvas.focus();
+if (globalThis.miniquad_auto_focus !== false) canvas.focus();
 
 canvas.requestPointerLock = canvas.requestPointerLock ||
     canvas.mozRequestPointerLock ||
@@ -1563,6 +1563,7 @@ var importObject = {
 
             let lastFocus = document.hasFocus();
             var checkFocus = function () {
+                if (globalThis.miniquad_disposed === true) return;
                 // The element doesn't loose focus when the user switches tabs.
                 // However, the document becomes invisible
                 let hasFocus = document.hasFocus() && document.visibilityState == "visible";
@@ -1719,6 +1720,9 @@ function validate_wasm_imports(module) {
 }
 
 function start_wasm(instance) {
+    if (globalThis.miniquad_disposed === true) {
+        throw new Error("Miniquad runtime was disposed during startup");
+    }
     const exports = instance.exports;
     if (!exports || typeof exports.crate_version !== "function" ||
         typeof exports.main !== "function" || !exports.memory ||

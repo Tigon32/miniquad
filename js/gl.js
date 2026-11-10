@@ -92,7 +92,7 @@ function init_webgl(version) {
 
         // https://developer.mozilla.org/en-US/docs/Web/API/WEBGL_depth_texture
         if (gl.getExtension('WEBGL_depth_texture') == null) {
-            alert("Cant initialize WEBGL_depth_texture extension");
+            console.warn("WebGL1 depth textures unavailable; use WebGL2 for depth render targets");
         }
     } else if (version == 2) {
         gl = canvas.getContext("webgl2");
@@ -1374,7 +1374,7 @@ var importObject = {
                 e.stopPropagation();
                 e.preventDefault();
                 var clipboardData = e.clipboardData || window.clipboardData;
-                var pastedData = clipboardData.getData('Text');
+                var pastedData = clipboardData.getData('text/plain');
 
                 if (typeof pastedData !== "string" || pastedData.length === 0) {
                     return;

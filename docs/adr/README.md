@@ -13,6 +13,7 @@ The documents are **STE-aligned drafts**. We have not completed a full ASD-STE10
 * [0004 — Keep shared terminology in a separate repository](0004-reusable-concept-registry.md) — **Proposed**
 * [0005 — Use low-cost CI and risk-based test lanes](0005-low-cost-ci-and-risk-based-test-lanes.md) — **Accepted**
 * [0006 — Use a distinct project identity and retain Miniquad credits](0006-distinct-project-identity-and-upstream-attribution.md) — **Proposed**
+* [0007 — Use supported and secure development tools](0007-use-supported-and-secure-toolchains.md) — **Accepted**
 
 ## Write a new decision
 

@@ -17,6 +17,7 @@ concurrency:
 jobs:
   owner:
     if: >-
+      vars.OWNER_AUTOMERGE_ENABLED == 'true' &&
       github.repository == 'Tigon32/miniquad' &&
       github.event.sender.login == 'Tigon32' &&
       github.event.pull_request.user.login == 'Tigon32' &&

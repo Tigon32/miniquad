@@ -9,7 +9,7 @@ The documents are **STE-aligned drafts**. We have not completed a full ASD-STE10
 
 * [0001 — Use MADR and one technical glossary](0001-use-madr-and-ubiquitous-language.md) — **Proposed**
 * [0002 — Use risk-based tests and selective TDD](0002-risk-based-verification-and-selective-tdd.md) — **Proposed**
-* [0003 — Use ASD-STE100 for project communication](0003-use-asd-ste100-for-communication.md) — **Proposed**
+* [0003 — Use ASD-STE100 for project communication](0003-use-asd-ste100-for-communication.md) — **Accepted**
 
 ## Write a new decision
 

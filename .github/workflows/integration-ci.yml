@@ -1,0 +1,32 @@
+name: Miniquad integration CI
+
+on:
+  push:
+    branches:
+      - 'integration/**'
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  rust-wasm:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install stable Rust and WASM target
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add wasm32-unknown-unknown
+      - name: Rust library tests
+        run: cargo test --lib --locked
+      - name: WASM library check
+        run: cargo check --locked --target wasm32-unknown-unknown --lib
+      - name: Build WASM example
+        run: cargo build --release --locked --target wasm32-unknown-unknown --example quad
+      - name: JavaScript syntax check
+        run: node --check js/gl.js

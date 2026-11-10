@@ -24,14 +24,39 @@ test("record browser startup and frame interval baselines without enforcing unca
       animationFrames:[],
       cpuFrameMs:[]
     };
-    for(const klass of [window.WebGLRenderingContext,window.WebGL2RenderingContext]) {
-      if(!klass?.prototype?.drawElements)continue;
-      const original=klass.prototype.drawElements;
-      klass.prototype.drawElements=function(...args){
-        if(window.__browserSLI.firstDrawMs===null){
-          window.__browserSLI.firstDrawMs=performance.now();
-        }
+    // Observe the actual GL submission path, not just drawElements.
+    // WebGL1 may use ANGLE_instanced_arrays for indexed and array draws.
+    function recordDraw() {
+      if(window.__browserSLI.firstDrawMs===null) {
+        window.__browserSLI.firstDrawMs=performance.now();
+      }
+    }
+    function wrapDraw(target,method) {
+      if(typeof target?.[method]!=="function")return;
+      const original=target[method];
+      target[method]=function(...args){
+        recordDraw();
         return original.apply(this,args);
+      };
+    }
+    for(const klass of [window.WebGLRenderingContext,window.WebGL2RenderingContext]) {
+      if(!klass?.prototype)continue;
+      for(const method of ["drawElements","drawArrays","drawElementsInstanced","drawArraysInstanced"]) {
+        wrapDraw(klass.prototype,method);
+      }
+      const originalGetExtension=klass.prototype.getExtension;
+      if(typeof originalGetExtension!=="function")continue;
+      const instrumentedExtensions=new WeakSet();
+      klass.prototype.getExtension=function(...args){
+        const extension=originalGetExtension.apply(this,args);
+        if(extension && String(args[0]).toLowerCase()==="angle_instanced_arrays" &&
+           !instrumentedExtensions.has(extension)){
+          for(const method of ["drawElementsInstancedANGLE","drawArraysInstancedANGLE"]) {
+            wrapDraw(extension,method);
+          }
+          instrumentedExtensions.add(extension);
+        }
+        return extension;
       };
     }
     const raf=window.requestAnimationFrame;

@@ -19,6 +19,10 @@ test("focused canvas sends a key release when focus is lost", async ({ page }) =
   // Observe calls while forwarding them to the actual compiled WASM exports.
   await page.evaluate(() => {
     window.__keyTransitions = [];
+    window.__domKeyTransitions = [];
+    document.querySelector("#glcanvas").addEventListener("keydown", event => {
+      window.__domKeyTransitions.push(event.code);
+    }, true);
     const original = wasm_exports;
     wasm_exports = new Proxy(original, {
       get(target, name) {
@@ -35,9 +39,17 @@ test("focused canvas sends a key release when focus is lost", async ({ page }) =
   });
 
   const canvas = page.locator("#glcanvas");
-  await canvas.focus();
+  await canvas.click();
+  await expect(canvas).toBeFocused();
   await page.keyboard.down("a");
-  await expect.poll(() => page.evaluate(() => window.__keyTransitions)).toContainEqual({
+  await page.waitForTimeout(100);
+  const observed = await page.evaluate(() => ({
+    focused: document.activeElement?.id,
+    dom: window.__domKeyTransitions,
+    wasm: window.__keyTransitions,
+    handler: typeof document.querySelector("#glcanvas")?.onkeydown
+  }));
+  expect(observed.wasm, JSON.stringify(observed)).toContainEqual({
     type: "key_down", key: 65
   });
 

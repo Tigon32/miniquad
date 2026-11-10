@@ -22,7 +22,7 @@ function fixture() {
     return {
         memory,
         context,
-        setClipboard: (ptr, len) => context.importObject.env.sapp_set_clipboard(ptr, len),
+        setClipboard: (ptr, len) => vm.runInContext('importObject.env.sapp_set_clipboard', context)(ptr, len),
         clipboard: () => vm.runInContext("clipboard", context)
     };
 }

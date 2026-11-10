@@ -42,6 +42,22 @@ fn read_bounded_drop_bytes<R: Read>(reader: R, limit: usize) -> std::io::Result<
     }
 }
 
+// Returns None for invalid/changed lengths. The HDROP owner remains responsible
+// for exactly one DragFinish call, even when a path cannot be decoded.
+unsafe fn query_drop_path(hdrop: HDROP, index: u32) -> Option<PathBuf> {
+    let path_len = DragQueryFileW(hdrop, index, std::ptr::null_mut(), 0) as usize;
+    if path_len == 0 || path_len > MAX_DROP_PATH_UNITS {
+        return None;
+    }
+    let mut wide_path = vec![0u16; path_len + 1];
+    let copied = DragQueryFileW(hdrop, index, wide_path.as_mut_ptr(), wide_path.len() as u32)
+        as usize;
+    if copied != path_len {
+        return None;
+    }
+    Some(PathBuf::from(OsString::from_wide(&wide_path[..copied])))
+}
+
 #[cfg(test)]
 mod file_drop_tests {
     use super::read_bounded_drop_bytes;
@@ -799,25 +815,10 @@ unsafe extern "system" fn win32_wndproc(
             let mut total = 0usize;
 
             for i in 0..num_drops.min(MAX_DROPPED_FILES) {
-                // Query the full Windows path length before allocating a buffer.
-                let path_len = DragQueryFileW(hdrop, i, std::ptr::null_mut(), 0) as usize;
-                if path_len == 0 || path_len > MAX_DROP_PATH_UNITS {
-                    eprintln!("Ignore dropped file with invalid path length");
+                let Some(path) = query_drop_path(hdrop, i) else {
+                    eprintln!("Ignore dropped file with invalid or changed path length");
                     continue;
-                }
-
-                let mut wide_path = vec![0u16; path_len + 1];
-                let copied = DragQueryFileW(
-                    hdrop,
-                    i,
-                    wide_path.as_mut_ptr(),
-                    wide_path.len() as u32,
-                ) as usize;
-                if copied != path_len {
-                    eprintln!("Ignore dropped file with changed path length");
-                    continue;
-                }
-                let path = PathBuf::from(OsString::from_wide(&wide_path[..copied]));
+                };
                 let max_bytes = MAX_DROPPED_FILE_BYTES
                     .min(MAX_DROPPED_TOTAL_BYTES.saturating_sub(total));
                 if max_bytes == 0 {

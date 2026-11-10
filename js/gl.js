@@ -466,11 +466,11 @@ function into_sapp_mousebutton(btn) {
 function into_sapp_keycode(key_code) {
     switch (key_code) {
         case "Space": return 32;
-        case "Quote": return 222;
+        case "Quote": return 39;
         case "Comma": return 44;
         case "Minus": return 45;
         case "Period": return 46;
-        case "Slash": return 189;
+        case "Slash": return 47;
         case "Digit0": return 48;
         case "Digit1": return 49;
         case "Digit2": return 50;
@@ -1355,10 +1355,10 @@ var importObject = {
                 var pastedData = clipboardData.getData('Text');
 
                 if (pastedData != undefined && pastedData != null && pastedData.length != 0) {
-                    var len = (new TextEncoder().encode(pastedData)).length;
-                    var msg = wasm_exports.allocate_vec_u8(len);
-                    var heap = new Uint8Array(wasm_memory.buffer, msg, len);
-                    stringToUTF8(pastedData, heap, 0, len);
+                    const utf8 = new TextEncoder().encode(pastedData);
+                    const len = utf8.byteLength;
+                    const msg = wasm_exports.allocate_vec_u8(len);
+                    new Uint8Array(wasm_memory.buffer, msg, len).set(utf8);
                     wasm_exports.on_clipboard_paste(msg, len);
                 }
             });

@@ -211,17 +211,30 @@
       app.focus();
     });
 
-    speedInput.addEventListener("input", () => {
+    function applySpeedInput() {
       prefs?.setSpeed(Number(speedInput.value));
-    });
+    }
+    // Native range pickers reliably fire "input" while dragging, so this
+    // alone would be enough for a mouse/touch drag. "change" is bound too
+    // because some input methods (keyboard step, programmatic/automated
+    // value changes) only fire "change", never "input".
+    speedInput.addEventListener("input", applySpeedInput);
+    speedInput.addEventListener("change", applySpeedInput);
+
     for (const [input, property] of [
       [foregroundInput, "--miniquad-foreground"],
       [backgroundInput, "--miniquad-background"],
     ]) {
-      input.addEventListener("input", () => {
+      const applyColorInput = () => {
         document.documentElement.style.setProperty(property, input.value);
         prefs?.refreshPalette();
-      });
+      };
+      // Native <input type="color"> pickers vary: most browsers fire both
+      // "input" (live, while the picker is open) and "change" (on commit),
+      // but some automation drivers and some browsers only dispatch one of
+      // the two. Both are bound so a value change is never missed.
+      input.addEventListener("input", applyColorInput);
+      input.addEventListener("change", applyColorInput);
     }
 
     window.addEventListener("pagehide", () => {

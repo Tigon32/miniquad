@@ -151,12 +151,16 @@ own controls through the returned adapter instead:
 - The Pause/Resume buttons call `adapter.setMotionOverride("paused")`
   / `adapter.setMotionOverride("running")`; they never call
   `app.pause()` / `app.resume()` directly.
-- The speed slider calls `adapter.setSpeed(value)`.
+- The speed slider calls `adapter.setSpeed(value)` on both `"input"`
+  and `"change"`.
 - The foreground/background color inputs set the
   `--miniquad-foreground` / `--miniquad-background` CSS custom
-  properties on `<html>`, then call `adapter.refreshPalette()`. The
-  stylesheet also sets those two properties under
-  `prefers-color-scheme: light`, `prefers-contrast: more`, and
+  properties on `<html>`, then call `adapter.refreshPalette()`, also
+  on both `"input"` and `"change"`. Both events are bound because
+  native color pickers and automation drivers are inconsistent: some
+  only fire `"input"` while the picker is open, some only fire
+  `"change"` on commit. The stylesheet also sets those two properties
+  under `prefers-color-scheme: light`, `prefers-contrast: more`, and
   `forced-colors: active`; because the adapter only re-reads the
   palette on its own for `prefers-color-scheme`, this page adds its
   own `prefers-contrast` and `forced-colors` listeners that call

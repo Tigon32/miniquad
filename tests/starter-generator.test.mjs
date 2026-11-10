@@ -193,6 +193,13 @@ test("generateProject writes a fresh project with a path dependency, copied asse
     assert.match(indexHtml, /--miniquad-background/);
     assert.match(indexHtml, /miniquaderror/);
     assert.match(indexHtml, /window\.addEventListener\("pagehide"/);
+    // Color (and speed) controls must react to both "input" (live drag) and
+    // "change" (commit) events: some browsers/automation drivers only fire
+    // one of the two for a programmatic or picker-driven value change.
+    assert.match(indexHtml, /speedInput\.addEventListener\("input", applySpeedInput\)/);
+    assert.match(indexHtml, /speedInput\.addEventListener\("change", applySpeedInput\)/);
+    assert.match(indexHtml, /input\.addEventListener\("input", applyColorInput\)/);
+    assert.match(indexHtml, /input\.addEventListener\("change", applyColorInput\)/);
     assert.doesNotMatch(indexHtml, /app\.setParameters/);
     assert.doesNotMatch(indexHtml, /beforeunload/);
 

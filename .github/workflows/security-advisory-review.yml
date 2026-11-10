@@ -6,6 +6,7 @@ on:
     paths:
       - Cargo.toml
       - deny.toml
+      - examples/ime_demo/Cargo.toml
       - examples/ime_demo/Cargo.lock
       - package-lock.json
       - .github/workflows/security-advisory-review.yml
@@ -14,6 +15,7 @@ on:
     paths:
       - Cargo.toml
       - deny.toml
+      - examples/ime_demo/Cargo.toml
       - examples/ime_demo/Cargo.lock
       - .github/workflows/security-advisory-review.yml
   workflow_dispatch:

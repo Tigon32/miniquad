@@ -78,7 +78,8 @@ jobs:
         run: |
           node scripts/check-docs.mjs
           node scripts/check-diagrams.mjs
-          node --test tests/docs-check.test.mjs tests/diagrams.test.mjs tests/owner-automerge.test.mjs
+          node scripts/check-abi-inventory.mjs
+          node --test tests/docs-check.test.mjs tests/diagrams.test.mjs tests/abi-inventory.test.mjs tests/owner-automerge.test.mjs
       - name: JavaScript syntax check
         run: node --check js/gl.js
       - name: Browser bridge regression tests

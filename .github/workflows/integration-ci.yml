@@ -25,23 +25,31 @@ jobs:
           rustup toolchain install stable --profile minimal
           rustup default stable
           rustup target add wasm32-unknown-unknown
-      - name: Restore Cargo packages and build outputs
-        uses: actions/cache@v4
+      - name: Restore Cargo package cache
+        id: cargo-cache
+        uses: actions/cache/restore@v4
         with:
           path: |
             ~/.cargo/registry
             ~/.cargo/git
-            target
-          key: cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.toml') }}-${{ github.event.pull_request.number || github.run_id }}
+          key: cargo-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.toml') }}-${{ github.event.pull_request.number || github.run_id }}
           restore-keys: |
-            cargo-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.toml') }}-
-            cargo-v1-${{ runner.os }}-${{ runner.arch }}-
+            cargo-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.toml') }}-
+            cargo-v2-${{ runner.os }}-${{ runner.arch }}-
       - name: Rust library tests
         run: cargo test --lib
       - name: WASM library check
         run: cargo check --target wasm32-unknown-unknown --lib
       - name: Build WASM example
         run: cargo build --release --target wasm32-unknown-unknown --example quad
+      - name: Save Cargo package cache before browser checks
+        if: steps.cargo-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.toml') }}-${{ github.event.pull_request.number || github.run_id }}
       - name: Install Node and restore npm download cache
         uses: actions/setup-node@v4
         with:
@@ -56,10 +64,11 @@ jobs:
       - name: ESLint browser bridge
         run: npm run lint:js
       - name: Restore browser binaries for the selected lane
-        uses: actions/cache@v4
+        id: playwright-cache
+        uses: actions/cache/restore@v4
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}-${{ github.event_name == 'workflow_dispatch' && 'all' || 'chromium' }}
+          key: playwright-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}-${{ github.event_name == 'workflow_dispatch' && 'all' || 'chromium' }}
       - name: Install browser for this test lane
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
@@ -67,6 +76,12 @@ jobs:
           else
             npx playwright install --with-deps chromium
           fi
+      - name: Save browser downloads before running tests
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}-${{ github.event_name == 'workflow_dispatch' && 'all' || 'chromium' }}
       - name: Run real browser WASM smoke tests
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then

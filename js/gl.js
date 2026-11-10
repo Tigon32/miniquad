@@ -1373,10 +1373,13 @@ var importObject = {
                 wasm_exports.on_files_dropped_start();
 
                 for (let file of e.dataTransfer.files) {
-                    const nameLen = file.name.length;
+                    // JavaScript string.length counts UTF-16 code units, not UTF-8 bytes.
+                    // Rust reconstructs this allocation as a UTF-8 String using nameLen.
+                    const nameBytes = new TextEncoder().encode(file.name);
+                    const nameLen = nameBytes.byteLength;
                     const nameVec = wasm_exports.allocate_vec_u8(nameLen);
                     const nameHeap = new Uint8Array(wasm_memory.buffer, nameVec, nameLen);
-                    stringToUTF8(file.name, nameHeap, 0, nameLen);
+                    nameHeap.set(nameBytes);
 
                     const fileBuf = await file.arrayBuffer();
                     const fileLen = fileBuf.byteLength;

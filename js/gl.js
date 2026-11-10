@@ -1609,6 +1609,9 @@ function start_wasm(instance) {
 }
 
 function load(wasm_path) {
+    if (!canvas) {
+        throw new Error("Miniquad requires a #glcanvas element before loading WASM");
+    }
     register_plugins(plugins);
 
     const response = fetch(wasm_path).then(function (result) {

@@ -66,16 +66,24 @@ Do not treat it as a passing test.
 
 ### CI resource controls
 
-1. Use the same checked-out source and compiled WASM artifact for browser tests in one job.
-2. Keep the test dependencies in the development lockfile.
-3. Use a supported, fixed runner image and browser test version.
-4. Do not install unused browsers in the normal PR lane.
-5. Retain failure traces for a short fixed period.
-6. Use `contents: read` for ordinary test workflows.
-7. Do not give a PR test job a write token or repository secrets.
-8. Avoid an extra full test matrix for documentation-only changes.
-9. Before you add a CI step, record the failure that the step must detect.
-10. Measure CI time and data use. Do not assume a saving without a measurement.
+1. Use one checked-out source and one compiled WASM artifact for the browser tests in a job.
+2. Keep development dependencies in a committed lockfile. Install npm packages with `npm ci`.
+3. Use caches for Cargo packages/build results, npm downloads, and Playwright browser binaries. Key the caches by OS, architecture, and relevant dependency files.
+4. Do not share a mutable cache without a versioned key. Do not download an unreviewed executable from a cache.
+5. Use GitHub cache access rules. Do not store secrets, private data, or credentials in a cache. A cache is not a trusted software source.
+6. Separate browser cache keys for the Chromium PR lane and the full browser test lane.
+7. Use a fixed runner image and a fixed browser test version. Install only the necessary browsers.
+8. Set `concurrency` for each workflow. Use the PR number to group PR runs. When a new run starts for that PR, cancel its old run.
+9. Do not cancel an unrelated PR run. Keep manual release checks independent from normal PR cancellation.
+10. Set a job time limit. Limit parallel jobs in the manual platform matrix.
+11. Do not use `paths` filters to bypass a required PR check. A required check must always report its result.
+12. Retain failure traces for a short fixed period. Upload only the files necessary to investigate a fault.
+13. Use `contents: read` for tests. Do not give secrets or write tokens to code from an untrusted PR.
+14. Review the cache hit rate, storage cost, and CI time after the first stable runs.
+15. Do not hide a test failure, disable a required test, or claim a performance gain without evidence.
+
+GitHub can schedule jobs in an unexpected order. The concurrency group cancels a previous run for the same PR when another run starts. It is not a proof that the newer commit always completes first.
+Required checks and the protected branch rules must still apply to the exact PR head.
 
 ### Review controls
 

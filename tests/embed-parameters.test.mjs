@@ -14,7 +14,8 @@ test("parameter contract rejects unbounded, malformed and unsupported input befo
     for (const value of [
         null, [], "speed", { speed: NaN }, { speed: Infinity }, { speed: -1 }, { speed: 3 },
         { foreground: [0, 0, 1] }, { background: [0, 0, 0, 2] },
-        { foreground: [0, NaN, 0, 1] }, { resolution: 32 }, { speed: "1" }
+        { foreground: [0, NaN, 0, 1] }, { foreground: [0, , 0, 1] },
+        { resolution: 32 }, { speed: "1" }
     ]) {
         assert.throws(() => validateParameters(value), error => error.code === "invalid-parameters");
     }

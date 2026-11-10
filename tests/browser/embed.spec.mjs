@@ -82,9 +82,43 @@ test("startup disposal rejects promptly and removes the isolated runtime", async
             return { code: error.code, state: app.state, frames: document.querySelectorAll("iframe").length };
         }
     });
+
     expect(result).toEqual({ code: "disposed", state: "disposed", frames: 0 });
 });
 
+test("disposing during an actual WASM fetch cancels startup", async ({ page }) => {
+        let received;
+        const requested = new Promise(resolve => { received = resolve; });
+        await page.route("**/quad.wasm", async route => {
+            received();
+            await new Promise(resolve => setTimeout(resolve, 200));
+            await route.abort();
+        });
+        await page.evaluate(async () => {
+            const { mount } = await import("/js/miniquad.mjs");
+            window.app = mount({ container: document.querySelector("#scene"), wasmURL: "/quad.wasm" });
+            window.startupResult = app.ready.then(() => "unexpected success", error => error.code);
+        });
+        await requested;
+        await page.evaluate(() => app.dispose());
+        expect(await page.evaluate(() => startupResult)).toBe("disposed");
+        await expect(page.locator("#scene iframe")).toHaveCount(0);
+    });
+
+    test("uncaught scene errors stop frames and reach the host", async ({ page }) => {
+        await mountScene(page);
+        const code = await page.evaluate(() => new Promise(resolve => {
+            app.frame.addEventListener("miniquaderror", event => resolve(event.detail.code));
+            const fail = app.frame.contentWindow.Function("throw new Error('Scene error receipt')");
+            app.frame.contentWindow.setTimeout(fail, 0);
+        }));
+        expect(code).toBe("runtime-error");
+        expect(await page.evaluate(() => app.state)).toBe("failed");
+        const frames = await page.evaluate(() => app.frame.contentWindow.miniquadRuntime.frames);
+        await page.waitForTimeout(80);
+        expect(await page.evaluate(() => app.frame.contentWindow.miniquadRuntime.frames)).toBe(frames);
+        await page.evaluate(() => app.dispose());
+    });
 test("missing WASM, unsupported parameters and cross-origin URLs fail visibly", async ({ page }) => {
     await page.route("**/missing.wasm", route => route.fulfill({ status: 404, body: "missing" }));
     expect(await page.evaluate(async () => {

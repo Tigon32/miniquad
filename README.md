@@ -18,6 +18,41 @@ This fork uses [MADR 0003](docs/adr/0003-use-asd-ste100-for-communication.md) as
 New project instructions and documents must use short, clear sentences and the technical terms in the [glossary](docs/glossary.md).
 These documents are **STE-aligned drafts**. We have not done a complete ASD-STE100 dictionary check.
 
+## Start a browser project
+
+Use the tested starter instead of assembling the browser files by hand.
+Install Node.js 24 and a Rust toolchain with `rustup` first.
+From this checkout, run:
+
+```sh
+rustup target add wasm32-unknown-unknown
+node scripts/create-browser-project.mjs ../my-graphics-app --source path --miniquad-path "$PWD" --name my-graphics-app
+cd ../my-graphics-app
+node scripts/build.mjs
+node scripts/serve.mjs --port 8080
+```
+
+Open the address printed by the server.
+The generated project has animation, HTML controls, visible errors, and a matching
+JS/WASM pair. Deploy its `web/` directory to a static HTTP server.
+End users do not need Rust or Node.js.
+This local setup depends on this checkout. See the [starter guide](docs/browser-starter.md)
+for an immutable Git revision and deployment under a subpath.
+
+| Need | Use |
+| --- | --- |
+| Direct GPU drawing, buffers, shaders, and WASM | Miniquad |
+| Basic paths in an existing JavaScript application | Consider Canvas 2D before a WASM rewrite |
+| Reusable lines, curves, circles, and batches | Optional [drawing companion](docs/drawing-companion.md) |
+| Embed a scene with mount, pause, and disposal | Optional [browser module](docs/browser-embedding.md) |
+| HTML controls, colors, and motion preferences | [Host preference adapter](docs/host-preferences.md) |
+
+Miniquad does not supply a game engine or a voxel world.
+The optional voxel work remains in [#29](https://github.com/Tigon32/miniquad/issues/29).
+Design-process tools can check a host page, but they do not supply a renderer.
+No design-tool runtime or `Tokens.swift` file is required.
+Fork release qualification remains separate under [#19](https://github.com/Tigon32/miniquad/issues/19).
+
 The platform list below comes from the upstream project. It is **not** a record of platform tests on this fork.
 
 ## Platform targets
@@ -98,8 +133,8 @@ Use the JavaScript bridge from the same Miniquad revision as the WASM file.
 
 <body>
     <canvas id="glcanvas" tabindex='1'></canvas>
-    <!-- Minified and statically hosted version of https://github.com/not-fl3/miniquad/blob/master/native/sapp-wasm/js/gl.js -->
-    <script src="https://not-fl3.github.io/miniquad-samples/gl.js"></script>
+    <!-- Copy js/gl.js from the same Miniquad revision as the Rust dependency. -->
+    <script src="./gl.js"></script>
     <script>load("quad.wasm");</script> <!-- Your compiled wasm file -->
 </body>
 

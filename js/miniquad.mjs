@@ -19,7 +19,7 @@ export function validateParameters(values) {
             }
         } else if (key === "foreground" || key === "background") {
             if (!Array.isArray(value) || value.length !== 4 ||
-                !value.every(channel => Number.isFinite(channel) && channel >= 0 && channel <= 1)) {
+                !Array.from(value).every(channel => Number.isFinite(channel) && channel >= 0 && channel <= 1)) {
                 throw new MiniquadError("invalid-parameters", key + " must contain four RGBA channels between 0 and 1");
             }
         } else {
@@ -29,9 +29,9 @@ export function validateParameters(values) {
     return entries;
 }
 
-function sameOriginURL(value, base) {
+function sameOriginURL(value, base, origin) {
     const url = new URL(value, base);
-    if (url.origin !== new URL(base).origin || !["http:", "https:"].includes(url.protocol)) {
+    if (url.origin !== origin || !["http:", "https:"].includes(url.protocol)) {
         throw new MiniquadError("cross-origin", "Runtime and WASM URLs must use the host origin");
     }
     return url.href;
@@ -48,8 +48,9 @@ export function mount({
         throw new MiniquadError("invalid-options", "Supply a WASM URL, a short title, and a boolean paused option");
     }
     const document = container.ownerDocument;
-    const wasm = sameOriginURL(wasmURL, document.baseURI);
-    const runtime = sameOriginURL(runtimeURL, document.baseURI);
+    const origin = document.defaultView.location.origin;
+    const wasm = sameOriginURL(wasmURL, document.baseURI, origin);
+    const runtime = sameOriginURL(runtimeURL, document.baseURI, origin);
     let frame = document.createElement("iframe");
     frame.title = title;
     frame.style.cssText = "display:block;width:100%;height:100%;border:0";
@@ -57,6 +58,7 @@ export function mount({
     let state = "starting";
     let instance = null;
     let contextCanvas = null;
+    let runtimeWindow = null;
     let settleReady;
     let rejectReady;
     let settled = false;
@@ -79,6 +81,9 @@ export function mount({
         frame?.removeEventListener("load", start);
         frame?.removeEventListener("error", frameError);
         contextCanvas?.removeEventListener("webglcontextlost", contextLost);
+        runtimeWindow?.removeEventListener("error", runtimeError);
+        runtimeWindow?.removeEventListener("unhandledrejection", runtimeError);
+        runtimeWindow = null;
         contextCanvas = null;
     }
     function cleanup() {
@@ -111,12 +116,24 @@ export function mount({
             detail: new MiniquadError("context-lost", "WebGL context lost; dispose and mount again")
         }));
     }
+    function runtimeError(event) {
+        if (state === "disposed" || state === "starting") return;
+        instance.pause();
+        state = "failed";
+        frame.inert = true;
+        frame.dispatchEvent(new document.defaultView.CustomEvent("miniquaderror", {
+            detail: new MiniquadError("runtime-error", event.message || event.reason?.message || "Application runtime failed")
+        }));
+    }
     function frameError(event) { fail("runtime-load", "Cannot load the Miniquad runtime", event); }
     async function start() {
         if (state !== "starting") return;
         try {
             instance = frame.contentWindow.miniquadRuntime;
             if (!instance) throw new Error("Runtime module is missing");
+            runtimeWindow = frame.contentWindow;
+            runtimeWindow.addEventListener("error", runtimeError);
+            runtimeWindow.addEventListener("unhandledrejection", runtimeError);
             await instance.start(wasm, wantsPause);
             if (state !== "starting") return;
             contextCanvas = frame.contentDocument.querySelector("#glcanvas");
@@ -154,6 +171,7 @@ export function mount({
         focus() {
             assertLive();
             if (state !== "running") throw new MiniquadError("not-running", "Resume the application before focusing it");
+            frame.focus();
             instance.focus();
         },
         setParameters(values) {

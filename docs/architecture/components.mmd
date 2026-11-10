@@ -1,4 +1,8 @@
 flowchart LR
+    Host["Embedding host and HTML controls"] -->|"Optional mount and lifecycle"| Embed["js/miniquad.mjs"]
+    Embed -->|"Own isolated same-origin frame"| Runtime["js/runtime.html and runtime.mjs"]
+    Runtime -->|"One classic bridge per frame"| Bridge["js/gl.js"]
+    Host -->|"Optional palette and motion adapter"| Preferences["js/host-preferences.mjs"]
     App["Browser game or example"] -->|"Rust EventHandler API"| Public["src/lib.rs and src/event.rs"]
     Public -->|"WASM target runtime"| Backend["src/native/wasm.rs"]
     Backend -->|"Imported functions and exported callbacks"| Bridge["js/gl.js"]

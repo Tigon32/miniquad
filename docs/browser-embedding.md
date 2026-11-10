@@ -57,6 +57,7 @@ Pass an `AbortSignal` as `signal` to dispose the application on cancellation.
 Startup errors reject `ready` with a `MiniquadError` containing a `code`.
 A lost WebGL context sets `state` to `context-lost`.
 The frame dispatches `miniquaderror` with the error in `event.detail`.
+Uncaught application errors set `state` to `failed` and dispatch the same event.
 Dispose and mount again. Do not resume invalid GPU resources.
 
 The browser owns the removed realm's memory reclamation.

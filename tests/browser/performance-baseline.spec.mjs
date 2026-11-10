@@ -1,4 +1,14 @@
 import { test, expect } from "@playwright/test";
+import { readFileSync } from "node:fs";
+
+function sourceRevision() {
+  const eventPath=process.env.GITHUB_EVENT_PATH;
+  if(eventPath) {
+    const event=JSON.parse(readFileSync(eventPath,"utf8"));
+    if(event.pull_request?.head?.sha)return event.pull_request.head.sha;
+  }
+  return process.env.GITHUB_HEAD_SHA||process.env.GITHUB_SHA||"local";
+}
 
 function percentile(sorted,p) {
   if(!sorted.length)return null;
@@ -72,7 +82,7 @@ test("record browser startup and frame interval baselines without enforcing unca
   const receipt={
     schema:1,
     browser:testInfo.project.name,
-    testSourceRevision:process.env.GITHUB_HEAD_SHA||process.env.GITHUB_SHA||"local",
+    testSourceRevision:sourceRevision(),
     samples:{frameIntervals:intervals.length,cpuFrames:metrics.cpuFrameMs.length},
     firstWebGLDrawSubmissionMs:metrics.firstWebGLDrawSubmissionMs,
     firstWasmFrameCallbackMs:metrics.firstWasmFrameCallbackMs,

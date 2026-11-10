@@ -8,7 +8,7 @@
 
 "use strict";
 
-const version = 2;
+const version = 3;
 
 const canvas = document.querySelector("#glcanvas");
 if (!canvas) {
@@ -430,6 +430,14 @@ function _webglGet(name_, p, type) {
 
 var Module;
 var wasm_exports;
+
+function allocateTransferBuffer(len) {
+    const ptr = wasm_exports.allocate_transfer_vec_u8(len);
+    if (!Number.isSafeInteger(ptr) || ptr <= 0) {
+        throw new RangeError("WASM owned transfer allocation failed");
+    }
+    return ptr;
+}
 
 function resize(canvas, on_resize) {
     var dpr = dpi_scale();
@@ -1391,9 +1399,14 @@ var importObject = {
                     console.warn("Clipboard paste rejected: size limit exceeded");
                     return;
                 }
-                const msg = wasm_exports.allocate_vec_u8(len);
-                new Uint8Array(wasm_memory.buffer, msg, len).set(utf8);
-                wasm_exports.on_clipboard_paste(msg, len);
+                const msg = allocateTransferBuffer(len);
+                try {
+                    new Uint8Array(wasm_memory.buffer, msg, len).set(utf8);
+                    wasm_exports.on_clipboard_paste(msg, len);
+                } catch (error) {
+                    wasm_exports.discard_transfer_vec_u8(msg);
+                    throw error;
+                }
             });
 
             window.ondragover = function (e) {
@@ -1470,13 +1483,20 @@ var importObject = {
                                 continue;
                             }
 
-                            const nameVec = wasm_exports.allocate_vec_u8(nameLen);
-                            const fileVec = wasm_exports.allocate_vec_u8(fileLen);
-                            // Get memory views after both allocations. Either call can grow WASM memory.
-                            new Uint8Array(wasm_memory.buffer, nameVec, nameLen).set(nameBytes);
-                            new Uint8Array(wasm_memory.buffer, fileVec, fileLen).set(new Uint8Array(fileBuf));
-                            wasm_exports.on_file_dropped(nameVec, nameLen, fileVec, fileLen);
-                            totalBytes += fileLen;
+                            const nameVec = allocateTransferBuffer(nameLen);
+                            let fileVec;
+                            try {
+                                fileVec = allocateTransferBuffer(fileLen);
+                                // Get memory views after both allocations. Either call can grow WASM memory.
+                                new Uint8Array(wasm_memory.buffer, nameVec, nameLen).set(nameBytes);
+                                new Uint8Array(wasm_memory.buffer, fileVec, fileLen).set(new Uint8Array(fileBuf));
+                                wasm_exports.on_file_dropped(nameVec, nameLen, fileVec, fileLen);
+                                totalBytes += fileLen;
+                            } catch (error) {
+                                wasm_exports.discard_transfer_vec_u8(nameVec);
+                                if (fileVec !== undefined) wasm_exports.discard_transfer_vec_u8(fileVec);
+                                throw error;
+                            }
                         }
                     } finally {
                         wasm_exports.on_files_dropped_finish();
@@ -1653,7 +1673,9 @@ function validate_wasm_imports(module) {
 function start_wasm(instance) {
     const exports = instance.exports;
     if (!exports || typeof exports.crate_version !== "function" ||
-        typeof exports.main !== "function" || !exports.memory) {
+        typeof exports.main !== "function" || !exports.memory ||
+        typeof exports.allocate_transfer_vec_u8 !== "function" ||
+        typeof exports.discard_transfer_vec_u8 !== "function") {
         throw new Error("WASM module is missing required exports");
     }
     const crateVersion = exports.crate_version();

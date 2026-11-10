@@ -77,6 +77,11 @@ Do not treat it as a passing test.
    Run the cache-prime workflow when the Playwright lockfile or configuration changes.
    Keep a manual cache-prime option for the full browser matrix.
    Keep the browser cache key tied to the OS, CPU type, and dependency lockfile.
+   Use the libraries in the pinned Ubuntu runner for the normal Chromium lane.
+   Do not run `apt-get update` or `playwright install-deps` on every PR if the image already has the necessary libraries.
+   Run `playwright install-deps` for a manual full-browser check when needed.
+   Do not cache `/var/lib/apt/lists` or installed system libraries between GitHub runners.
+   A new runner image must pass the real Chromium test before use.
 7. Use a fixed runner image and a fixed browser test version. Install only the necessary browsers.
 8. Set `concurrency` for each workflow. Use the PR number to group PR runs. When a new run starts for that PR, cancel its old run.
 9. Do not cancel an unrelated PR run. Keep manual release checks independent from normal PR cancellation.

@@ -74,6 +74,10 @@ jobs:
         with:
           node-version: '24'
           cache: npm
+      - name: Record release fixture compressed bundle sizes
+        env:
+          GITHUB_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/measure-bundle-size.mjs
       - name: Check documentation and skill references
         run: |
           node scripts/check-docs.mjs
@@ -123,6 +127,14 @@ jobs:
           else
             npm run test:browser:chromium
           fi
+      - name: Store revision-specific size and timing baseline receipts
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: browser-performance-baseline
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 14
       - name: Store browser test traces on failure
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

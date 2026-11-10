@@ -12,6 +12,7 @@ Read [architecture decisions](docs/adr/README.md), [canonical terminology](docs/
 | Verify ABI, encoding, memory ownership, invalid inputs | [wasm-abi](.github/skills/miniquad-wasm-abi/SKILL.md) |
 | Reproduce WebGL, loader and input behavior in real browsers | [browser-repro](.github/skills/miniquad-browser-repro/SKILL.md) |
 | Review unsafe Rust/FFI and native backend failure paths | [native-safety](.github/skills/miniquad-native-safety/SKILL.md) |
+| Audit security, supply chain, CI token boundaries and resource exhaustion | [security-gates](.github/skills/miniquad-security-gates/SKILL.md) |
 | Optimize actual limiting paths with repeatable measurements | [performance-proof](.github/skills/miniquad-performance-proof/SKILL.md) |
 | Deliver bounded changes with verifiable CI and issue receipts | [verified-delivery](.github/skills/miniquad-verified-delivery/SKILL.md) |
 

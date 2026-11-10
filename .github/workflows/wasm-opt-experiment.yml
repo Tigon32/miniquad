@@ -1,0 +1,82 @@
+name: Rust WASM opt-level experiment
+
+on:
+  pull_request:
+    branches: [master]
+    paths:
+      - '.github/workflows/wasm-opt-experiment.yml'
+      - 'scripts/compare-rust-wasm-opts.mjs'
+      - 'Cargo.toml'
+      - 'src/**'
+      - 'examples/quad.rs'
+      - 'examples/offscreen.rs'
+      - 'js/gl.js'
+      - 'tests/browser/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: wasm-opt-experiment-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  compare:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install stable Rust WASM target
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add wasm32-unknown-unknown
+          echo "EXPERIMENT_RUSTC_VERSION=$(rustc --version)" >> "$GITHUB_ENV"
+      - name: Compile baseline release examples
+        run: cargo build --release --target wasm32-unknown-unknown --example quad --example offscreen
+      - name: Compile isolated size-optimized candidate
+        env:
+          RUSTFLAGS: -C opt-level=z
+          CARGO_TARGET_DIR: target/experiment
+        run: cargo build --release --target wasm32-unknown-unknown --example quad --example offscreen
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Measure actual baseline and candidate compressed sizes
+        env:
+          GITHUB_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: node scripts/compare-rust-wasm-opts.mjs
+      - name: Install locked Playwright tools
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Install browser engines and host dependencies
+        run: npx playwright install --with-deps chromium firefox webkit
+      - name: Use candidate WASM binaries in the browser acceptance fixtures
+        run: |
+          cp target/experiment/wasm32-unknown-unknown/release/examples/quad.wasm target/wasm32-unknown-unknown/release/examples/quad.wasm
+          cp target/experiment/wasm32-unknown-unknown/release/examples/offscreen.wasm target/wasm32-unknown-unknown/release/examples/offscreen.wasm
+      - name: Require Chromium browser parity on candidate
+        env:
+          GITHUB_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: MINIQUAD_BROWSER=chromium npm run test:browser
+      - name: Require Firefox browser parity on candidate
+        env:
+          GITHUB_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MINIQUAD_HEADFUL: '1'
+          MINIQUAD_BROWSER: firefox
+        run: xvfb-run -a npm run test:browser
+      - name: Require WebKit browser parity on candidate
+        env:
+          GITHUB_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          MINIQUAD_HEADFUL: '1'
+          MINIQUAD_BROWSER: webkit
+        run: xvfb-run -a npm run test:browser
+      - name: Retain comparison and candidate runtime traces
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: wasm-opt-experiment
+          path: test-results/
+          if-no-files-found: ignore
+          retention-days: 14

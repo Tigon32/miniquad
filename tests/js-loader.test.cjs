@@ -8,7 +8,7 @@ const vm = require("node:vm");
 
 const source = fs.readFileSync(path.resolve(__dirname, "../js/gl.js"), "utf8");
 
-function createFixture({ streaming = true, imports = [], crateVersion = 2, responseStatus = 200,
+function createFixture({ streaming = true, imports = [], crateVersion = 3, responseStatus = 200,
                          missingExports = false } = {}) {
     const calls = { fetch: 0, compile: 0, instantiate: 0, main: 0, errors: [] };
     const canvas = { focus() {} };
@@ -26,6 +26,8 @@ function createFixture({ streaming = true, imports = [], crateVersion = 2, respo
                     ...(missingExports ? {} : {
                         memory: { buffer: new ArrayBuffer(65536) },
                         crate_version: () => crateVersion,
+                        allocate_transfer_vec_u8: () => 8,
+                        discard_transfer_vec_u8: () => {},
                         main: () => { calls.main++; }
                     })
                 }

@@ -1,101 +1,129 @@
-# Adopt risk-based verification with selective test-first development
+# Use risk-based tests and selective TDD
 
 * Status: **Proposed**
 * Date: 2026-11-10
-* Scope: Miniquad Rust library, JavaScript/WebAssembly ABI, WebGL rendering and native platform backends
+* Scope: Miniquad Rust, JavaScript, WebAssembly, WebGL, and native code
 * Related issues: [#8](https://github.com/Tigon32/miniquad/issues/8), [#9](https://github.com/Tigon32/miniquad/issues/9), [#10](https://github.com/Tigon32/miniquad/issues/10), [#11](https://github.com/Tigon32/miniquad/issues/11), [#16](https://github.com/Tigon32/miniquad/issues/16), [#21](https://github.com/Tigon32/miniquad/issues/21), [#25](https://github.com/Tigon32/miniquad/issues/25)
 
 ## Context and Problem Statement
 
-Miniquad is a lightweight, mostly Rust rendering/window/input abstraction with a hand-written JavaScript/WebAssembly bridge, WebGL resource management and native platform adapters. The existing CI builds Rust/WASM and lints JavaScript, but compile/lint success does not prove actual behavior. The initial source audit found legacy edge cases, incomplete APIs and unsafe ownership contracts.
+Miniquad uses Rust, a JavaScript browser bridge, and native interfaces.
+The compiler and linter can find some errors.
+They cannot show that all input, rendering, and resource functions work.
 
-Uniform strict test-driven development (TDD) for every small edit is expensive and difficult for GPU/OS integration. Conversely, ad hoc manual verification or tests added only after a release can leave regressions undiscovered. How should we choose **what** to test, **where** to test it and **when** test-first is warranted, without disproportionately increasing toolchain size, CI time, maintenance or false confidence?
+Strict test-driven development (TDD) for every small change can take too much time.
+No tests can let old bugs return.
+We need a test method that fits the risk of each change.
 
 ## Decision Drivers
 
-* Catch correctness, memory-ownership, availability and compatibility regressions at their closest meaningful boundary.
-* Keep the quick required pull-request lane reliable, reproducible and affordable.
-* Prioritize observable behavior and supported contracts over test counts or implementation details.
-* Allow small, isolated platform-dependent changes without demanding a full browser/native matrix on every commit.
-* Make issue closure and automatic merging evidence-based, not dependent on a green compiler alone.
-* Preserve a small runtime download: test dependencies must not ship in browser artifacts.
-* Give coding agents unambiguous acceptance and failure reproduction expectations.
+* Find errors at the interface where they occur.
+* Keep required CI checks fast and stable.
+* Test what a user can observe.
+* Use actual browsers for browser behavior.
+* Keep test dependencies out of the game download.
+* Record the tests that ran and the tests that did not run.
 
 ## Considered Options
 
-| Option | Advantages | Costs / risks | Disposition |
-| --- | --- | --- | --- |
-| **No standardized tests; rely on compilation, lint and manual review** | Lowest immediate effort | Bugs in WASM data transfer, events, GPU state and failure paths remain invisible; regressions recur | Rejected |
-| **Strict red–green–refactor TDD for every code change** | Strong immediate feedback and often good unit-level design | Brittle GPU/DOM mocks, high friction for spikes/refactoring, pressure to test implementation details; platform behavior still needs real execution | Rejected as universal rule |
-| **Risk-based test pyramid with selective test-first regression and behavior-driven scenarios** | High confidence where failures matter, fast tests for most PRs and targeted runtime qualification | Requires thoughtful risk/coverage triage and upkeep of fixtures | **Proposed** |
+| Option | Benefit | Problem |
+| --- | --- | --- |
+| Compiler checks and review only | Fast feedback | The checks miss runtime errors |
+| Strict TDD for all changes | Tests guide every change | GPU and native tests can be slow or difficult |
+| **Risk-based tests with selective TDD** | Focus effort on important faults | Each PR needs a risk review |
 
 ## Decision Outcome
 
-**Proposed:** Adopt **risk-based verification**, using **test-first development for proven bugs and high-risk contracts**, not strict TDD for every edit. Tests must demonstrate the behavior they claim and fail when the defended behavior breaks.
+**Proposed:** Select tests from the risk and the type of change.
+Use test-first development for a verified bug when a repeatable test is possible.
+Do not require strict TDD for a document change.
 
-### 1. Test selection by change class
+### Select the tests
 
-| Change class | Required before PR completion | When to use test-first / TDD |
-| --- | --- | --- |
-| **Verified defect** | Reproduce old failure; add a regression that fails against the old implementation and passes after the fix; retain it in CI | **Required** when a deterministic harness is feasible. If reproduction is only possible on native hardware or cannot run in CI, record a concrete blocker and capture evidence rather than inventing a fake red test |
-| **Rust ↔ JavaScript/WASM ABI, allocations, clipboard, files, inputs, parsing and versioning** | Unit/contract tests at the boundary for normal, invalid, Unicode, empty and failure inputs, plus compiled-WASM verification for ownership claims | **Strongly preferred**, especially for dangerous or externally supplied input |
-| **WebGL rendering, context loss, frame lifecycle, browser focus and interaction** | Fast isolated state/logic tests **and** actual WebGL/browser integration/BDD acceptance where a claim is about runtime | Write the behavior/scenario before implementation; allow an exploratory spike first when hardware/browser behavior is unknown |
-| **Native OS/FFI backend** | Focused contract tests where possible, target build, and real supported OS verification for claimed native behavior; explicitly list untested OS targets | Test-first for deterministic callbacks/state conversion; exploratory reproduction for driver/OS-dependent behavior |
-| **Pure Rust algorithm / voxel mesher / serialization** | Deterministic unit or property tests for invariants and boundary cases, with optional differential/reference fixtures | Prefer test-first for stable input/output behavior |
-| **Performance optimization** | Correctness parity against a baseline and repeated comparable measurements; prevent meaningful regressions | Establish a benchmark and outcome/threshold **before** optimizing; do not insist on synthetic unit-test-first for a measured bottleneck |
-| **Documentation, editorial or trivial structural changes** | Link/source validation and relevant existing checks; no new behavioral test unless behavior/contract changes | **Optional**; avoid ceremony for no behavior change |
-| **Exploratory prototype / unsupported feature spike** | Isolated branch, explicit non-goals, manual evidence and expiry/cleanup decision; no production merge until acceptance tests exist | Optional during the spike; **required tests before promotion** into supported API |
+| Change | Required evidence |
+| --- | --- |
+| Verified bug | Show the old failure. Add a test that fails before the fix and passes after it. |
+| JS/WASM ABI or external input | Test exact bytes, length, ownership, invalid input, and error results. Use compiled WASM for memory claims. |
+| Browser and WebGL behavior | Test real browsers. Use a mock only for isolated logic. |
+| Native interface | Test the applicable OS when you make a native behavior claim. Record OS targets that were not tested. |
+| Pure Rust function or voxel algorithm | Test correct outputs and limits. Use property tests when useful. |
+| Performance change | Set a metric before the change. Test equal output. Compare repeatable measurements. |
+| Document change | Check links, terms, technical facts, and required CI. A new behavior test is not necessary. |
+| Prototype | Keep it separate. Add acceptance tests before it becomes a supported feature. |
 
-### 2. Where tests belong (fast-to-real layered verification)
+### Use test layers
 
-1. **Unit/property tests** beside pure Rust logic and deterministic helpers. Assert public invariants and externally observable results, not private implementation details. Seed fuzz/property inputs; minimize and retain failures.
-2. **Boundary/contract tests** for JS/WASM imports/exports, pointer/length/UTF-8 ownership and event sequencing. Use the *actual shipped* `js/gl.js` where practical; a mock may confirm marshaling but is **not** proof of Rust memory safety or WebGL behavior. Compiled WASM fixtures must back those claims.
-3. **Behavior-driven (BDD) browser tests** with readable Given–When–Then acceptance scenarios for critical user-visible flows. Reuse a small catalogue, map each scenario to executable assertions, and avoid a heavy Gherkin dependency until justified. Cover success **and negative** cases.
-4. **Native and GPU qualification** on a targeted real platform or manually dispatched compatibility matrix. Desktop WebKit ≠ iOS Safari; compiling for Windows ≠ observing the Windows event loop.
-5. **Performance regression checks** only with a calibrated workload and variability; noisy device/CI timing should be informational, not an arbitrary blocking threshold.
+1. **Unit tests:** Test small functions and stable results.
+2. **Contract tests:** Test JS/WASM imports, exports, encoding, and ownership.
+3. **BDD tests:** Use Given–When–Then scenarios for required user behavior. Connect each scenario to executable checks. See [#25](https://github.com/Tigon32/miniquad/issues/25).
+4. **Browser tests:** Test the real WASM application in supported browsers. A mock is not a browser test.
+5. **Native tests:** Use the required OS and GPU when the result depends on them.
+6. **Benchmark tests:** Use a fixed workload. Record the source revision, environment, units, and result spread.
 
-### 3. CI policy and evidence
+### Required CI
 
-* **Required PR fast lane:** Rust library checks/tests, one release WASM example, JavaScript syntax/lint, deterministic JS/ABI tests and a minimal real-browser smoke suite **once implemented and proven stable**. Introduce tests incrementally; do not claim absent jobs pass. Gate on the *exact PR head* and record count/commands.
-* **Manual or scheduled deep lane:** cross-platform builds and runtime hardware tests, extended browser compatibility, fuzz campaigns, GPU context-loss workloads, dependency advisory scans, and repeated benchmarks. A manual lane must run for a relevant release or high-risk change, not be silently treated as passing because it wasn't triggered.
-* **Changed-risk targeting:** every PR declares impacted surfaces and the tests that exercise them. A targeted test may replace a giant per-PR matrix when risk is bounded; it cannot replace a required baseline check.
-* **Failures:** do not turn failing checks into ignored tests, broad lint suppressions, skip flags or fake passes. Quarantine flaky tests with an owner, reproducible symptom, expiry date and follow-up issue; preserve visibility.
-* **No arbitrary coverage percentage gate.** Track behaviors and regression classes actually defended, including meaningful negative paths. Coverage counts are diagnostics, not proof of correctness.
-* **Issue/PR receipt:** issue link, source SHA, failing-before-fix evidence where applicable, exact test commands/results, browser/OS versions when used, and known untested cases. No claim that a merged change is runtime-qualified until the necessary runtime tests passed.
-* **Testing dependencies:** keep test-only crates/npm packages off the production browser download; require reviewed pinned versions and reproducible installation.
+The PR test lane must run the approved Rust, WASM, JavaScript, and regression checks.
+Add browser smoke tests to this lane after the tests are stable.
+Keep long fuzz runs, full platform checks, and repeated benchmarks in a manual or scheduled lane.
+Run the applicable deep lane before a release or a high-risk change.
 
-### 4. Default engineering loop
+If a test fails, do not hide the result.
+If a test is unstable, record the cause and a follow-up issue.
+A skipped test is not a passed test.
+Do not use a code coverage percentage as proof that the software is correct.
 
-`Understand contract → classify risk → reproduce if a bug → choose cheapest meaningful test → implement minimally → run fast checks → verify real boundary as applicable → capture evidence → merge through protected PR → close accepted issue`.
+### Required PR record
 
-The developer may write tests **before** an implementation for a bug/ABI change, or write isolated tests **alongside** a genuinely exploratory implementation. The required outcome is evidence of behavior, not the temporal order in which files were edited.
+For each code change, give:
+
+1. The related issue and source revision.
+2. The changed behavior and the risk.
+3. The exact tests and their results.
+4. The browsers or OS targets that ran.
+5. The important tests that did not run.
+6. The action to reverse the change if it causes a fault.
+
+Do not close an issue until its acceptance conditions have evidence.
+Do not say that a mock test proves WebGL behavior or Rust memory safety.
+Keep test dependencies out of the production browser download.
+
+### Default work sequence
+
+1. Understand the contract.
+2. Identify the risk.
+3. Reproduce a known bug.
+4. Select the smallest useful test.
+5. Make the change.
+6. Run the required checks.
+7. Test the real boundary when necessary.
+8. Record the evidence.
+9. Merge with the project rules.
+10. Close the issue only when all conditions pass.
 
 ## Consequences
 
 ### Positive
 
-* High-risk ABI, memory and input bugs receive early, repeatable regression protection.
-* Small documentation and routine refactoring work avoids mechanical TDD overhead.
-* Browser- and native-only claims are supported by actual platform execution rather than mocked confidence.
-* BDD scenarios provide stakeholder-readable contracts without adding a large runtime framework.
+* Important bugs get repeatable tests.
+* Small editorial changes need less test work.
+* Browser and native claims use real execution evidence.
 
 ### Negative
 
-* Risk classification requires review and may initially be inconsistent.
-* Some integration/hardware regressions remain detectable only in targeted manual lanes until automation exists.
-* Baseline harness construction is front-loaded and may make early PRs slower.
-* The organization must maintain scenario relevance, not just an increasing test count.
+* A reviewer must select the correct tests.
+* Some OS and GPU tests can take more time.
+* The first test harnesses need implementation work.
 
 ## Confirmation
 
-* Exercise this policy on three changes: a JS/WASM encoding defect (#8), a browser loader failure (#15), and a non-behavioral documentation change. Check the evidence receipts and time spent.
-* Review whether required PR checks run the expected tests and whether a known bad edit makes the relevant test fail (mutation-style sanity check on a safe isolated branch).
-* After ~10 scoped PRs, review escaped defects, flaky test rates, CI wall time, and whether the selected tests gave useful signal. These are **future measurements**, not established metrics.
-* Revise the policy with a superseding ADR if actual evidence shows unbalanced cost or risk.
+1. Apply this method to a JS/WASM bug, a loader fault, and a document change.
+2. Check that tests find the old fault.
+3. After approximately 10 scoped PRs, review missed bugs, unstable tests, and CI time.
+4. Change this policy in a new MADR if the results show a problem.
 
 ## References
 
-* [Existing MADR convention](0001-use-madr-and-ubiquitous-language.md)
-* [Project-local test and delivery skills](../../AGENTS.md)
-* [Bounded gap analysis](../gap-analysis-2026-11.md)
-* [BDD acceptance issue #25](https://github.com/Tigon32/miniquad/issues/25)
+* [MADR 0001](0001-use-madr-and-ubiquitous-language.md)
+* [MADR 0003](0003-use-asd-ste100-for-communication.md)
+* [Agent instructions](../../AGENTS.md)
+* [Gap analysis](../gap-analysis-2026-11.md)

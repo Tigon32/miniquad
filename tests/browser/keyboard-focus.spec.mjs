@@ -24,18 +24,19 @@ test("focused canvas sends a key release when focus is lost", async ({ page }) =
       window.__domKeyTransitions.push(event.code);
     }, true);
     const original = wasm_exports;
-    wasm_exports = new Proxy(original, {
-      get(target, name) {
-        const method = target[name];
-        if (name === "key_down" || name === "key_up") {
-          return (...args) => {
-            window.__keyTransitions.push({ type: name, key: args[0] });
-            return method(...args);
-          };
-        }
-        return method;
+    // WASM export properties are non-configurable. Do not Proxy their methods:
+    // ES Proxy invariants reject wrapped getters for such properties.
+    wasm_exports = {
+      ...original,
+      key_down: (...args) => {
+        window.__keyTransitions.push({ type: "key_down", key: args[0] });
+        return original.key_down(...args);
+      },
+      key_up: (...args) => {
+        window.__keyTransitions.push({ type: "key_up", key: args[0] });
+        return original.key_up(...args);
       }
-    });
+    };
   });
 
   const calibration = await page.evaluate(() => {

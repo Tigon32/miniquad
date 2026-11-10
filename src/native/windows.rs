@@ -66,7 +66,17 @@ mod file_drop_tests {
     use std::os::windows::ffi::OsStrExt;
     use std::ptr;
     use winapi::shared::windef::POINT;
-    use winapi::um::shellapi::{DragFinish, DragQueryFileW, DROPFILES, HDROP};
+    use winapi::um::shellapi::{DragFinish, DragQueryFileW, HDROP};
+
+    // winapi 0.3 exposes HDROP and DragQueryFileW, but not DROPFILES.
+    // This is the documented Win32 DROPFILES header layout.
+    #[repr(C)]
+    struct SyntheticDropFilesHeader {
+        p_files: u32,
+        pt: POINT,
+        f_nc: i32,
+        f_wide: i32,
+    }
     use winapi::um::winbase::{
         GlobalAlloc, GlobalLock, GlobalUnlock, GMEM_MOVEABLE, GMEM_ZEROINIT,
     };
@@ -79,18 +89,18 @@ mod file_drop_tests {
         fn new(path: &std::ffi::OsStr) -> Self {
             let mut wide: Vec<u16> = path.encode_wide().collect();
             wide.extend_from_slice(&[0, 0]);
-            let offset = size_of::<DROPFILES>();
+            let offset = size_of::<SyntheticDropFilesHeader>();
             let size = offset + wide.len() * size_of::<u16>();
             unsafe {
                 let global = GlobalAlloc(GMEM_MOVEABLE | GMEM_ZEROINIT, size);
                 assert!(!global.is_null(), "GlobalAlloc failed");
                 let address = GlobalLock(global) as *mut u8;
                 assert!(!address.is_null(), "GlobalLock failed");
-                ptr::write_unaligned(address as *mut DROPFILES, DROPFILES {
-                    pFiles: offset as u32,
+                ptr::write_unaligned(address as *mut SyntheticDropFilesHeader, SyntheticDropFilesHeader {
+                    p_files: offset as u32,
                     pt: POINT { x: 0, y: 0 },
-                    fNC: 0,
-                    fWide: 1,
+                    f_nc: 0,
+                    f_wide: 1,
                 });
                 ptr::copy_nonoverlapping(
                     wide.as_ptr() as *const u8,

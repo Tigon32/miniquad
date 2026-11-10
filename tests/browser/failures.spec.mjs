@@ -81,16 +81,16 @@ test("a wrong ABI version stops the real compiled WASM before main", async ({pag
       value: async function(...args) {
         window.__instantiateCount++;
         const result = await originalInstantiate.apply(this,args);
+        // WASM exports are non-configurable. Use a plain test adapter;
+        // a Proxy cannot replace a non-configurable export's value.
         return {
-          exports: new Proxy(result.exports,{
-            get(target,name) {
-              if (name === "crate_version") {
-                window.__versionCallCount++;
-                return () => 999;
-              }
-              return Reflect.get(target,name);
+          exports: {
+            ...result.exports,
+            crate_version: () => {
+              window.__versionCallCount++;
+              return 999;
             }
-          })
+          }
         };
       }
     });

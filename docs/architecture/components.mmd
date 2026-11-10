@@ -1,0 +1,9 @@
+flowchart LR
+    App["Browser game or example"] -->|"Rust EventHandler API"| Public["src/lib.rs and src/event.rs"]
+    Public -->|"WASM target runtime"| Backend["src/native/wasm.rs"]
+    Backend -->|"Imported functions and exported callbacks"| Bridge["js/gl.js"]
+    Bridge -->|"DOM focus, input, clipboard, file drops"| Browser["Browser DOM"]
+    Bridge -->|"WebGL calls"| GL["WebGL 1 or 2"]
+    GL --> GPU["Browser GPU service"]
+    Public -.->|"Native target selection"| Native["src/native/windows.rs, macos.rs, linux_x11.rs, android.rs"]
+    Bridge -->|"Version and ownership contract"| ABI["docs/wasm-transfer-abi-v3.md"]

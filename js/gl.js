@@ -1538,74 +1538,57 @@ function miniquad_add_plugin(plugin) {
     plugins.push(plugin);
 }
 
-// read module imports and create fake functions in import object
-// this is will allow to successfeully link wasm even with wrong version of gl.js
-// needed to workaround firefox bug with lost error on wasm linking errors
-function add_missing_functions_stabs(obj) {
-    var imports = WebAssembly.Module.imports(obj);
-
-    for (const i in imports) {
-        if (importObject["env"][imports[i].name] == undefined) {
-            console.warn("No " + imports[i].name + " function in gl.js");
-            importObject["env"][imports[i].name] = function () {
-                console.warn("Missed function: " + imports[i].name);
-            };
+// Check required imports before WebAssembly instantiation.
+// Do not replace missing imports with no-op functions.
+function validate_wasm_imports(module) {
+    const imports = WebAssembly.Module.imports(module);
+    for (const spec of imports) {
+        const scope = importObject[spec.module];
+        if (!scope || scope[spec.name] == null) {
+            throw new Error("Missing required WASM import: " + spec.module + "." + spec.name);
         }
     }
 }
 
-function load(wasm_path) {
-    var req = fetch(wasm_path);
+function start_wasm(instance) {
+    const exports = instance.exports;
+    if (!exports || typeof exports.crate_version !== "function" ||
+        typeof exports.main !== "function" || !exports.memory) {
+        throw new Error("WASM module is missing required exports");
+    }
+    const crateVersion = exports.crate_version();
+    if (version !== crateVersion) {
+        throw new Error("WASM ABI version mismatch: JS " + version + ", Rust " + crateVersion);
+    }
 
+    wasm_memory = exports.memory;
+    wasm_exports = exports;
+    init_plugins(plugins);
+    exports.main();
+}
+
+function load(wasm_path) {
     register_plugins(plugins);
 
-    if (typeof WebAssembly.compileStreaming === 'function') {
-        WebAssembly.compileStreaming(req)
-            .then(obj => {
-                add_missing_functions_stabs(obj);
-                return WebAssembly.instantiate(obj, importObject);
-            })
-            .then(
-                obj => {
-                    wasm_memory = obj.exports.memory;
-                    wasm_exports = obj.exports;
+    const response = fetch(wasm_path).then(function (result) {
+        if (!result.ok) {
+            throw new Error("WASM HTTP request failed: " + result.status);
+        }
+        return result;
+    });
 
-                    var crate_version = wasm_exports.crate_version();
-                    if (version != crate_version) {
-                        console.error(
-                            "Version mismatch: gl.js version is: " + version +
-                            ", miniquad crate version is: " + crate_version);
-                    }
-                    init_plugins(plugins);
-                    obj.exports.main();
-                })
-            .catch(err => {
-                console.error(err);
-            })
-    } else {
-        req
-            .then(function (x) { return x.arrayBuffer(); })
-            .then(function (bytes) { return WebAssembly.compile(bytes); })
-            .then(function (obj) {
-                add_missing_functions_stabs(obj);
-                return WebAssembly.instantiate(obj, importObject);
-            })
-            .then(function (obj) {
-                wasm_memory = obj.exports.memory;
-                wasm_exports = obj.exports;
+    const module = typeof WebAssembly.compileStreaming === "function"
+        ? WebAssembly.compileStreaming(response)
+        : response.then(result => result.arrayBuffer()).then(bytes => WebAssembly.compile(bytes));
 
-                var crate_version = wasm_exports.crate_version();
-                if (version != crate_version) {
-                    console.error(
-                        "Version mismatch: gl.js version is: " + version +
-                        ", rust sapp-wasm crate version is: " + crate_version);
-                }
-                init_plugins(plugins);
-                obj.exports.main();
-            })
-            .catch(err => {
-                console.error("WASM failed to load, probably incompatible gl.js version");
-                console.error(err);
-            });
-    }
+    return module
+        .then(compiled => {
+            validate_wasm_imports(compiled);
+            return WebAssembly.instantiate(compiled, importObject);
+        })
+        .then(start_wasm)
+        .catch(error => {
+            console.error("WASM failed to load", error);
+            throw error;
+        });
 }

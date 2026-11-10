@@ -136,7 +136,17 @@ function assert(flag, message) {
 }
 
 function getArray(ptr, arr, n) {
-    return new arr(wasm_memory.buffer, ptr, n);
+    const buffer = wasm_memory.buffer;
+    const width = arr.BYTES_PER_ELEMENT;
+    // Do not coerce pointers, counts or overflows to valid-looking views.
+    // Check the range before constructing a typed array across the JS/WASM ABI.
+    if (!Number.isSafeInteger(ptr) || !Number.isSafeInteger(n) ||
+        !Number.isSafeInteger(width) || width < 1 ||
+        ptr < 0 || n < 0 || ptr > buffer.byteLength ||
+        ptr % width !== 0 || n > Math.floor((buffer.byteLength - ptr) / width)) {
+        throw new RangeError("Invalid WASM typed-array memory range");
+    }
+    return new arr(buffer, ptr, n);
 }
 
 function UTF8ToString(ptr, maxBytesToRead) {

@@ -1,8 +1,7 @@
 {
-  "$schema": "./schema.json",
   "namespace": "miniquad",
   "version": "0.1.0",
-  "source": "Concepts from the Miniquad library and its current glossary.",
+  "source": "Miniquad domain terms only. Shared vocabulary, schema, and tooling belong to a separate terminology repository.",
   "concepts": [
     {
       "id": "miniquad:library",
@@ -190,5 +189,10 @@
       "kind": "technical-noun",
       "broader": "core:server-side-execution"
     }
-  ]
+  ],
+  "dependency": {
+    "namespace": "core",
+    "version": "0.1.0",
+    "status": "external-repository-pending"
+  }
 }

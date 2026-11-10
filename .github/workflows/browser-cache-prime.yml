@@ -1,0 +1,64 @@
+name: Prime Playwright browser cache
+
+# Write the cache on the trusted default branch.
+# Caches written by a pull request are not shared with other pull requests.
+on:
+  push:
+    branches:
+      - master
+    paths:
+      - package-lock.json
+      - playwright.config.mjs
+      - .github/workflows/browser-cache-prime.yml
+  workflow_dispatch:
+    inputs:
+      browsers:
+        description: Browser set to cache
+        type: choice
+        default: chromium
+        options:
+          - chromium
+          - all
+
+permissions:
+  contents: read
+
+concurrency:
+  group: playwright-cache-prime-${{ github.event.inputs.browsers || 'chromium' }}
+  cancel-in-progress: true
+
+jobs:
+  prime:
+    if: github.repository == 'Tigon32/miniquad' && github.ref == 'refs/heads/master'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install locked test tool metadata
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Restore shared browser cache
+        id: playwright-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}-${{ github.event.inputs.browsers == 'all' && 'all' || 'chromium' }}
+      - name: Download browser binaries on cache miss
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        run: |
+          if [ "${{ github.event.inputs.browsers }}" = "all" ]; then
+            npx playwright install chromium firefox webkit
+          else
+            npx playwright install chromium
+          fi
+      - name: Save cache on master for later PR runs
+        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('package-lock.json') }}-${{ github.event.inputs.browsers == 'all' && 'all' || 'chromium' }}
+      - name: Report cached browser binaries
+        run: |
+          ls -1 ~/.cache/ms-playwright

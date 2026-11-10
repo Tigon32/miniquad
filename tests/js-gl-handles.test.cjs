@@ -66,3 +66,20 @@ test("GL validation does not reject a zero texture handle",()=>{
     assert.equal(f.errors.length,0);
     assert.equal(f.bound.length,1);
 });
+
+test("WebGL1 depth textures reject use when the extension is absent", () => {
+    const f = createFixture();
+    const calls = [];
+    f.context.gl.DEPTH_COMPONENT = 0x1902;
+    f.context.gl.DEPTH_STENCIL = 0x84f9;
+    f.context.gl.texImage2D = (...args) => calls.push(args);
+    f.context.webgl_depth_texture_supported = false;
+    assert.throws(() => f.env.glTexImage2D(3553, 0, 0x1902, 1, 1, 0, 0x1902, 5123, 0),
+        /WebGL1 depth textures are unavailable/);
+    assert.equal(calls.length, 0);
+    f.env.glTexImage2D(3553, 0, 0x1908, 1, 1, 0, 0x1908, 5121, 0);
+    assert.equal(calls.length, 1);
+    f.context.webgl_depth_texture_supported = true;
+    f.env.glTexImage2D(3553, 0, 0x1902, 1, 1, 0, 0x1902, 5123, 0);
+    assert.equal(calls.length, 2);
+});

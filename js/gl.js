@@ -126,10 +126,21 @@ function getArray(ptr, arr, n) {
 }
 
 function UTF8ToString(ptr, maxBytesToRead) {
-    let u8Array = new Uint8Array(wasm_memory.buffer, ptr);
+    const buffer = wasm_memory.buffer;
+    if (!Number.isSafeInteger(ptr) || ptr < 0 || ptr > buffer.byteLength ||
+        (maxBytesToRead !== undefined &&
+         (!Number.isSafeInteger(maxBytesToRead) || maxBytesToRead < 0 ||
+          maxBytesToRead > buffer.byteLength - ptr))) {
+        throw new RangeError("Invalid WASM UTF-8 memory range");
+    }
+    // Unspecified lengths represent NUL-terminated strings, but the scan
+    // must still stop at the end of linear memory.
+    const length = maxBytesToRead === undefined ?
+        buffer.byteLength - ptr : maxBytesToRead;
+    let u8Array = new Uint8Array(buffer, ptr, length);
 
     var idx = 0;
-    var endIdx = idx + maxBytesToRead;
+    var endIdx = length;
 
     var str = '';
     while (!(idx >= endIdx)) {

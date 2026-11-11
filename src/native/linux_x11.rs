@@ -263,8 +263,7 @@ impl X11Display {
         }
     }
 
-    // TODO: right now it just exits early if fullscreen is false.
-    // should be able to able to go back from fullscreen to windowed instead
+    // `fullscreen == false` does not restore the windowed state: #148.
     unsafe fn set_fullscreen(&mut self, window: Window, fullscreen: bool) {
         let wm_state = (self.libx11.XInternAtom)(
             self.display,

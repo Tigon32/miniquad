@@ -467,7 +467,7 @@ pub extern "C" fn vx_sprite_pixel() -> u32 {
 /// host side, not in this export: resume the app if it is paused, set
 /// this flag, wait (bounded) for `vx_resources_live() == 0`, then
 /// dispose the app in a `finally` block regardless of whether that
-/// wait succeeded. See `tests/browser/voxel-mixed.spec.mjs`'s
+/// wait succeeded. See `tests/browser/voxel-mixed.privatefixture.mjs`'s
 /// "vx_release_gpu genuinely deletes GPU objects" test for the exact
 /// sequence.
 #[no_mangle]
@@ -1044,11 +1044,37 @@ impl EventHandler for Stage {
         let t = (date::now() - self.start_time) * speed as f64;
         let world_center_x = SCENE_CHUNK_DIMS.x as f32;
         let world_center_z = (SCENE_CHUNK_DIMS.z as f32) * 0.5;
-        let radius = 3.0;
+        // At the test suite's frozen `speed: 0`, `t` is always 0, so
+        // `angle` below is always `PHASE_OFFSET`. `radius`/`PHASE_OFFSET`
+        // are chosen (not just `radius` alone) so the frozen sprite
+        // lands near world column (2, 6): this scene's fixed seed
+        // gives that column a low natural height
+        // (`vx_column_height(2, 6)` == 5, confirmed empirically) with
+        // open sky along the real camera-to-sprite ray (verified by
+        // ray-marching the exact `OrbitCamera` eye/target geometry),
+        // so the sprite is visible by default, while column (3, 6)
+        // raised to full height sits squarely on that same ray and
+        // blocks it (see the private occlusion test).
+        const PHASE_OFFSET: f32 = 2.758_065_1;
+        let radius = 6.146_543_7;
+        let angle = t as f32 + PHASE_OFFSET;
+        let sprite_x = world_center_x + angle.cos() * radius;
+        let sprite_z = world_center_z + angle.sin() * radius;
+        // Floats a fixed margin above the real terrain surface at the
+        // sprite's own (rounded) column, so the sprite is never
+        // embedded inside solid ground: `terrain::generate_chunk` can
+        // make any column solid all the way up to `SCENE_CHUNK_DIMS.y
+        // - 1`, and before the `src/graphics/gl.rs` depth-test fix
+        // this embedding was invisible (the sprite drew through
+        // everything regardless of real depth), masking the bug.
+        // `vx_column_height` returns `-1` for an empty column, so the
+        // margin still floats the sprite just above bedrock there.
+        const SPRITE_HEIGHT_MARGIN: f32 = 1.5;
+        let ground_y = vx_column_height(sprite_x.round() as i32, sprite_z.round() as i32) as f32;
         let sprite_pos = Vec3::new(
-            world_center_x + (t as f32).cos() * radius,
-            (SCENE_CHUNK_DIMS.y as f32) * 0.35 + (t as f32 * 1.7).sin() * 0.6,
-            world_center_z + (t as f32).sin() * radius,
+            sprite_x,
+            ground_y + SPRITE_HEIGHT_MARGIN + (t as f32 * 1.7).sin() * 0.6,
+            sprite_z,
         );
         let model = Mat4([
             1.0,

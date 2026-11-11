@@ -564,6 +564,7 @@ impl GlContext {
                     stencil: None,
                     color_write: (true, true, true, true),
                     cull_face: CullFace::Nothing,
+                    depth_write: true,
                     stored_texture: 0,
                     stored_target: 0,
                     textures: [CachedTexture {
@@ -1307,7 +1308,7 @@ impl RenderingBackend for GlContext {
                 glEnable(GL_SCISSOR_TEST);
             }
 
-            if pipeline.params.depth_write {
+            if needs_depth_test(pipeline.params.depth_write, pipeline.params.depth_test) {
                 unsafe {
                     glEnable(GL_DEPTH_TEST);
                     glDepthFunc(pipeline.params.depth_test.into())
@@ -1317,6 +1318,10 @@ impl RenderingBackend for GlContext {
                     glDisable(GL_DEPTH_TEST);
                 }
             }
+            unsafe {
+                glDepthMask(pipeline.params.depth_write as _);
+            }
+            self.cache.depth_write = pipeline.params.depth_write;
 
             match pipeline.params.front_face_order {
                 FrontFaceOrder::Clockwise => unsafe {
@@ -1617,6 +1622,13 @@ impl RenderingBackend for GlContext {
         if let Some(v) = depth {
             bits |= GL_DEPTH_BUFFER_BIT;
             unsafe {
+                // `glClear`'s depth-bit clear is gated by the current
+                // depth mask: if the previously applied pipeline left
+                // writes disabled (`depth_write: false`), a clear would
+                // otherwise silently no-op. Force the mask true for the
+                // clear, then restore the real current state so the
+                // next draw call still gets the pipeline's own mask.
+                glDepthMask(true as _);
                 glClearDepthf(v);
             }
         }
@@ -1631,6 +1643,12 @@ impl RenderingBackend for GlContext {
         if bits != 0 {
             unsafe {
                 glClear(bits);
+            }
+        }
+
+        if depth.is_some() && !self.cache.depth_write {
+            unsafe {
+                glDepthMask(false as _);
             }
         }
     }
@@ -1757,6 +1775,70 @@ impl RenderingBackend for GlContext {
                 (index_type as i32 * base_element) as *mut _,
                 num_instances,
             );
+        }
+    }
+}
+
+/// Whether `GL_DEPTH_TEST` must be enabled for a pipeline with the given
+/// depth-write flag and depth-comparison function.
+///
+/// A pipeline can legitimately want to *test* against the depth buffer
+/// (e.g. to be occluded by already-drawn geometry) without *writing* to
+/// it (so it doesn't corrupt the depth buffer for later draws, such as a
+/// translucent sprite). The two settings are independent in the public
+/// `PipelineParams` API (`depth_test: Comparison`, `depth_write: bool`,
+/// matching `src/graphics/metal.rs`'s independent `setDepthCompareFunction`/
+/// `setDepthWriteEnabled` calls) and must stay independent here: testing
+/// is needed whenever writing is requested, OR whenever the comparison
+/// function is not the default no-op `Comparison::Always`.
+fn needs_depth_test(depth_write: bool, depth_test: Comparison) -> bool {
+    depth_write || depth_test != Comparison::Always
+}
+
+#[cfg(test)]
+mod depth_state_tests {
+    use super::*;
+
+    #[test]
+    fn depth_test_disabled_when_writes_off_and_comparison_is_default() {
+        assert!(!needs_depth_test(false, Comparison::Always));
+    }
+
+    #[test]
+    fn depth_test_enabled_when_writes_are_on_even_with_default_comparison() {
+        assert!(needs_depth_test(true, Comparison::Always));
+    }
+
+    #[test]
+    fn depth_test_enabled_when_only_testing_not_writing() {
+        // The exact case that was silently broken before this fix:
+        // `examples/mixed.rs`'s sprite pipeline (`depth_test:
+        // LessOrEqual, depth_write: false`) must still get
+        // `GL_DEPTH_TEST` enabled so it can be occluded by the terrain,
+        // even though it must not write its own depth.
+        assert!(needs_depth_test(false, Comparison::LessOrEqual));
+    }
+
+    #[test]
+    fn depth_test_enabled_when_both_writing_and_testing() {
+        assert!(needs_depth_test(true, Comparison::Less));
+    }
+
+    #[test]
+    fn depth_test_disabled_only_for_the_single_both_off_case() {
+        for cmp in [
+            Comparison::Never,
+            Comparison::Less,
+            Comparison::LessOrEqual,
+            Comparison::Greater,
+            Comparison::GreaterOrEqual,
+            Comparison::Equal,
+            Comparison::NotEqual,
+            Comparison::Always,
+        ] {
+            let expect_enabled = cmp != Comparison::Always;
+            assert_eq!(needs_depth_test(false, cmp), expect_enabled, "{cmp:?}");
+            assert!(needs_depth_test(true, cmp), "{:?}", cmp);
         }
     }
 }

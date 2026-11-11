@@ -1,5 +1,14 @@
 // Browser evidence for issue #29's mixed (mode B) vertical slice.
 //
+// Filename note: this file is deliberately named `*.privatefixture.mjs`,
+// not `*.spec.mjs`, so root's `playwright.config.mjs` (testMatch
+// "*.spec.mjs") does not auto-discover and run it as part of the root
+// suite. This fixture needs its own private build steps (a real
+// `vx-server` binary and two private WASM artifacts) that root CI does
+// not run, so it must be invoked explicitly with its own config:
+// `npx playwright test --config=tests/browser/voxel-mixed.playwright.config.mjs`
+// (see that file for the exact required build commands).
+//
 // This spec owns and runs its own bounded, ephemeral fixture: it does
 // NOT use tests/browser/serve.mjs (core/server fixture, parent-owned,
 // port 4173) and does NOT use the drawing companion's port 4280. It
@@ -668,17 +677,15 @@ async function applyFixedTrace(page, { serialize = false } = {}) {
     await page.waitForTimeout(400);
   }
 
-  // Stone column "between the camera and the sprite": per this
-  // slice's default `OrbitCamera`/sprite-animation constants, world
-  // column (11, 4) lies on the straight 3D line from the camera eye
-  // to the frozen (speed 0) sprite position. This column is the
-  // sprite's own ground footprint and the scene already generates it
-  // solid up to the world ceiling (y=11), so a "build up" loop over
-  // `(vx_column_height()+1)..=11` can be a no-op (zero `vx_input`
-  // calls) here specifically; always (re)write the single topmost
-  // cell instead, which is both unconditionally one `Sim::apply`
-  // (so `rev` always advances by exactly 1) and still a stone
-  // column directly between the camera and the sprite.
+  // Fourth op: a stone column at world column (11, 4), whose ground
+  // footprint this scene already generates solid up to the world
+  // ceiling (y=11). This column has no special relationship to the
+  // sprite (see the separate "sprite depth occlusion" test below for
+  // that); it is used here only because always (re)writing its
+  // topmost cell is unconditionally one real `Sim::apply` (so `rev`
+  // always advances by exactly 1), unlike a "build up" loop over
+  // `(vx_column_height()+1)..=11`, which can be a no-op here
+  // specifically.
   await queueOne(1, STONE, 11, 11, 4);
   if (serialize) await page.waitForFunction((expected) => window.app.frame.contentWindow.miniquadRuntime.exports.vx_world_rev() === expected, revBefore + 3, { timeout: 10000 });
 
@@ -823,29 +830,46 @@ test("frozen offline and mixed (server-synced) scenes apply the same fixed edit 
   await contextB.close();
 });
 
-// This test documents a genuine, reproduced blocker in core
-// `src/graphics/gl.rs`'s `apply_pipeline` (root-owned, out of this
-// worktree's `companions/voxel/**` scope, so it is reported here
-// rather than edited): it only calls `glEnable(GL_DEPTH_TEST)` when
-// `pipeline.params.depth_write` is true, silently disabling depth
-// *testing* whenever a pipeline only disables depth *writing*
-// (exactly `examples/mixed.rs`'s sprite pipeline: `depth_test:
-// LessOrEqual, depth_write: false`, to let the sprite be tested
-// against, but not corrupt, the terrain's depth). `src/graphics/
-// metal.rs` treats the two independently (`setDepthWriteEnabled` and
-// `setDepthCompareFunction` are separate calls), confirming the GL
-// backend diverges from the documented/Metal-consistent contract.
-// Reproduced here: building a full-height stone column at world
-// column (11, 4) - which this slice's fixed camera/sprite constants
-// place directly between the camera eye and the frozen (speed 0)
-// sprite position, confirmed by an exhaustive per-column probe this
-// round - never changes the sprite's own projected pixel from the
-// sprite's tint, even though the very same edit set measurably
-// changes ~1.5% of the canvas's pixels elsewhere (the terrain mesh
-// *does* rebuild and render). This is `test.fail()`, not skipped: a
-// future GL-backend fix should flip the pixel and turn this red
-// green, at which point this annotation should be removed.
-test.fail("sprite depth occlusion: a stone column between the camera and the sprite replaces the sprite's tint with the terrain's colour (blocked: core GL depth_test/depth_write bug)", async ({ page }) => {
+// Regression test for a previously genuine, reproduced blocker in
+// core `src/graphics/gl.rs`'s `apply_pipeline`: it used to call
+// `glEnable(GL_DEPTH_TEST)` only when `pipeline.params.depth_write`
+// was true, silently disabling depth *testing* whenever a pipeline
+// only disabled depth *writing* (exactly `examples/mixed.rs`'s sprite
+// pipeline: `depth_test: LessOrEqual, depth_write: false`, to let the
+// sprite be tested against, but not corrupt, the terrain's depth).
+// `src/graphics/metal.rs` always treated the two independently
+// (`setDepthWriteEnabled` and `setDepthCompareFunction` are separate
+// calls), so the GL backend diverged from the documented/Metal-
+// consistent contract. Fixed in this worktree's `gl.rs` by enabling
+// `GL_DEPTH_TEST` whenever `depth_write || depth_test !=
+// Comparison::Always`, and by calling `glDepthMask` independently so
+// writes stay off while tests still run (plus a matching `clear()`
+// fix: depth clears now force the mask true first, since
+// `glClear(GL_DEPTH_BUFFER_BIT)` is itself gated by the current
+// mask, then restore it). See `graphics::gl::depth_state_tests` for
+// the pure-logic unit coverage and `docs/architecture/
+// voxel-protocol.md`'s "Known blocker" section for the full root-
+// cause writeup.
+//
+// Fixing the real GL bug also exposed a second, independent design
+// bug in this example's frozen (`speed: 0`) scene: the sprite's old
+// fixed height formula placed it embedded inside its own column's
+// solid terrain, which only looked fine because the GL bug drew it
+// through everything unconditionally. `examples/mixed.rs` now floats
+// the sprite a fixed margin above its own column's real height (via
+// `vx_column_height`), and the frozen position was retargeted (via
+// the orbit formula's `radius`/`PHASE_OFFSET` constants) to world
+// column (2, 6), whose low natural height (5) leaves it visible by
+// default. The edit below sets one stone voxel at world column
+// (3, 6), y=6 - verified empirically against this exact built WASM
+// artifact (single-voxel edits at y=5, 7, 8, 9 do not occlude; y=6
+// alone does), consistent with ray-marching this scene's exact
+// `OrbitCamera` eye/target geometry against the real column-height
+// grid (not guessed), to sit squarely on the real 3D ray between the
+// camera eye and the frozen sprite position, so it alone newly
+// occludes the sprite's projected pixel.
+test("sprite depth occlusion: a stone column between the camera and the sprite replaces the sprite's tint with the terrain's colour", async ({ page }) => {
+
   await page.goto(`${baseURL}/voxel-mixed.html`);
   await page.evaluate(async (wasmURL) => {
     const { mount } = await import("/js/miniquad.mjs");
@@ -857,6 +881,16 @@ test.fail("sprite depth occlusion: a stone column between the camera and the spr
 
   const canvas = page.frameLocator("#scene iframe").locator("#glcanvas");
   const { PNG } = await import("pngjs");
+  // `vx_sprite_pixel()` reports CSS-pixel coordinates (it divides by
+  // `self.screen_size`, the CSS size `js/gl.js` reports), but
+  // `canvas.screenshot()` captures the real GPU framebuffer, which is
+  // CSS size * `devicePixelRatio` (see `js/gl.js`'s `dpr` binding and
+  // the "high-DPI framebuffer dimensions" test above). Playwright's
+  // "Desktop Safari" device preset (used for the `webkit` project)
+  // sets `deviceScaleFactor: 2`, unlike the Chromium/Firefox presets'
+  // `1`, so without this scaling this test's pixel lookup silently
+  // read the wrong framebuffer location on WebKit only.
+  const dpr = await page.evaluate(() => window.app.frame.contentWindow.devicePixelRatio);
   const spriteXY = await page.evaluate(() => {
     const exports = window.app.frame.contentWindow.miniquadRuntime.exports;
     const packed = exports.vx_sprite_pixel();
@@ -868,18 +902,20 @@ test.fail("sprite depth occlusion: a stone column between the camera and the spr
   };
 
   const SPRITE_TINT = [0x30, 0x75, 0xc8]; // DEFAULT_SPRITE_RGBA8 = 0x3075_C8FF
-  const before = pixelAt(PNG.sync.read(await canvas.screenshot()), spriteXY.px, spriteXY.py);
+  const fbX = Math.round(spriteXY.px * dpr);
+  const fbY = Math.round(spriteXY.py * dpr);
+  const before = pixelAt(PNG.sync.read(await canvas.screenshot()), fbX, fbY);
   expect(before).toEqual(SPRITE_TINT);
 
   const revBeforeEdit = await page.evaluate(() => window.app.frame.contentWindow.miniquadRuntime.exports.vx_world_rev());
   await page.evaluate(() => {
     const exports = window.app.frame.contentWindow.miniquadRuntime.exports;
-    // (11, 4)'s ground footprint is already solid up to y=11 in this
-    // scene (confirmed empirically), so always (re)write the topmost
-    // cell rather than looping over "missing" cells, which can be a
-    // no-op here; this still guarantees exactly one real `Sim::apply`
-    // (verified below via `rev`), i.e. a genuine edit was attempted.
-    exports.vx_input(1, 3, 11, 11, 4);
+    // Column (3, 6) is naturally open air at y=6 (natural height 5),
+    // so this single `SetVoxel` is a genuine edit (verified below via
+    // `rev`), and - per the ray-marched geometry above - the one new
+    // solid voxel it places is enough to occlude the sprite (verified
+    // empirically: y=6 alone blocks; y=5, 7, 8, 9 alone do not).
+    exports.vx_input(1, 3, 3, 6, 6);
   });
   await page.waitForFunction((expected) => window.app.frame.contentWindow.miniquadRuntime.exports.vx_world_rev() === expected, revBeforeEdit + 1);
   await page.waitForTimeout(300);

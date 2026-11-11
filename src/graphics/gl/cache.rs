@@ -42,6 +42,11 @@ pub struct GlCache {
     pub stencil: Option<StencilState>,
     pub color_write: ColorMask,
     pub cull_face: CullFace,
+    // Mirrors the GL depth-mask state set by `glDepthMask`, independent
+    // of whether `GL_DEPTH_TEST` is currently enabled. GL's own default
+    // depth mask is `GL_TRUE`, so this starts `true` to match reality
+    // on a fresh context before any pipeline is applied.
+    pub depth_write: bool,
     pub attributes: [Option<CachedAttribute>; MAX_VERTEX_ATTRIBUTES],
 }
 

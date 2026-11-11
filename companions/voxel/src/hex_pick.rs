@@ -74,6 +74,11 @@ const HALF_FOV_Y_RADIANS: f64 = 22.5 * std::f64::consts::PI / 180.0; // half of 
 const APOTHEM: f64 = 0.866_025_403_784_438_6; // sqrt(3)/2, exact to f64 precision
 const LAYER_HEIGHT: f64 = crate::hex::HEX_LAYER_HEIGHT as f64;
 
+fn column_center(q: i32, r: i32) -> [f64; 2] {
+    // Keep analytic ties independent of the mesh's f32 rounding.
+    [1.5 * q as f64, (2.0 * r as f64 + q as f64) * APOTHEM]
+}
+
 fn finite3(v: [f64; 3]) -> bool {
     v.iter().all(|c| c.is_finite())
 }
@@ -195,12 +200,9 @@ pub fn hex_cell_at_xz(x: f64, z: f64, layer: i32) -> Result<HexCell, HexError> {
     if !(x.is_finite() && z.is_finite()) {
         return Err(HexError::CoordinateOutOfRange);
     }
-    // Invert the center formula of contract section 1.5:
-    //   x = 3*q * HEX_X_STEP,  z = (2*r + q) * HEX_X_STEP_Z = (2r+q)*HEX_Z_STEP
-    let x_step = crate::hex::HEX_X_STEP as f64;
-    let z_step = crate::hex::HEX_Z_STEP as f64;
-    let q_frac = x / (3.0 * x_step);
-    let two_r_plus_q = z / z_step;
+    // Invert the analytic center formula of contract section 2.3.
+    let q_frac = x / 1.5;
+    let two_r_plus_q = z / APOTHEM;
     let r_frac = (two_r_plus_q - q_frac) / 2.0;
 
     // Standard axial-to-cube rounding: s = -q - r.
@@ -223,12 +225,9 @@ pub fn hex_cell_at_xz(x: f64, z: f64, layer: i32) -> Result<HexCell, HexError> {
     // distance to the actual query point, tie-broken by tie rule A.
     let mut best: Option<(i32, i32, f64)> = None;
     let mut consider = |q: i32, r: i32| {
-        let Ok(cell) = HexCell::new(q, r, layer) else {
-            return;
-        };
-        let center = cell.center();
-        let ddx = center[0] as f64 - x;
-        let ddz = center[2] as f64 - z;
+        let [cx, cz] = column_center(q, r);
+        let ddx = cx - x;
+        let ddz = cz - z;
         let dist2 = ddx * ddx + ddz * ddz;
         best = Some(match best {
             None => (q, r, dist2),
@@ -356,21 +355,16 @@ pub fn pick_hex(
 
     while t <= t1 + 1e-9 && steps < params.max_steps {
         let (q, r) = cell_q_r;
-        let center = match HexCell::new(q, r, params.min_layer) {
-            Ok(cell) => cell.center(),
-            Err(_) => return Ok(None),
-        };
-        let cx = center[0] as f64;
-        let cz = center[2] as f64;
+        let [cx, cz] = column_center(q, r);
 
         // Column exit: smallest t_k among the six side planes with
         // the ray moving outward through that side (tie rule B: on an
         // equal t_k, the lowest face index wins).
         let mut best_exit: Option<(usize, f64)> = None;
         for face in HexFace::SIDES {
-            let normal = face.normal();
-            let nx = normal[0] as f64;
-            let nz = normal[2] as f64;
+            let (dq, dr, _) = face.delta();
+            let nx = dq as f64 * APOTHEM;
+            let nz = (2 * dr + dq) as f64 * 0.5;
             let d_dot_n = ray.dir[0] * nx + ray.dir[2] * nz;
             if d_dot_n <= 1e-12 {
                 continue;
@@ -483,6 +477,140 @@ fn layer_at_y(y: f64, min_layer: i32, max_layer: i32) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn world_with_cell(cell: HexCell) -> World {
+        let dims = crate::chunk::ChunkDims::new(4, 4, 4);
+        let mut world = World::new(dims, 1).unwrap();
+        let (coord, local) = cell.to_chunk_local(dims).unwrap();
+        let mut chunk = crate::chunk::Chunk::new(dims).unwrap();
+        chunk.set(local[0], local[1], local[2], 1).unwrap();
+        world.insert(coord, chunk).unwrap();
+        world
+    }
+
+    fn pick_params() -> HexPickParams {
+        HexPickParams {
+            max_distance: 20.0,
+            max_steps: 100,
+            min_layer: 0,
+            max_layer: 3,
+        }
+    }
+
+    #[test]
+    fn vertex_ties_select_the_smallest_axial_coordinate() {
+        for _ in 0..3 {
+            assert_eq!(
+                hex_cell_at_xz(1.0, 0.0, 1).unwrap(),
+                HexCell::new(0, 0, 1).unwrap()
+            );
+            assert_eq!(
+                hex_cell_at_xz(-1.0, 0.0, 1).unwrap(),
+                HexCell::new(-1, 0, 1).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn points_in_out_of_range_cells_are_not_clamped_to_a_valid_neighbor() {
+        for q in [crate::hex::HEX_COORD_MIN - 1, crate::hex::HEX_COORD_MAX + 1] {
+            assert_eq!(
+                hex_cell_at_xz(q as f64 * 1.5, q as f64 * APOTHEM, 1),
+                Err(HexError::CoordinateOutOfRange),
+            );
+        }
+    }
+
+    #[test]
+    fn points_inside_each_edge_select_the_cell_at_negative_and_large_coordinates() {
+        for (q, r) in [(0, 0), (-3, -4), (65_534, -65_535)] {
+            let cell = HexCell::new(q, r, 1).unwrap();
+            let center = cell.center();
+            for face in HexFace::SIDES {
+                let normal = face.normal();
+                for _ in 0..3 {
+                    let picked = hex_cell_at_xz(
+                        center[0] as f64 + (APOTHEM - 0.01) * normal[0] as f64,
+                        center[2] as f64 + (APOTHEM - 0.01) * normal[2] as f64,
+                        1,
+                    )
+                    .unwrap();
+                    assert_eq!(picked, cell, "edge {face:?} at ({q}, {r})");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn horizontal_rays_hit_each_side_across_missing_and_negative_chunks() {
+        for (q, r) in [(-1, -2), (3, 0)] {
+            let cell = HexCell::new(q, r, 1).unwrap();
+            let world = world_with_cell(cell);
+            let center = cell.center();
+            for face in HexFace::SIDES {
+                let normal = face.normal();
+                let outward = normalize3([normal[0] as f64, 0.0, normal[2] as f64]).unwrap();
+                let ray = HexRay {
+                    origin: add3(
+                        [center[0] as f64, center[1] as f64, center[2] as f64],
+                        scale3(outward, 2.0),
+                    ),
+                    dir: scale3(outward, -1.0),
+                };
+                for _ in 0..3 {
+                    let hit = pick_hex(&world, &ray, &pick_params()).unwrap().unwrap();
+                    assert_eq!(hit.cell, cell, "entry from {face:?} at ({q}, {r})");
+                    assert_eq!(hit.face, Some(face));
+                    assert!((hit.distance - (2.0 - APOTHEM)).abs() < 1e-6);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn a_vertex_crossing_uses_the_lowest_exit_face_index() {
+        let cell = HexCell::new(1, 0, 1).unwrap();
+        let world = world_with_cell(cell);
+        let ray = HexRay {
+            origin: [0.0, 1.5, 0.0],
+            dir: [1.0, 0.0, 0.0],
+        };
+        for _ in 0..3 {
+            let hit = pick_hex(&world, &ray, &pick_params()).unwrap().unwrap();
+            assert_eq!(hit.cell, cell);
+            assert_eq!(hit.face, Some(HexFace::NegQ));
+            assert!((hit.distance - 1.0).abs() < 1e-9);
+        }
+    }
+
+    #[test]
+    fn distance_and_step_bounds_stop_before_a_solid_neighbor() {
+        let cell = HexCell::new(0, 1, 1).unwrap();
+        let world = world_with_cell(cell);
+        let ray = HexRay {
+            origin: [0.0, 1.5, 0.0],
+            dir: [0.0, 0.0, 1.0],
+        };
+        let limited_distance = HexPickParams {
+            max_distance: 0.5,
+            ..pick_params()
+        };
+        let limited_steps = HexPickParams {
+            max_steps: 1,
+            ..pick_params()
+        };
+        for _ in 0..3 {
+            assert_eq!(pick_hex(&world, &ray, &limited_distance).unwrap(), None);
+            assert_eq!(pick_hex(&world, &ray, &limited_steps).unwrap(), None);
+            assert_eq!(
+                pick_hex(&world, &ray, &pick_params())
+                    .unwrap()
+                    .unwrap()
+                    .cell,
+                cell
+            );
+        }
+    }
 
     #[test]
     fn invalid_viewport_is_rejected() {

@@ -400,8 +400,6 @@ test("resolveMiniquadSource in git mode rejects a resolved revision that is not 
 });
 
 // Regression test for a default `--source git` generation that always
-
-// Regression test for a default `--source git` generation that always
 // failed: DEFAULT_BASELINE_REV used to be the pre-adoption-layer
 // commit, missing four of the five required browser files. This test
 // mocks the git DI boundary (no real `git` process, no network, no
@@ -466,7 +464,7 @@ test("resolveMiniquadSource + readRequiredWebAssets: a pre-adoption-shaped revis
 // checkout's own commit history or clone depth.
 test("generateProject with --source git copies exact asset bytes and pins the resolved full SHA", () => {
   const { repoDir, adoptedSha } = makeFixtureGitRepo();
-  const destinationDir = join(repoDir, "..", "project");
+  const destinationDir = join(repoDir, "project");
   try {
     const result = generateProject(
       destinationDir,
@@ -511,10 +509,8 @@ test("generateProject with --source git copies exact asset bytes and pins the re
     }
   } finally {
     rmSync(repoDir, { recursive: true, force: true });
-    rmSync(destinationDir, { recursive: true, force: true });
   }
 });
-
 
 test("build.mjs records final app.wasm/index.html hashes without dropping source-copied entries or provenance", () => {
   const scratchRoot = makeScratchDir("generate-then-build-");

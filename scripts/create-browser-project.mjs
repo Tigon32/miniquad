@@ -32,22 +32,10 @@ const THIS_FILE = fileURLToPath(import.meta.url);
 const REPO_ROOT = dirname(dirname(THIS_FILE));
 const TEMPLATES_ROOT = join(REPO_ROOT, "templates", "browser");
 const WASM_TARGET = "wasm32-unknown-unknown";
-// `454792c46febefc476e1df153a5efed8bbb2ef79` predates the browser
-// adoption layer and has only `js/gl.js`, so a default `--source git`
-// generation with no `--rev` always failed. `f837a98d415262320a8c66ef9f8024d8f2faeab1`
-// is a reviewed, browser-tested, immutable, publicly available
-// revision on `Tigon32/miniquad` with all five required files (not
-// the first such revision: #125/cefff8f already had them; #127 added
-// further browser-tested coverage over it). Keep this pinned to one
-// named commit; never a floating ref like `master` or `HEAD`, which
-// would let the generator silently start reading unreviewed commits.
+// Pin a browser-tested source. The earlier baseline lacks embedding assets.
 const DEFAULT_BASELINE_REV = "f837a98d415262320a8c66ef9f8024d8f2faeab1";
 const DEFAULT_GIT_URL = "https://github.com/Tigon32/miniquad.git";
 
-// Files the embedding module needs. `readRequiredWebAssets` fails
-// with an actionable, itemized error if a caller points `--rev` or
-// `--miniquad-path` at a revision missing any of them; that is not
-// guaranteed for every revision after DEFAULT_BASELINE_REV.
 const REQUIRED_WEB_ASSETS = [
   "js/gl.js",
   "js/miniquad.mjs",

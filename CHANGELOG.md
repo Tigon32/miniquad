@@ -34,7 +34,11 @@ Package: miniquad 0.4.11 (version not changed)
 - N/A (first candidate under this contract).
 
 ### Deprecated
-- N/A.
+- N/A in this candidate.
+- Planned, not done: rename `Pipeline` to `PipelineId`, the same as `BufferId`,
+  `TextureId`, and `ShaderId` (issue #19). Add `PipelineId` and keep a
+  deprecated `Pipeline` alias first, or rename only in a breaking release.
+  Record the step in the change log section of that candidate.
 
 ### Upstream changes
 - No Rust API changes relative to the `39c928f` merge base; `Cargo.toml`
@@ -48,6 +52,12 @@ Package: miniquad 0.4.11 (version not changed)
   measurement have not run in `Miniquad release candidate` (manual CI) for
   this label. The bootstrap baseline `f837a98d415262320a8c66ef9f8024d8f2faeab1`
   remains `reference: "bootstrap-reference"`, not a qualified release.
+- Native platforms, Safari on a physical iOS device, and Chrome on a physical
+  Android device are unqualified and not tested. See the manual compatibility
+  matrix in `docs/release.md`.
+- Consumers pin one exact fork Git revision and copy `js/gl.js` from that
+  revision. No npm runtime package and no GitHub Release asset exist. See
+  "Consumer distribution" in `docs/release.md`.
 - This candidate has not received owner approval. `review.ownerApproval` must
   stay `false`. A `.release` publication needs a separate, explicit owner
   decision; see `docs/release-candidate-contract.md` section 9.

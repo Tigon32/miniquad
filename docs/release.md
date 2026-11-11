@@ -13,6 +13,44 @@ Until a versioned fork release is approved, do not claim full upstream compatibi
 - **Platforms:** Browser/WASM is the qualification target. Windows, Linux, macOS, Android, iOS and other native targets remain **not qualified by this gate** unless each target has its own run and evidence record.
 - **Upstream:** Review imported fixes independently. Record source revision, license, local diff and test outcome. Do not assume a clean cherry-pick proves compatibility.
 
+### Manual compatibility matrix
+
+Keep this matrix for an explicit release request.
+A target changes from **unqualified** only when a separate evidence record exists for that target and that candidate.
+[#156](https://github.com/Tigon32/miniquad/issues/156) owns the approved platform scope.
+Use that scope when it is approved.
+
+| Target | State for a candidate | Evidence record that can change the state |
+| --- | --- | --- |
+| Chromium, Firefox, desktop WebKit (Playwright) | Candidate gate scope | Candidate drill and reference-profile run (section "Release gate") |
+| Safari on a physical iOS device | Unqualified, not tested | [Mobile browser qualification](mobile-browser-qualification.md) session |
+| Chrome on a physical Android device | Unqualified, not tested | [Mobile browser qualification](mobile-browser-qualification.md) session |
+| Android native | Unqualified, not tested | [Native platform qualification](native-platform-qualification.md) record |
+| iOS native | Unqualified, not tested | Separate native record for the target |
+| Windows, Linux, macOS native | Unqualified | Separate native build and runtime record for each target |
+
+Do not copy a state from an earlier candidate.
+Do not change a state because a compiler check passed.
+
+## Consumer distribution
+
+Until an owner approves a publication, consumers use one exact fork revision.
+
+1. **Rust source:** Use a Cargo `git` dependency on `https://github.com/Tigon32/miniquad` with `rev = "<40-character SHA>"`.
+   Do not use a branch, a tag name, or the upstream crate as the pin.
+2. **Bridge:** Copy `js/gl.js` from the same SHA. The [browser starter](browser-starter.md) does this with `git show <rev>:<path>`.
+   A candidate package contains the bridge and the WASM file of one candidate. Its manifest gives their hashes.
+   No npm runtime package exists. No GitHub Release asset exists.
+   Do not use the upstream hosted `gl.js`. It uses ABI v2 and this fork uses ABI v3.
+3. **Hashes:** Keep the SHA-256 values of `gl.js` and the WASM file that you deploy.
+4. **Upgrade:** Change the `rev` value and copy `gl.js` from the new SHA in the same change.
+   Rebuild the WASM file. Deploy `gl.js` and the WASM file together.
+   Read the `CHANGELOG.md` section for the new candidate before the upgrade.
+5. **Rollback:** Deploy the previous `gl.js` and WASM pair together. Do not roll back only one file.
+
+Optional companions keep their own versions. Record their versions and source SHAs with the core SHA.
+A change to the browser public contract, for example from [#121](https://github.com/Tigon32/miniquad/issues/121), needs a compatibility review in [#19](https://github.com/Tigon32/miniquad/issues/19) before a candidate includes it.
+
 ## Versioning and change control
 
 [MADR 0010](adr/0010-browser-release-candidates.md) proposes fork-scoped candidate labels.

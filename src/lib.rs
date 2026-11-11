@@ -56,9 +56,6 @@ impl<T> ResourceManager<T> {
         self.resources.remove(&id).unwrap()
     }
 
-    /// Mutable access to every live resource, for per-frame
-    /// bookkeeping across all outstanding handles (e.g. Metal's
-    /// per-buffer frame-rotation reset in `commit_frame`).
     pub fn values_mut(&mut self) -> impl Iterator<Item = &mut T> {
         self.resources.values_mut()
     }

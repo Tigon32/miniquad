@@ -822,9 +822,18 @@ mod tests {
             let pipeline = context.new_pipeline(&[], &[], shader, PipelineParams::default());
 
             context.delete_pipeline(pipeline);
+            context.render_encoder = Some(context.view);
+            assert!(catch_unwind(AssertUnwindSafe(|| {
+                context.apply_pipeline(&pipeline)
+            }))
+            .is_err());
             assert!(catch_unwind(AssertUnwindSafe(|| context.delete_pipeline(pipeline))).is_err());
 
             context.delete_shader(shader);
+            assert!(catch_unwind(AssertUnwindSafe(|| {
+                context.new_pipeline(&[], &[], shader, PipelineParams::default())
+            }))
+            .is_err());
             assert!(catch_unwind(AssertUnwindSafe(|| context.delete_shader(shader))).is_err());
         });
     }
@@ -867,7 +876,6 @@ mod tests {
                 height: 2,
                 ..TextureParams::default()
             };
-            // One byte short of `params.format.size(2, 2)`.
             let short_bytes = vec![0_u8; params.format.size(2, 2) as usize - 1];
             assert!(catch_unwind(AssertUnwindSafe(|| {
                 context.new_texture(
@@ -1287,9 +1295,7 @@ impl RenderingBackend for MetalContext {
                        height: params.height as u64
                        mipmapped: params.allocate_mipmaps as BOOL]
         };
-        // `texture2DDescriptorWithPixelFormat:...` is a convenience
-        // constructor (not `alloc`/`new`/`copy`), so it returns an
-        // autoreleased object that this function must not release.
+        // This convenience constructor returns an autoreleased descriptor.
         assert!(
             !descriptor.is_null(),
             "Metal: texture descriptor creation failed"
@@ -1361,10 +1367,7 @@ impl RenderingBackend for MetalContext {
             },
         }
 
-        // Validate source bytes before any Objective-C object is
-        // created: a late panic here must not leave a retained
-        // sampler/texture published in `self.textures.0` with no
-        // `TextureId` to delete it.
+        // Reject invalid bytes before publishing objects with no caller-owned id.
         match &bytes {
             TextureSource::Empty => {}
             TextureSource::Bytes(bytes) => {
@@ -1428,8 +1431,6 @@ impl RenderingBackend for MetalContext {
             TextureId(TextureIdInner::Managed(self.textures.0.len() - 1))
         };
 
-        // Lengths were already validated above, before any object
-        // in this texture was published.
         match bytes {
             TextureSource::Empty => {}
             TextureSource::Bytes(bytes) => {

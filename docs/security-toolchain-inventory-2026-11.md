@@ -135,3 +135,69 @@ audit trail rather than silently rewriting historical observations.
 
 These scan results are evidence of the enumerated checks, not a
 penetration test or an audit of all code, all browser engines, or native targets.
+
+## Verification addendum — 2026-11-11 (Playwright 1.65.0)
+
+This section records a separate, later change. It does not alter the
+2026-11-10 observations above.
+
+* Source for the baseline finding: [issue #155](https://github.com/Tigon32/miniquad/issues/155),
+  reviewed against `Tigon32/miniquad` public `master` at
+  `1364b6db83c5409cd1190856fbd5b1c8d1c5e0f3`.
+* Official release: [Playwright v1.65.0](https://github.com/microsoft/playwright/releases/tag/v1.65.0),
+  published 2026-11-05 by `dgozman`, commit `a1f35e1955976e84411f9c10358228a80b763ebe`.
+* `package.json` and `package-lock.json` now pin `@playwright/test` and
+  the resolved `playwright`/`playwright-core` dependency to `1.65.0`
+  (previously `1.56.1`).
+* Browser revisions selected by the updated `playwright-core` package
+  metadata (`node_modules/playwright-core/browsers.json`):
+  Chromium (Chrome for Testing) `158.0.8127.18` (build `1254`,
+  previously `141`/build `1194`), Firefox `159.0` (build `1572`,
+  previously `142`/build `1495`), WebKit `27.2` (build `2388`,
+  previously `26`/build `2215`).
+* `npx playwright install chromium firefox webkit` downloaded these
+  three new revisions to `~/Library/Caches/ms-playwright` on macOS
+  arm64. The prior revisions remain cached under their own version
+  directories; the cache key already includes the lockfile hash per
+  [MADR 0007](adr/0007-use-supported-and-secure-toolchains.md).
+* No compatibility break applicable to this project's config or tests
+  was found in the 1.65.0 release notes. The notable items (Bun test
+  runner, TypeScript `useDefineForClassFields`, inert-element action
+  waits, RFC 6265 cookie matching, "no tests found" shard failure) do
+  not apply: this project's suite is plain JavaScript (`.mjs`), runs
+  under Node, and does not assert on cookie or inert-element behavior.
+* Full local verification on macOS arm64, Node `v26.10.0`:
+  `node --check js/gl.js` and `node --check` on each `js/*.mjs` passed;
+  `npm run lint:js` (ESLint) passed with no findings; `node --test
+  tests/*.test.cjs tests/*.test.mjs` reported **220 passed, 0 failed**;
+  `cargo test --lib` reported **15 passed, 0 failed** (library crate,
+  macOS arm64 host target); `cargo check --target
+  wasm32-unknown-unknown --lib` and `cargo build --release --target
+  wasm32-unknown-unknown` for the `quad` and `offscreen` examples, the
+  `companions/draw` `showcase` example, the `companions/voxel`
+  `offline` example, and the `experiments/drawing-comparison/external-consumer`
+  `consume` example all built without error.
+* `npx playwright test` (all three projects, `workers: 1`, the
+  project's existing config) reported **168 passed, 0 failed** after
+  generating the external-starter fixture locally with `node
+  scripts/create-browser-project.mjs target/browser-starter --source
+  path --miniquad-path "$(pwd)" --name miniquad-browser-starter` and
+  `node target/browser-starter/scripts/build.mjs`, matching the step
+  the CI workflows already run before this lane. That fixture step is
+  a pre-existing environment requirement of `tests/browser/starter.spec.mjs`,
+  unrelated to the Playwright version; it is not part of this change.
+* This addendum updates only `@playwright/test`/`playwright-core` and
+  the browser revisions they select. No other npm production or
+  development dependency, CI workflow, Rust crate, or native binding
+  changed in this update. Issue #155 also flagged `cargo-audit`
+  0.22.2 → 0.23.0, CI runner image labels, `~/.cargo/config` vs
+  `config.toml`, the unpinned `shell.nix` `<nixpkgs>` input, and the
+  Apple default-graphics-backend and native-binding-crate items; those
+  remain open, undecided, and out of scope for this Playwright-only
+  change.
+* [Issue #156](https://github.com/Tigon32/miniquad/issues/156) proposes
+  a separate modern-platform-support and legacy-removal decision
+  (draft MADR 0016). This Playwright update does not remove, weaken, or
+  reinterpret any legacy browser or engine-capability test, and does
+  not assert that all previously supported browsers remain supported;
+  it only records the new Playwright-managed browser revisions above.

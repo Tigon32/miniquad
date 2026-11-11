@@ -736,7 +736,6 @@ pub struct PipelineParams {
     pub primitive_type: PrimitiveType,
 }
 
-// TODO(next major version bump): should be PipelineId
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Pipeline(usize);
 
@@ -1195,8 +1194,8 @@ pub trait RenderingBackend {
     );
     fn texture_set_mag_filter(&mut self, texture: TextureId, filter: FilterMode);
     fn texture_set_wrap(&mut self, texture: TextureId, wrap_x: TextureWrap, wrap_y: TextureWrap);
-    /// Metal-specific note: if texture was created without `params.generate_mipmaps`
-    /// `generate_mipmaps` will do nothing.
+    /// Metal-specific note: panics if the texture was created without
+    /// `params.allocate_mipmaps`.
     ///
     /// Also note that if MipmapFilter is set to None, mipmaps will not be visible, even if
     /// generated.

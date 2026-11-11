@@ -308,13 +308,11 @@ impl MainThreadState {
 /// `thread::spawn(|| attach_jni_env());` will lead to internal jni crash :/
 /// thread::spawn(|| { attach_jni_env(); loop {} }); is basically what miniquad
 /// is doing. this is not correct, but works
-/// TODO: the problem here -
-/// TODO:   thread::spawn(|| { Attach(); .. Detach() }); will not work as well.
-/// TODO: JNI will check that thread's stack is still alive and will crash.
+/// `thread::spawn(|| { Attach(); .. Detach() });` will not work as well:
+/// JNI checks that the thread stack is still alive and crashes.
 ///
-/// TODO: Figure how to get into the thread destructor to correctly call Detach
-/// TODO: (this should be a GH issue)
-/// TODO: for reference - grep for "pthread_setspecific" in SDL2 sources, SDL fixed it!
+/// Detach must run from the thread destructor. SDL2 does this with
+/// `pthread_setspecific`. Tracked in #150.
 pub unsafe fn attach_jni_env() -> *mut ndk_sys::JNIEnv {
     let mut env: *mut ndk_sys::JNIEnv = std::ptr::null_mut();
     let attach_current_thread = (**VM).AttachCurrentThread.unwrap();
@@ -770,7 +768,7 @@ pub(crate) unsafe fn load_asset(filepath: *const ::core::ffi::c_char, out: *mut 
         return;
     }
     let length = ndk_sys::AAsset_getLength64(asset);
-    // TODO: memory leak right here! this buffer would never freed
+    // Nothing frees this buffer: #149.
     let buffer = libc::malloc(length as _);
     if ndk_sys::AAsset_read(asset, buffer, length as _) > 0 {
         ndk_sys::AAsset_close(asset);

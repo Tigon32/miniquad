@@ -1,0 +1,22 @@
+[package]
+name = "hex-2d-cross-contract"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = """
+Executable cross-contract test: locks the 2D hex layout module's
+duplicated lattice tables (`companions/draw/src/hex.rs`) against the 3D
+hexagonal-prism voxel module's tables (`companions/voxel/src/hex.rs`),
+per MADR 0012 option B and `docs/hex-2d-contract.md` section 2.
+
+Issue #130 (hexagonal-prism geometry) merged to public master at
+de6bff785d1ec71bad1b47ef032d19405c6fd7e2 (PR #136), so this crate now
+depends on this worktree's own in-tree `companions/voxel` (merged from
+master into `feat/hex2d-implementation`) rather than a sibling
+worktree's absolute path. No `[patch]` is needed: both crates share one
+`miniquad` checkout.
+"""
+
+[dependencies]
+miniquad-draw = { path = "../../companions/draw" }
+miniquad-voxel = { path = "../../companions/voxel" }

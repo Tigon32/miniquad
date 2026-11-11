@@ -823,10 +823,9 @@ mod tests {
 
             context.delete_pipeline(pipeline);
             context.render_encoder = Some(context.view);
-            assert!(catch_unwind(AssertUnwindSafe(|| {
-                context.apply_pipeline(&pipeline)
-            }))
-            .is_err());
+            assert!(
+                catch_unwind(AssertUnwindSafe(|| { context.apply_pipeline(&pipeline) })).is_err()
+            );
             assert!(catch_unwind(AssertUnwindSafe(|| context.delete_pipeline(pipeline))).is_err());
 
             context.delete_shader(shader);

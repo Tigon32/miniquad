@@ -46,6 +46,10 @@ Regular expression for a label:
 The first candidate label is `0.5.0-tigon32.1.rc.1`.
 Its tag is `tigon32-miniquad-v0.5.0-tigon32.1.rc.1`.
 
+The tool accepts numeric identifiers up to `9007199254740991` (`Number.MAX_SAFE_INTEGER`).
+It stores these identifiers as JSON numbers.
+It rejects a larger identifier or an increment past this limit. It must not round a version number.
+
 ### 2.2 Precedence
 
 Use SemVer 2.0.0 precedence. Do not write a different order.

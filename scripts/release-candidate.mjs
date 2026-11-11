@@ -67,6 +67,13 @@ export class ManifestError extends Error {
 // 2. Version and tag rules
 // ---------------------------------------------------------------------
 
+function exactVersionInteger(value) {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new RangeError("version identifier must be a non-negative safe integer");
+  }
+  return value;
+}
+
 export function parseLabel(label) {
   if (typeof label !== "string") {
     throw new Error("label must be a string");
@@ -77,10 +84,14 @@ export function parseLabel(label) {
   }
   const [, major, minor, patch, forkSeq, rc] = match;
   return {
-    core: { major: Number(major), minor: Number(minor), patch: Number(patch) },
-    forkSeq: Number(forkSeq),
+    core: {
+      major: exactVersionInteger(Number(major)),
+      minor: exactVersionInteger(Number(minor)),
+      patch: exactVersionInteger(Number(patch)),
+    },
+    forkSeq: exactVersionInteger(Number(forkSeq)),
     stage: rc !== undefined ? "rc" : "release",
-    rc: rc !== undefined ? Number(rc) : null,
+    rc: rc !== undefined ? exactVersionInteger(Number(rc)) : null,
   };
 }
 
@@ -147,14 +158,15 @@ export function compareLabels(a, b) {
 
 export function deriveCore(previousCore, { rustApiBreaking, browserProtocolBreaking, changed }) {
   const { major, minor, patch } = previousCore;
+  for (const value of [major, minor, patch]) exactVersionInteger(value);
   const breaking = Boolean(rustApiBreaking) || Boolean(browserProtocolBreaking);
   if (major === 0) {
-    if (breaking) return { major: 0, minor: minor + 1, patch: 0 };
-    if (changed) return { major: 0, minor, patch: patch + 1 };
+    if (breaking) return { major: 0, minor: exactVersionInteger(minor + 1), patch: 0 };
+    if (changed) return { major: 0, minor, patch: exactVersionInteger(patch + 1) };
     return { major, minor, patch };
   }
-  if (breaking) return { major: major + 1, minor: 0, patch: 0 };
-  if (changed) return { major, minor, patch: patch + 1 };
+  if (breaking) return { major: exactVersionInteger(major + 1), minor: 0, patch: 0 };
+  if (changed) return { major, minor, patch: exactVersionInteger(patch + 1) };
   return { major, minor, patch };
 }
 

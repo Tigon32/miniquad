@@ -94,6 +94,9 @@ The main rules follow.
   The `.release` form is reserved. This decision does not approve its use.
 * The Git tag is `tigon32-miniquad-v` followed by the label.
   The prefix names the GitHub owner and the current crate. It is not a product name.
+* Numeric identifiers use exact JSON integers up to `9007199254740991`.
+  The tool rejects larger values and version increments that exceed this limit.
+  It does not round a version number or use an approximate number for precedence.
 * `X.Y.Z` is the fork compatibility version.
   Start from upstream `0.4.11`. While the major version is `0`, a breaking change to the Rust public API or to the core browser contract increases the minor version and sets the patch version to `0`.
   An additive or corrective change increases the patch version.

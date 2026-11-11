@@ -92,6 +92,20 @@ test("compareLabels is reflexive", () => {
   assert.equal(compareLabels("0.5.0-tigon32.1.rc.1", "0.5.0-tigon32.1.rc.1"), 0);
 });
 
+test("release labels reject numeric identifiers that cannot be represented exactly", () => {
+  for (const label of [
+    "9007199254740992.0.0-tigon32.1.rc.1",
+    "0.9007199254740992.0-tigon32.1.rc.1",
+    "0.5.9007199254740992-tigon32.1.rc.1",
+    "0.5.0-tigon32.9007199254740992.rc.1",
+    "0.5.0-tigon32.1.rc.9007199254740992",
+    `0.5.0-tigon32.1.rc.${"9".repeat(309)}`,
+  ]) {
+    assert.throws(() => parseLabel(label), /safe integer/);
+  }
+  assert.equal(parseLabel("0.5.0-tigon32.1.rc.9007199254740991").rc, Number.MAX_SAFE_INTEGER);
+});
+
 // ---------------------------------------------------------------------
 // Compatibility core
 // ---------------------------------------------------------------------
@@ -130,6 +144,25 @@ test("deriveCore: no breaking change and no other change keeps the previous core
     changed: false,
   });
   assert.deepEqual(result, { major: 0, minor: 4, patch: 11 });
+});
+
+test("deriveCore rejects invalid input and an increment beyond the exact integer range", () => {
+  const unchanged = { rustApiBreaking: false, browserProtocolBreaking: false, changed: false };
+  for (const value of [-1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, "1"]) {
+    for (const field of ["major", "minor", "patch"]) {
+      assert.throws(
+        () => deriveCore({ major: 0, minor: 4, patch: 11, [field]: value }, unchanged),
+        /safe integer/,
+      );
+    }
+  }
+  for (const [core, flags] of [
+    [{ major: 0, minor: 4, patch: Number.MAX_SAFE_INTEGER }, { ...unchanged, changed: true }],
+    [{ major: 0, minor: Number.MAX_SAFE_INTEGER, patch: 0 }, { ...unchanged, browserProtocolBreaking: true }],
+    [{ major: Number.MAX_SAFE_INTEGER, minor: 0, patch: 0 }, { ...unchanged, rustApiBreaking: true }],
+  ]) {
+    assert.throws(() => deriveCore(core, flags), /safe integer/);
+  }
 });
 
 // ---------------------------------------------------------------------

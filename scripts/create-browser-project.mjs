@@ -9,7 +9,7 @@
 //
 //   node scripts/create-browser-project.mjs <destination> \
 //     --source git --git-url https://github.com/Tigon32/miniquad.git \
-//     --rev 454792c46febefc476e1df153a5efed8bbb2ef79 \
+//     --rev f837a98d415262320a8c66ef9f8024d8f2faeab1 \
 //     --git-repo /abs/path/to/local/clone
 //
 // The destination directory must not already exist. The generator
@@ -32,14 +32,10 @@ const THIS_FILE = fileURLToPath(import.meta.url);
 const REPO_ROOT = dirname(dirname(THIS_FILE));
 const TEMPLATES_ROOT = join(REPO_ROOT, "templates", "browser");
 const WASM_TARGET = "wasm32-unknown-unknown";
-const DEFAULT_BASELINE_REV = "454792c46febefc476e1df153a5efed8bbb2ef79";
+// Pin a browser-tested source. The earlier baseline lacks embedding assets.
+const DEFAULT_BASELINE_REV = "f837a98d415262320a8c66ef9f8024d8f2faeab1";
 const DEFAULT_GIT_URL = "https://github.com/Tigon32/miniquad.git";
 
-// Files the embedding module needs. `js/gl.js` already exists in the
-// source revision. The other four are part of the browser adoption
-// layer proposed in MADR 0009 and land through separate integration
-// work; until they exist, project generation fails with an
-// actionable, itemized error instead of producing a broken output.
 const REQUIRED_WEB_ASSETS = [
   "js/gl.js",
   "js/miniquad.mjs",

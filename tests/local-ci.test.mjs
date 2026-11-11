@@ -1,6 +1,9 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { prepareLocalGit } from "../scripts/prepare-local-git.mjs";
 import { parseArgs, isolatedEnvironment, buildCommand, checkedProcess } from "../scripts/local-ci.mjs";
 
 const paths = { root: "/checkout with spaces", run: "/run", cache: "/cache", architecture: "linux/arm64" };
@@ -66,4 +69,38 @@ test("local runner failure, signal, and missing executable cannot report success
   assert.throws(() => checkedProcess("act", [], {}, execute({ signal: "SIGTERM" })), /SIGTERM/);
   assert.throws(() => checkedProcess("act", [], {}, execute({ error: new Error("not installed") })), /not installed/);
   assert.equal(checkedProcess("act", [], {}, execute({ status: 0, stdout: " ok\n" })), "ok");
+});
+
+test("copied worktree repair restores exact Git objects without replacing modified or untracked source", (t) => {
+  const cache = join(process.cwd(), ".local-ci");
+  mkdirSync(cache, { recursive: true });
+  const fixture = mkdtempSync(join(cache, "git-repair-"));
+  t.after(() => rmSync(fixture, { recursive: true, force: true }));
+  const original = join(fixture, "original");
+  const copied = join(fixture, "copied");
+  mkdirSync(original);
+  mkdirSync(copied);
+  const git = (root, ...args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8", stdio: "pipe" }).trim();
+  git(original, "init", "--initial-branch=fixture");
+  writeFileSync(join(original, "README"), "committed source\n");
+  git(original, "add", "README");
+  git(original, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-m", "fixture");
+  const sha = git(original, "rev-parse", "HEAD");
+  const bundle = join(fixture, "source.bundle");
+  git(original, "bundle", "create", bundle, "HEAD");
+  const pointer = "gitdir: /unavailable-host/.git/worktrees/example\n";
+  writeFileSync(join(copied, ".git"), pointer);
+  writeFileSync(join(copied, "README"), "modified source\n");
+  writeFileSync(join(copied, "new.rs"), "untracked source\n");
+  assert.throws(() => prepareLocalGit(copied, bundle, "e".repeat(40)), /does not match/);
+  assert.equal(readFileSync(join(copied, ".git"), "utf8"), pointer);
+  prepareLocalGit(copied, bundle, sha);
+  assert.equal(git(copied, "rev-parse", "HEAD"), sha);
+  assert.equal(git(copied, "show", "HEAD:README"), "committed source");
+  assert.equal(readFileSync(join(copied, "README"), "utf8"), "modified source\n");
+  assert.equal(readFileSync(join(copied, "new.rs"), "utf8"), "untracked source\n");
+  assert.match(git(copied, "status", "--porcelain"), /M README/);
+  assert.match(git(copied, "status", "--porcelain"), /\?\? new.rs/);
+  prepareLocalGit(copied, bundle, sha);
+  assert.throws(() => prepareLocalGit(copied, bundle, "e".repeat(40)), /HEAD does not match/);
 });

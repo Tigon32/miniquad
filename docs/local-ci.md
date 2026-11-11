@@ -61,6 +61,12 @@ The repository must not contain `.actrc`; the wrapper supplies its flags explici
 
 The job has no mounted Docker socket and uses a separate bridge network.
 It does not bind-mount the source checkout or your home directory.
+It mounts one generated Git bundle read-only. This lets a copied worktree recover
+its Git objects without following a `.git` pointer into the host.
+The repair preserves modified and untracked source files.
+The worktree repair imports Git objects only, not host Git configuration,
+credentials, or hooks. For a normal clone, `act` copies its existing Git directory.
+Do not keep credentials in repository-local configuration or source files.
 It uses the active local Docker socket, including an OrbStack socket.
 Remote Docker endpoints are not accepted.
 

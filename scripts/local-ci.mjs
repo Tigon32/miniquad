@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -79,6 +79,7 @@ export function buildCommand(options, { root, run, cache, architecture }) {
     "--input-file", join(run, "empty"),
     "--env", "PLAYWRIGHT_BROWSERS_PATH=/ms-playwright",
     "--container-options", [
+      `--mount ${JSON.stringify(`type=bind,"source=${join(run, "source.bundle").replaceAll('"', '""')}",target=/miniquad-source.bundle,readonly`)}`,
       `--mount type=volume,source=miniquad-act-v1-${suffix}-cargo,target=/root/.cargo`,
       `--mount type=volume,source=miniquad-act-v1-${suffix}-rustup,target=/root/.rustup`,
       `--mount type=volume,source=miniquad-act-v1-${suffix}-npm,target=/root/.npm`,
@@ -140,12 +141,13 @@ export function main(args = process.argv.slice(2)) {
   );
   const invocation = buildCommand(options, { root: ROOT, run, cache, architecture });
   checkedProcess(invocation.command, [...(options.runner === "gh-act" ? ["act"] : []), "--version"], { env: environment });
+  git("bundle", "create", join(run, "source.bundle"), "HEAD");
   console.log(`Local ${options.lane} lane: ${sha} plus working-tree changes; ${architecture}`);
   console.log(`Runner image: ${RUNNER_IMAGE}`);
   console.log(`Run files: ${run}`);
   const record = { sha, branch, workingTreeStatus, architecture, image: RUNNER_IMAGE, ...options, result: "not tested" };
   try {
-    checkedProcess(invocation.command, invocation.args, {
+    checkedProcess(invocation.command, [...invocation.args, "--env", `MINIQUAD_LOCAL_SHA=${sha}`], {
       cwd: ROOT, env: environment, stdio: "inherit", timeout: 45 * 60 * 1000,
     });
     record.result = options.list || options.dryrun ? "not tested" : "passed";
@@ -155,6 +157,7 @@ export function main(args = process.argv.slice(2)) {
     throw error;
   } finally {
     writeFileSync(join(run, "result.json"), JSON.stringify(record, null, 2));
+    unlinkSync(join(run, "source.bundle"));
   }
   console.log(options.list || options.dryrun ? "Plan completed. Tests did not run." : "Local CI passed. Hosted required checks still apply.");
 }

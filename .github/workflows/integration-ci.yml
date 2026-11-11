@@ -20,6 +20,9 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Restore copied worktree metadata in the local container
+        if: ${{ env.ACT }}
+        run: node scripts/prepare-local-git.mjs
       - name: Bootstrap Rustup in the local container
         if: ${{ env.ACT }}
         run: bash scripts/install-local-rust.sh

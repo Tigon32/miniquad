@@ -1,10 +1,9 @@
-// Issue #131's "measurement" acceptance item: run the current cubic
-// and hex examples on the same browser, host, canvas size, device
-// pixel ratio, seed, and chunk count. Their actual cell counts differ
-// because the examples use different chunk dimensions. Record that
-// difference and do not claim an equal-workload speed comparison.
-// RUN_COUNT is 20 page loads per engine (10 alternating pairs), not
-// the required 20 pairs.
+// Issue #131's "measurement" acceptance item: run the cubic and hex
+// examples on the same browser, host, canvas size, device pixel ratio,
+// seed, and exact cell inputs. The cubic fixture opts into
+// `measurement-equal-cells`; the default cubic example is unchanged.
+// RUN_COUNT is 40 page loads per engine: 20 alternating pairs and 20
+// samples per scene.
 // Record real numbers, with any unavailable value left `null` with a
 // stated reason -- never fabricated.
 //
@@ -12,12 +11,11 @@
 // case's `cubicComparison: { available: false, ... }` finding: that
 // finding assumed a cubic baseline could only come from the parent-
 // owned port 4173/4174 server. It does not have to: the cubic
-// `offline` example already lives, UNCHANGED, in this same worktree
+// `offline` example already lives in this same worktree
 // (`companions/voxel/examples/offline.rs`), so this harness can build
-// and serve it itself, privately, on its own port 4290, exactly like
-// the hex fixtures. `offline.rs` is never edited, read as a module, or
-// navigated to on another port: see `cubic-measurement.html` and
-// `build-fixtures.mjs`'s `buildCubicMeasurementFixture`.
+// and serve its opt-in equal-cell fixture privately on port 4290,
+// exactly like the hex fixtures. The feature does not change the
+// default cubic example's dimensions or coordinates.
 //
 // Honesty notes:
 //   - Frame-interval samples are measured for real in both engines'
@@ -38,19 +36,18 @@
 //     "stays unchanged" rule), so no in-browser build-time claim is
 //     made for either scene; this is stated explicitly in the record
 //     below, not silently conflated with the frame-interval numbers.
-//   - The two scenes are NOT geometrically identical: `CHUNK_DIMS`
-//     differs (8x12x8 cubic vs 8x4x8 hex -- a real property of the
-//     scenes, not a test artifact), so their solid-cell and
-//     vertex/index counts differ. Both share the same `WORLD_SEED`
-//     (20261111), the same 2-chunk count, and the same 8x8 X/Z
-//     footprint. No parity is forced or implied beyond what is
-//     actually shared; every difference is recorded, not hidden.
+//   - Both measurement scenes use the same `WORLD_SEED` (20261111),
+//     `ChunkDims` (8x4x8), chunk coordinates `(-1,0,0)` and `(0,0,0)`,
+//     and generated voxel IDs. The cubic and hex mesh topologies differ,
+//     so vertex/index counts need not match.
 //   - No performance-promotion claim ("cubic/hex is faster/better")
 //     is made anywhere in this file: only the measured numbers and
 //     their stated conditions are recorded.
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import zlib from "node:zlib";
+import { createHash } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { test, expect } from "@playwright/test";
@@ -62,7 +59,7 @@ const rawArtifactDir =
 fs.mkdirSync(rawArtifactDir, { recursive: true });
 
 const VIEWPORT_CSS = { width: 640, height: 360 };
-const RUN_COUNT = 20;
+const RUN_COUNT = 40;
 
 async function gotoScene(page, scene) {
     const url = scene === "hex" ? "/?variant=webgl1" : "/cubic-measurement";
@@ -97,6 +94,24 @@ async function sampleFrameIntervalP95P99(page) {
     return { p95: percentile(0.95), p99: percentile(0.99), sampleCount: intervals.length };
 }
 
+async function readWebGLInfo(page) {
+    return page.evaluate(() => {
+        const context = window.gl;
+        if (!context || typeof context.getParameter !== "function") return null;
+        const debugInfo = context.getExtension("WEBGL_debug_renderer_info");
+        return {
+            version: context.getParameter(context.VERSION),
+            vendor: debugInfo
+                ? context.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL)
+                : context.getParameter(context.VENDOR),
+            renderer: debugInfo
+                ? context.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL)
+                : context.getParameter(context.RENDERER),
+            unmaskedRendererAvailable: Boolean(debugInfo)
+        };
+    });
+}
+
 function rangeStats(values) {
     const sorted = [...values].sort((a, b) => a - b);
     const sum = sorted.reduce((a, b) => a + b, 0);
@@ -113,8 +128,8 @@ test.describe("cubic vs hex: alternating measurement", () => {
         page,
         browser
     }, testInfo) => {
-        // 20 alternating page loads plus a native cargo run comfortably
-        // exceed the suite's default 45s per-test timeout.
+        // 40 alternating page loads plus a native cargo run exceed the
+        // suite's default 45s per-test timeout.
         test.setTimeout(180000);
         // Exact (not estimated) vertex/index counts and a native
         // mesh-build-time distribution, both scenes, same host,
@@ -127,6 +142,8 @@ test.describe("cubic vs hex: alternating measurement", () => {
         const nativeMesh = JSON.parse(measureMeshOutput);
         expect(nativeMesh.cubic.vertices).toBeGreaterThan(0);
         expect(nativeMesh.hex.vertices).toBeGreaterThan(0);
+        expect(nativeMesh.cubic.gridCellCapacity).toBe(nativeMesh.hex.gridCellCapacity);
+        expect(nativeMesh.cubic.solidCells).toBe(nativeMesh.hex.solidCells);
 
         // Real, paired/alternating browser runs: hex, cubic, hex,
         // cubic, ... so neither scene systematically runs while the
@@ -135,9 +152,15 @@ test.describe("cubic vs hex: alternating measurement", () => {
         const hexP99 = [];
         const cubicP95 = [];
         const cubicP99 = [];
+        const webglInfo = {};
         for (let i = 0; i < RUN_COUNT; i++) {
             const scene = i % 2 === 0 ? "hex" : "cubic";
             await gotoScene(page, scene);
+            if (!webglInfo[scene]) {
+                webglInfo[scene] = await readWebGLInfo(page);
+                expect(webglInfo[scene]).not.toBeNull();
+                expect(webglInfo[scene].version).toContain("WebGL 1.0");
+            }
             const { p95, p99 } = await sampleFrameIntervalP95P99(page);
             if (scene === "hex") {
                 hexP95.push(p95);
@@ -152,37 +175,50 @@ test.describe("cubic vs hex: alternating measurement", () => {
         const cubicWasmBytes = Buffer.from(await (await page.request.get("/offline_cubic_webgl1.wasm")).body());
         const jsBytes = fs.readFileSync(path.join(repoRoot, "js/gl.js"));
         const jsGzipBytes = zlib.gzipSync(jsBytes).length;
+        const sourceSha = execFileSync("git", ["rev-parse", "HEAD"], {
+            cwd: repoRoot,
+            encoding: "utf8"
+        }).trim();
 
         const record = {
             conditions: {
+                sourceSha,
                 browser: testInfo.project.name,
                 browserVersion: browser.version(),
                 os: process.platform,
+                osRelease: os.release(),
+                architecture: os.arch(),
                 canvas: VIEWPORT_CSS,
                 dpr: 1,
                 seed: 20261111,
                 residentChunkCount: 2,
                 pageLoads: RUN_COUNT,
                 pairedRuns: RUN_COUNT / 2,
-                runsPerScene: RUN_COUNT / 2
+                runsPerScene: RUN_COUNT / 2,
+                chunkDims: [8, 4, 8],
+                chunkCoords: [[-1, 0, 0], [0, 0, 0]],
+                cubicBuildFeature: "measurement-equal-cells"
             },
-            knownDifferences: {
-                chunkDims: { cubic: [8, 12, 8], hex: [8, 4, 8] },
-                reason:
-                    "the hex scene uses fewer Y layers than the cubic scene (a real property of each example, not a test artifact); solid-cell, vertex, and index counts therefore differ and are not expected to match"
+            webgl: {
+                cubic: webglInfo.cubic,
+                hex: webglInfo.hex
             },
             cubic: {
+                gridCellCapacity: nativeMesh.cubic.gridCellCapacity,
+                solidCells: nativeMesh.cubic.solidCells,
                 vertices: nativeMesh.cubic.vertices,
                 indices: nativeMesh.cubic.indices,
                 nativeMeshBuildTimeNs: nativeMesh.cubic.buildTimeNs,
                 nativeMeshBuildTimeNote:
-                    "native (non-browser) host build time; not an in-browser/WASM build-time measurement -- offline.rs exports no build-time probe and must stay unchanged",
+                    "native (non-browser) host build time; not an in-browser/WASM build-time measurement -- the measurement feature exports no build-time probe",
                 wasmBytes: cubicWasmBytes.length,
                 wasmGzipBytes: zlib.gzipSync(cubicWasmBytes).length,
                 frameIntervalMsP95: rangeStats(cubicP95),
                 frameIntervalMsP99: rangeStats(cubicP99)
             },
             hex: {
+                gridCellCapacity: nativeMesh.hex.gridCellCapacity,
+                solidCells: nativeMesh.hex.solidCells,
                 vertices: nativeMesh.hex.vertices,
                 indices: nativeMesh.hex.indices,
                 nativeMeshBuildTimeNs: nativeMesh.hex.buildTimeNs,
@@ -195,6 +231,7 @@ test.describe("cubic vs hex: alternating measurement", () => {
             },
             jsBytes: jsBytes.length,
             jsGzipBytes: jsGzipBytes,
+            jsSha256: createHash("sha256").update(jsBytes).digest("hex"),
             gpuMetricsUnavailable: {
                 vramBytes: null,
                 reason: "WebGL exposes no portable VRAM/driver-memory query; not measured, not estimated."

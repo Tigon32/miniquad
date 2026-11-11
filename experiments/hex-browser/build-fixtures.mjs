@@ -37,15 +37,22 @@ export function buildHexFixtures() {
     return { webgl1, webgl2 };
 }
 
-// Builds the UNCHANGED cubic `offline` example for a paired measurement
-// of the current examples. Their cell counts differ and are reported;
-// this is not an equal-workload performance comparison. Build it into
-// its own gitignored target directory, the same hermetic way as the
-// hex fixtures above. Never edit `offline.rs`; only add a build step
-// for it here, inside this private harness.
+// Builds the cubic `offline` example with its opt-in
+// `measurement-equal-cells` feature. The default example still uses its
+// original 8x12x8 layout. This private fixture matches the hex example's
+// 8x4x8 chunks and negative/zero chunk coordinates.
 export function buildCubicMeasurementFixture() {
     const env = { ...process.env, CARGO_TARGET_DIR: "target-cubic" };
-    const args = ["build", "--release", "--target", "wasm32-unknown-unknown", "--example", "offline"];
+    const args = [
+        "build",
+        "--release",
+        "--target",
+        "wasm32-unknown-unknown",
+        "--example",
+        "offline",
+        "--features",
+        "measurement-equal-cells"
+    ];
     console.log("hex-browser fixtures: cargo " + args.join(" ") + " (CARGO_TARGET_DIR=target-cubic)");
     execFileSync("cargo", args, { cwd: voxelCrate, env, stdio: "inherit" });
     const wasmPath = resolve(voxelCrate, "target-cubic/wasm32-unknown-unknown/release/examples/offline.wasm");

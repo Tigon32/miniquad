@@ -18,15 +18,14 @@
     Private, measurement-only page for issue #131's required
     cubic-vs-hex comparison (see
     experiments/hex-browser/tests/cubic-vs-hex-measurement.spec.mjs).
-    Loads the UNCHANGED `companions/voxel/examples/offline.rs` cubic
-    example's WASM output (built by build-fixtures.mjs into its own
-    target directory, never touching offline.rs itself) through the
-    same generic `js/gl.js` loader `tests/browser/hex-offline.html`
-    uses. It adds no cubic-specific status bar or controls: this page
-    exists only to measure real browser-rendered frame timing for the
-    cubic scene, under the same canvas size as the hex scene, served
-    from this same private port-4290 harness (not the parent-owned
-    port 4173/4174 server).
+    Loads the cubic `offline` example with its opt-in
+    `measurement-equal-cells` build feature. The normal build keeps its
+    original 8x12x8 layout. This fixture uses the same 8x4x8 cell grid
+    and chunk coordinates as the hex scene. It adds no cubic-specific
+    status bar or controls: this page exists only to measure real
+    browser-rendered frame timing under the same canvas size as the hex
+    scene, served from this private port-4290 harness (not the
+    parent-owned port 4173/4174 server).
   -->
   <canvas id="glcanvas" width="640" height="360" tabindex="0"></canvas>
   <script src="/js/gl.js"></script>

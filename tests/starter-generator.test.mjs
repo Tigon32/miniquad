@@ -246,26 +246,85 @@ test("generated Rust app exports the frozen app-parameters surface", () => {
   assert.match(mainRs, /AtomicU32/);
 });
 
-test("resolveMiniquadSource git-mode provenance never carries the dependency URL", () => {
+test("resolveMiniquadSource git-mode provenance never carries the dependency URL, and resolves --rev to a full 40-character SHA", () => {
   const scratch = makeScratchDir("git-provenance-");
+  const resolvedSha = "deadbeefcafe0123456789abcdef0123456789ab";
   try {
     const source = resolveMiniquadSource(
       {
         source: "git",
-        rev: "deadbeefcafe",
+        rev: "deadbeef",
         gitUrl: "https://ci-token:super-secret@github.com/Tigon32/miniquad.git",
         gitRepo: scratch,
       },
-      { execFileSyncImpl: fakeExecFileSync() }
+      {
+        execFileSyncImpl: (command, args) => {
+          if (command === "git" && args[2] === "rev-parse" && args[3] === "--verify") {
+            return `${resolvedSha}\n`;
+          }
+          throw new Error(`unexpected git invocation in fake: ${args.join(" ")}`);
+        },
+      }
     );
     assert.deepEqual(Object.keys(source.provenance).sort(), ["dirty", "mode", "sha"]);
     assert.equal(source.provenance.mode, "git");
-    assert.equal(source.provenance.sha, "deadbeefcafe");
+    assert.equal(source.provenance.sha, resolvedSha);
+    assert.equal(source.provenance.sha.length, 40);
     assert.equal(source.provenance.dirty, false);
+    assert.equal(source.dependencyToml, `git = "https://ci-token:super-secret@github.com/Tigon32/miniquad.git", rev = "${resolvedSha}"`);
     const serialized = JSON.stringify(source.provenance);
     assert.doesNotMatch(serialized, /ci-token/);
     assert.doesNotMatch(serialized, /super-secret/);
     assert.doesNotMatch(serialized, /github\.com/);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("resolveMiniquadSource in git mode rejects a --rev that does not resolve to a commit in --git-repo", () => {
+  const scratch = makeScratchDir("git-bad-rev-");
+  try {
+    assert.throws(
+      () =>
+        resolveMiniquadSource(
+          { source: "git", rev: "not-a-real-rev", gitRepo: scratch },
+          {
+            execFileSyncImpl: () => {
+              throw new Error("unknown revision or path not in the working tree");
+            },
+          }
+        ),
+      (error) => {
+        assert.ok(error instanceof GeneratorError);
+        assert.match(error.message, /Could not resolve --rev "not-a-real-rev"/);
+        return true;
+      }
+    );
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("resolveMiniquadSource in git mode rejects a resolved revision that is not a full 40-character commit SHA", () => {
+  const scratch = makeScratchDir("git-short-rev-");
+  try {
+    assert.throws(
+      () =>
+        resolveMiniquadSource(
+          { source: "git", rev: "ba0ab9f", gitRepo: scratch },
+          {
+            execFileSyncImpl: (command, args) => {
+              if (command === "git" && args[2] === "rev-parse" && args[3] === "--verify") {
+                // Simulate a buggy or non-standard git build that echoes
+                // back a short hash instead of resolving to the full SHA.
+                return "ba0ab9f\n";
+              }
+              throw new Error(`unexpected git invocation in fake: ${args.join(" ")}`);
+            },
+          }
+        ),
+      /not a full 40-character commit SHA/
+    );
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }

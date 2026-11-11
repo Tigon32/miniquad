@@ -81,9 +81,14 @@ The generator never silently depends on the original upstream project
   pinned to an immutable revision (`rev = "<sha>"`), for evaluation.
   `--git-repo` lets the generator read the exact browser file bytes
   for that revision with `git show <rev>:<path>`, without an
-  additional network fetch during generation. `--rev` defaults to the
-  reviewed baseline `454792c46febefc476e1df153a5efed8bbb2ef79`; the
-  default `--git-url` is the `Tigon32/miniquad` fork, not upstream.
+  additional network fetch during generation. `--rev` may be short or
+  symbolic; the generator resolves it to a full 40-character commit
+  SHA with `git rev-parse --verify` against `--git-repo` and fails if
+  that does not succeed. The resolved SHA, not the input, is what is
+  pinned in `Cargo.toml` and read from with `git show`. `--rev`
+  defaults to the reviewed baseline
+  `454792c46febefc476e1df153a5efed8bbb2ef79`; the default `--git-url`
+  is the `Tigon32/miniquad` fork, not upstream.
 
 Issue #19 owns the long-term SemVer and release identity for this
 dependency; the pinning options above are an interim, explicit,
@@ -95,13 +100,21 @@ evaluation path and are not a release process.
 `{ "mode": "path" | "git", "sha": <string|null>, "dirty": <boolean> }`.
 It never contains the absolute `--miniquad-path` checkout location,
 the `--git-url`, or any other local-machine or credentialed detail,
-because this file ships with the deployed project. `sha` is the
-resolved commit (`null` if a path checkout is not a git repository or
-`git rev-parse` fails); `dirty` is `true` only for a path checkout
-with uncommitted local changes, and is always `false` for a `git`
-source because `git show <rev>:<path>` always reads exact, immutable
-committed bytes. A human-readable label with the local path is printed
-to the console during generation, but is not written to any file.
+because this file ships with the deployed project. For `--source
+path`, `sha` is the resolved commit (`null` if the checkout is not a
+git repository or `git rev-parse` fails); `dirty` is `true` only when
+that checkout has uncommitted local changes. For `--source git`, the
+generator resolves `--rev` with `git rev-parse --verify` against
+`--git-repo` and refuses to continue unless that resolves to a full
+40-character commit SHA; this resolved SHA, not the possibly short or
+symbolic `--rev` the caller passed, is what is pinned in the generated
+`Cargo.toml` and recorded in the manifest, and it is also what `git
+show <sha>:<path>` reads browser asset bytes from, so the pinned
+dependency and the copied bytes cannot drift apart. `dirty` is always
+`false` for a `git` source, since that read is always of exact,
+immutable committed bytes. A human-readable label with the local path
+is printed to the console during generation, but is not written to
+any file.
 
 ## Current limitation: generator works, full browser build is blocked
 

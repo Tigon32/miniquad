@@ -195,22 +195,59 @@ export function resolveMiniquadSource(options, { execFileSyncImpl = execFileSync
       fail(`--git-repo must be an absolute path, got: ${gitRepo}`);
     }
 
+    // Resolve `--rev` to the full 40-character commit SHA it names in
+    // `--git-repo`, rather than trusting it as-is. A short or symbolic
+    // `--rev` (e.g. "ba0ab9f", "main") is ambiguous: it can name a
+    // different commit in a different clone, or start naming a
+    // different commit later as the repository gains objects. Pinning
+    // Cargo.toml and the shipped manifest to anything less than the
+    // full, verified SHA risks a mismatch between the asset bytes this
+    // generator copied and the commit Cargo later resolves and builds.
+    let resolvedSha;
+    try {
+      resolvedSha = execFileSyncImpl(
+        "git",
+        ["-C", gitRepo, "rev-parse", "--verify", `${rev}^{commit}`],
+        { stdio: "pipe", encoding: "utf8" }
+      ).trim();
+    } catch {
+      fail(
+        `Could not resolve --rev "${rev}" to a commit in --git-repo: ` +
+          `${gitRepo}\n` +
+          "Confirm the revision exists in that local clone (try " +
+          "`git log` there) and names a commit, not a tree or blob."
+      );
+    }
+    if (!/^[0-9a-f]{40}$/.test(resolvedSha)) {
+      fail(
+        `--rev "${rev}" resolved to "${resolvedSha}", which is not a ` +
+          "full 40-character commit SHA. Refusing to continue: a short " +
+          "or non-standard hash risks a mismatch between the copied " +
+          "browser assets and the pinned Cargo dependency."
+      );
+    }
+
     return {
       mode: "git",
-      label: `git revision ${rev} (dependency fetched from ${gitUrl})`,
-      // `rev` is pinned and immutable, so `git show <rev>:<path>` reads
-      // the exact committed bytes regardless of the local clone's
-      // working-tree state; "dirty" has no meaning here. The dependency
-      // URL is deliberately left out of provenance: this generator never
-      // asks for a credentialed URL, but it also never assumes any URL
-      // supplied by a caller is safe to publish verbatim.
-      provenance: { mode: "git", sha: rev, dirty: false },
-      dependencyToml: `git = "${gitUrl}", rev = "${rev}"`,
+      label:
+        `git revision ${resolvedSha} (requested as "${rev}", ` +
+        `dependency fetched from ${gitUrl})`,
+      // `resolvedSha` is the full, verified commit SHA, so
+      // `git show <resolvedSha>:<path>` reads the exact committed bytes
+      // regardless of the local clone's working-tree state; "dirty" has
+      // no meaning here. The dependency URL is deliberately left out of
+      // provenance: this generator never asks for a credentialed URL,
+      // but it also never assumes any URL supplied by a caller is safe
+      // to publish verbatim.
+      provenance: { mode: "git", sha: resolvedSha, dirty: false },
+      dependencyToml: `git = "${gitUrl}", rev = "${resolvedSha}"`,
       readAsset(relativePath) {
         try {
-          return execFileSyncImpl("git", ["-C", gitRepo, "show", `${rev}:${relativePath}`], {
-            stdio: "pipe",
-          });
+          return execFileSyncImpl(
+            "git",
+            ["-C", gitRepo, "show", `${resolvedSha}:${relativePath}`],
+            { stdio: "pipe" }
+          );
         } catch {
           return null;
         }

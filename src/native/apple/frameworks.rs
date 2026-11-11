@@ -235,7 +235,8 @@ pub const kCGRenderingIntentDefault: u32 = 0;
 extern "C" {
     pub fn MTLCreateSystemDefaultDevice() -> ObjcId;
     #[cfg(not(target_os = "ios"))]
-    pub fn MTLCopyAllDevices() -> ObjcId; //TODO: Array
+    /// Returns a retained `NSArray<id<MTLDevice>>`; the caller must release it.
+    pub fn MTLCopyAllDevices() -> ObjcId;
 }
 
 #[cfg(target_os = "macos")]
@@ -536,7 +537,7 @@ impl NSRange {
 unsafe impl Encode for NSRange {
     fn encode() -> Encoding {
         let encoding = format!(
-            // TODO: Verify that this is correct
+            // The SDK tag is `_NSRange`: Tigon32/miniquad#146.
             "{{NSRange={}{}}}",
             u64::encode().as_str(),
             u64::encode().as_str(),

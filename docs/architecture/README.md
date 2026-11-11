@@ -15,6 +15,7 @@ when the architecture changes.
 | Boundary | Responsibility and code anchor | Ownership and error path |
 | --- | --- | --- |
 | Application → Miniquad Rust | [src/lib.rs](../../src/lib.rs), [src/event.rs](../../src/event.rs): `start` and `EventHandler` callbacks | The application owns game state. Miniquad calls the handler during the frame and input lifecycle |
+| Optional hex geometry → voxel application | [companions/voxel/src/hex.rs](../../companions/voxel/src/hex.rs): checked axial cells and visible-face meshes | The application owns chunk storage and mesh buffers. The pure geometry module owns no GPU resource. Cubic behavior stays unchanged |
 | Rust API → WASM platform | [src/native/wasm.rs](../../src/native/wasm.rs): `main`, `frame`, `key_down`, `on_clipboard_paste` | Rust controls event dispatch; invalid transfer ownership is rejected by the registered allocator |
 | Loader → WASM | [js/gl.js](../../js/gl.js): `load`, `validate_wasm_imports`, `start_wasm` | The module must match ABI version 3 and required exports. Startup rejects missing imports, version mismatch and failed HTTP fetch |
 | WASM → JS | [src/native/wasm/webgl.rs](../../src/native/wasm/webgl.rs) and [js/gl.js](../../js/gl.js) `importObject.env` | Typed memory pointers and lengths are checked by JS helpers; WebGL2-only operations report unsupported capabilities on WebGL1 |
@@ -29,6 +30,11 @@ inside a host container. The host owns semantic HTML controls. The runtime frame
 owns one classic bridge, canvas, WASM instance, and GPU context.
 See [MADR 0009](../adr/0009-optional-browser-adoption-layer.md) for the proposed
 resource boundary. This does not change the core ABI or standalone startup.
+
+The optional [hex geometry module](../hex-voxel-geometry.md) uses the existing
+bounded chunk storage and mesh-buffer types. [MADR 0011](../adr/0011-optional-hexagonal-prism-topology.md)
+records its Proposed contract. It does not supply a browser renderer, picking,
+or mixed-mode transport. Issues #131 and #132 track those separate results.
 
 The browser demo is [examples/index.html](../../examples/index.html). The
 compiled browser acceptance fixtures and three-engine checks cover the

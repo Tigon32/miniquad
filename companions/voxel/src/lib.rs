@@ -24,14 +24,29 @@
 //!   demo material palette. Not a general noise library.
 //! - [`camera`]: [`camera::OrbitCamera`], a pure orbit camera driven by
 //!   arrow-key and mouse-drag deltas.
+//! - [`sim`]: [`sim::Sim`], the shared pure simulation core (world,
+//!   seed, speed, revision) used by the native server and by WASM, in
+//!   both offline and mixed-mode builds. See
+//!   `docs/architecture/voxel-protocol.md`.
+//! - [`protocol`]: the bounded `VXP1` wire codec used only by the
+//!   mixed-mode server and client. No codec function panics; every
+//!   length is checked before it is read or allocated.
+//! - [`hud`]: the pure seven-segment glyph table and panel/cell
+//!   geometry math for the mixed-mode in-frame HUD. No GPU code.
 //!
-//! This crate has **no GPU code**. The `offline` example is the only
-//! part of this companion that touches `miniquad::RenderingBackend`,
-//! matching the pattern in `companions/draw/src/gpu.rs`.
+//! This crate has **no GPU code** outside its examples. `miniquad` is
+//! a **dev-dependency** here: the `offline` and `mixed` examples are
+//! the only parts of this companion that touch
+//! `miniquad::RenderingBackend`, matching the pattern in
+//! `companions/draw/src/gpu.rs`. The `sim` and `protocol` modules, and
+//! the `vx-server` binary, depend on nothing but `std`.
 
 pub mod camera;
 pub mod chunk;
+pub mod hud;
 pub mod math;
 pub mod mesh;
+pub mod protocol;
+pub mod sim;
 pub mod terrain;
 pub mod world;

@@ -8,7 +8,9 @@
 
 `browser host (fetch) -> same-origin forwarder -> Rust std server (authority)`.
 The runtime frame WASM never calls the network. The embedding host copies bytes between `fetch` and the staging exports.
-The test forwarder in `tests/browser/serve.mjs` sends `POST /vx/v1/sync` to `127.0.0.1:${VOXEL_SERVER_PORT:-4174}`. It copies at most the protocol limits and returns `502` when the server is not available.
+The test forwarder in `tests/browser/serve.mjs` sends `POST /vx/v1/sync` to `127.0.0.1:${VOXEL_SERVER_PORT:-4230}`. It copies at most the protocol limits and returns `502` when the server is not available.
+
+> Correction (evidence: parent integration instruction during #29 implementation): the original default port `4174` conflicts with the port the parent's generated starter project already uses. `vx-server` and this document now use **4230** as the default, with `VOXEL_SERVER_PORT` as the override. `4231` is reserved for this companion's own ephemeral test fixture server, not the authoritative server.
 
 ## Shared Rust types
 

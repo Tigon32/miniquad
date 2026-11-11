@@ -1,9 +1,11 @@
-// Issue #131's required "measurement" acceptance item: run the cubic
-// and hex examples under equal conditions (same browser, device,
-// canvas size, device pixel ratio, seed, and cell count where the
-// two topologies allow it) and record real numbers, with any
-// unavailable value left `null` with a stated reason -- never
-// fabricated.
+// Issue #131's "measurement" acceptance item: run the current cubic
+// and hex examples on the same browser, host, canvas size, device
+// pixel ratio, seed, and chunk count. Their actual cell counts differ
+// because the examples use different chunk dimensions. Record that
+// difference and do not claim an equal-workload speed comparison.
+// RUN_COUNT is 20 page loads per engine (10 per scene), not 20 pairs.
+// Record real numbers, with any unavailable value left `null` with a
+// stated reason -- never fabricated.
 //
 // This spec supersedes `hex-offline.spec.mjs`'s "honest measurements"
 // case's `cubicComparison: { available: false, ... }` finding: that

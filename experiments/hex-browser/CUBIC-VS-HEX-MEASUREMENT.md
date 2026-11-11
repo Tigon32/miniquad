@@ -3,10 +3,19 @@
 Issue #131, "measurement" acceptance item. STE-aligned draft; full ASD-STE100
 dictionary review not done.
 
+**Status: partial.** The required equal-cell workload is not met. This receipt
+measures the current examples with their actual configurations. Do not read the
+results as a direct performance comparison or a speed claim. The browser run
+uses 20 alternating page loads per engine, or 10 samples per scene. It does not
+meet the requested 20 paired runs.
+
 ## Source and conditions
 
-- Source SHA: `b76bb0f4cc25cd185b7bf2559e862bbe37128f01` (branch `feat/hex-browser`).
+- Measurement source SHA: `a98966a350e64f7de6bc10dc0086e938366f62ed` (branch `feat/hex-browser`).
+- Hex example source SHA before the measurement fixture:
+  `b76bb0f4cc25cd185b7bf2559e862bbe37128f01`.
 - Host: Darwin 25.6.0, macOS 26.7.1, Apple M3 Pro (arm64).
+- Compiler: `rustc 1.99.0 (b940084d7 2026-09-28) (Homebrew)`.
 - Test commands:
   - `node experiments/hex-browser/build-fixtures.mjs`
   - `npx playwright test --config=experiments/hex-browser/playwright.config.mjs --project=<chromium|firefox|webkit> --grep "paired/alternating"`
@@ -14,7 +23,9 @@ dictionary review not done.
 - Test file: `experiments/hex-browser/tests/cubic-vs-hex-measurement.spec.mjs`.
 - Canvas: 640x360 CSS pixels, device pixel ratio 1, both scenes, all three engines.
 - World seed: `20261111`, 2 resident chunks (`MAX_RESIDENT_CHUNKS = 4`), both scenes.
-- Runs per scene per engine: 20 alternating page loads (hex, cubic, hex, cubic, ...).
+- Browser runs per engine: 20 alternating page loads (hex, cubic, hex, cubic, ...).
+  This is 10 samples per scene, not 20 pairs. The cell counts differ because the examples use
+  different chunk dimensions; this is not an equal-cell workload.
 - The cubic baseline is the UNCHANGED `companions/voxel/examples/offline.rs`,
   built and served privately on this harness's own port 4290 (see
   `build-fixtures.mjs`'s `buildCubicMeasurementFixture` and

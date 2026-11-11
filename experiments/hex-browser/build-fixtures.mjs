@@ -37,11 +37,12 @@ export function buildHexFixtures() {
     return { webgl1, webgl2 };
 }
 
-// Builds the UNCHANGED cubic `offline` example (issue #131's required
-// measurement condition: a fair cubic-vs-hex comparison) into its own
-// gitignored target directory, the same hermetic way as the hex
-// fixtures above. Never edits `offline.rs`; only adds a build step for
-// it here, inside this private harness.
+// Builds the UNCHANGED cubic `offline` example for a paired measurement
+// of the current examples. Their cell counts differ and are reported;
+// this is not an equal-workload performance comparison. Build it into
+// its own gitignored target directory, the same hermetic way as the
+// hex fixtures above. Never edit `offline.rs`; only add a build step
+// for it here, inside this private harness.
 export function buildCubicMeasurementFixture() {
     const env = { ...process.env, CARGO_TARGET_DIR: "target-cubic" };
     const args = ["build", "--release", "--target", "wasm32-unknown-unknown", "--example", "offline"];

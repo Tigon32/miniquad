@@ -3,10 +3,10 @@
 //!
 //! This binary builds EXACTLY the same two-chunk world and visible-
 //! face mesh each offline example's `Stage::new` builds, using the
-//! same public library calls, the same `WORLD_SEED`, the same
-//! `ChunkDims`, and the same two resident `ChunkCoord`s -- see the
-//! "Mirrors" doc comment on each `*_once` function below for the
-//! exact source line numbers this binary was written against. It does
+//! same public library calls and, for each scene, the matching
+//! `WORLD_SEED`, `ChunkDims`, and resident `ChunkCoord`s. The two
+//! scenes use different dimensions. See the "Mirrors" doc comment on
+//! each `*_once` function below for source line references. It does
 //! not import, run, or change `offline.rs` (the cubic example, which
 //! the issue requires to stay unchanged) or `offline_hex.rs`: it is a
 //! separate, read-only reproduction of their mesh-build math, in this
@@ -15,8 +15,9 @@
 //! Mesh building is deterministic (seeded) and pure Rust, so it needs
 //! no WASM, no browser, and no GPU: this gives an EXACT (not
 //! estimated) vertex/index count and a real, repeatable native build-
-//! time measurement, fairly comparable between the two scenes because
-//! both run the identical measurement loop on this same host.
+//! time measurement. The loop is identical on this host, but the
+//! example dimensions and cell counts differ, so this is not an
+//! equal-workload performance comparison.
 //!
 //! This native build time is NOT a substitute for an in-browser/WASM
 //! build-time measurement: neither example exports a build-time probe

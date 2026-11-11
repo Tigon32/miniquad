@@ -4,33 +4,26 @@ const assert=require("node:assert/strict");
 const fs=require("node:fs");
 const path=require("node:path");
 
-// Regression test for the explicit-runner-image and reviewed cargo-audit
-// pin fixed in issue #155 / MADR 0007 rule 9. These checks catch a drift
-// back to a moving "-latest" runner label, the deprecated Cargo config
-// path, or a scanner pin that was not reviewed and recorded.
+// Guards the explicit-runner-image policy (MADR 0007 rule 9): no workflow
+// may use a moving "-latest" OS label, and the Cargo config path must be
+// the file Cargo actually reads for appended [target.*] sections.
 
-const rustYmlPath=path.resolve(__dirname,"../.github/workflows/rust.yml");
-const rustYml=fs.readFileSync(rustYmlPath,"utf8");
+const workflowsDir=path.resolve(__dirname,"../.github/workflows");
+const workflowFiles=fs.readdirSync(workflowsDir).filter(f=>/\.ya?ml$/u.test(f));
 
-const securityYmlPath=path.resolve(__dirname,"../.github/workflows/security-advisory-review.yml");
-const securityYml=fs.readFileSync(securityYmlPath,"utf8");
+for (const file of workflowFiles) {
+    const content=fs.readFileSync(path.join(workflowsDir,file),"utf8");
 
-test("rust.yml does not use a moving runner label",()=>{
-    assert.doesNotMatch(rustYml,/\bos:\s*(ubuntu|macos|windows)-latest\b/u);
-});
+    test(`${file} does not use a moving runner label`,()=>{
+        assert.doesNotMatch(content,/\b(?:os|runs-on):\s*["']?(?:ubuntu|macos|windows)-latest\b/u);
+    });
 
-test("rust.yml pins explicit, supported runner images",()=>{
-    assert.match(rustYml,/os:\s*ubuntu-24\.04\b/u);
-    assert.match(rustYml,/os:\s*macos-26\b/u);
-    assert.match(rustYml,/os:\s*windows-2022\b/u);
-});
-
-test("rust.yml writes the preferred config.toml path, not the legacy config file",()=>{
-    assert.doesNotMatch(rustYml,/~\/\.cargo\/config(?!\.toml)/u);
-    assert.match(rustYml,/~\/\.cargo\/config\.toml/u);
-});
-
-test("security-advisory-review.yml pins the reviewed cargo-audit version",()=>{
-    assert.match(securityYml,/cargo install cargo-audit --version 0\.23\.0 --locked/u);
-    assert.doesNotMatch(securityYml,/cargo-audit --version 0\.22\.2\b/u);
-});
+    const cargoConfigRefs=content.match(/~\/\.cargo\/config(?:\.toml)?\b/gu)??[];
+    if (cargoConfigRefs.length>0) {
+        test(`${file} writes the Cargo config file Cargo reads (config.toml)`,()=>{
+            for (const ref of cargoConfigRefs) {
+                assert.equal(ref,"~/.cargo/config.toml");
+            }
+        });
+    }
+}

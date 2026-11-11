@@ -282,18 +282,6 @@ test.describe("offline hex-voxel scene: occlusion and world mutation", () => {
         const canvas = page.locator("#glcanvas");
         const viewportPixels = [VIEWPORT_CSS.width, VIEWPORT_CSS.height];
 
-        // Freeze the sprite's time-driven orbit (about 3 world
-        // units/second, see `draw`'s radius-3 circle) so the before
-        // and after samples really are the SAME world point, not two
-        // different points the sprite happened to pass through. This
-        // is example-only test support (`hex_request_freeze_time`),
-        // with no UI control and no effect on picking, release, or
-        // the world-mutation revision.
-        await page.evaluate(() => window.wasm_exports.hex_request_freeze_time());
-        // One settle frame so `draw` latches the frozen elapsed-time
-        // value before any position is read.
-        await page.waitForTimeout(50);
-
         // The sprite shader (shader::SPRITE_FRAGMENT) outputs the
         // `tint` uniform directly with no lighting term, so its
         // rendered color is this exact value (alpha-blended over
@@ -338,26 +326,75 @@ test.describe("offline hex-voxel scene: occlusion and world mutation", () => {
             const i = (png.width * y + x) * 4;
             return [png.data[i], png.data[i + 1], png.data[i + 2]];
         }
-        async function readSpriteWorldPos() {
-            const xBits = await page.evaluate(() => window.wasm_exports.hex_probe_sprite_x_bits());
-            const yBits = await page.evaluate(() => window.wasm_exports.hex_probe_sprite_y_bits());
-            const zBits = await page.evaluate(() => window.wasm_exports.hex_probe_sprite_z_bits());
-            const x = new Float32Array(new Uint32Array([xBits]).buffer)[0];
-            const y = new Float32Array(new Uint32Array([yBits]).buffer)[0];
-            const z = new Float32Array(new Uint32Array([zBits]).buffer)[0];
-            return { x, y, z };
+        function bitsToFloat(bits) {
+            return new Float32Array(new Uint32Array([bits]).buffer)[0];
+        }
+        // Reads the sprite's world position AND the exact elapsed-time
+        // value (`hex_probe_sprite_t_bits`) `draw` used to compute it,
+        // in one round trip, so the four values are self-consistent
+        // (no risk of `x`, `y`, `z`, `t` each landing on a different
+        // animation frame from separate round trips).
+        async function readSpriteWorldPosAndT() {
+            const { xBits, yBits, zBits, tBits } = await page.evaluate(() => ({
+                xBits: window.wasm_exports.hex_probe_sprite_x_bits(),
+                yBits: window.wasm_exports.hex_probe_sprite_y_bits(),
+                zBits: window.wasm_exports.hex_probe_sprite_z_bits(),
+                tBits: window.wasm_exports.hex_probe_sprite_t_bits()
+            }));
+            return { x: bitsToFloat(xBits), y: bitsToFloat(yBits), z: bitsToFloat(zBits), tBits };
         }
 
-        // Project the sprite's *own* current world-space position
-        // (exact, frozen `(x, y, z)`, not an arbitrary "column top"
-        // point or the integer `layer`) to get the one pixel this
-        // test freezes, so the before/after sample is honestly at the
-        // pixel the sprite quad actually renders at.
-        const before = await readSpriteWorldPos();
-        const beforePixel = projectToPixel(CAMERA, [before.x, before.y, before.z], viewportPixels);
-        expect(beforePixel, "the sprite's current world position must project onto the viewport").not.toBeNull();
+        // The sprite orbits continuously (about 1 radian/second, see
+        // `draw`'s radius-3 circle at height ~2), so for a real,
+        // correctly depth-tested scene it is only visible from this
+        // fixed camera during part of its ~6.283s period -- the rest
+        // of the time nearer terrain genuinely occludes it, and that
+        // is correct behavior, not a fault. Search across one full
+        // period (bounded, not open-ended) for an instant where the
+        // sprite is actually visible, THEN freeze time at that EXACT
+        // instant (see `hex_request_freeze_time`, example-only test
+        // support, no UI control). Freezing takes the elapsed-time
+        // value (`tBits`) sampled alongside the candidate position
+        // rather than "whatever time it is when freeze is requested",
+        // so the slow visibility check in this loop (a real
+        // `canvas.screenshot()`) cannot let the sprite drift away from
+        // the instant this search actually found: the frozen position
+        // is a deterministic function of `tBits`, not of how much real
+        // time has passed since the candidate was read.
+        const ORBIT_PERIOD_MS = Math.ceil((2 * Math.PI) * 1000);
+        const SEARCH_STEP_MS = 300;
+        let before = null;
+        let beforePixel = null;
+        let beforeColor = null;
+        for (let elapsed = 0; elapsed <= ORBIT_PERIOD_MS; elapsed += SEARCH_STEP_MS) {
+            const candidate = await readSpriteWorldPosAndT();
+            const candidatePixel = projectToPixel(CAMERA, [candidate.x, candidate.y, candidate.z], viewportPixels);
+            if (candidatePixel) {
+                const candidateColor = await colorAtPixel(candidatePixel);
+                if (candidateColor && looksLikeSpriteTint(candidateColor)) {
+                    before = candidate;
+                    beforePixel = candidatePixel;
+                    beforeColor = candidateColor;
+                    break;
+                }
+            }
+            await page.waitForTimeout(SEARCH_STEP_MS);
+        }
+        expect(
+            before,
+            "must find at least one orbit phase, within one full ~6.3s period, where the sprite is actually visible (unoccluded by pre-existing terrain) before any column write"
+        ).not.toBeNull();
 
-        const beforeColor = await colorAtPixel(beforePixel);
+        await page.evaluate((tBits) => window.wasm_exports.hex_request_freeze_time(tBits), before.tBits);
+        // One settle frame so `draw` renders with the frozen position
+        // at least once, then re-confirm the frozen position and
+        // color match what the search found. The sprite position is a
+        // deterministic function of the frozen `tBits`, so this is an
+        // exact-equality check, not a tolerance-based one.
+        await page.waitForTimeout(50);
+        const frozen = await readSpriteWorldPosAndT();
+        expect(frozen, "the sprite must stay at the visible instant the search found once frozen").toEqual(before);
+        beforeColor = await colorAtPixel(beforePixel);
         expect(beforeColor, "the frozen pixel must be in-viewport before the click").not.toBeNull();
         expect(
             looksLikeSpriteTint(beforeColor),
@@ -375,7 +412,7 @@ test.describe("offline hex-voxel scene: occlusion and world mutation", () => {
         // Confirm the sprite's world position truly did not move
         // while frozen, so "the SAME frozen pixel" is not just an
         // assumption.
-        const after = await readSpriteWorldPos();
+        const after = await readSpriteWorldPosAndT();
         expect(after, "the sprite must not move while time is frozen").toEqual(before);
 
         const afterColor = await colorAtPixel(beforePixel);

@@ -41,6 +41,15 @@ export default defineConfig({
             use: {
                 ...devices[name === "chromium" ? "Desktop Chrome" : name === "firefox" ? "Desktop Firefox" : "Desktop Safari"],
                 viewport: { width: 800, height: 500 },
+                // Override the "Desktop Safari" device descriptor's
+                // `deviceScaleFactor: 2` default. Most cases in this
+                // suite read canvas backing-store pixels directly and
+                // assume DPR 1 unless they explicitly create their
+                // own context with a chosen `deviceScaleFactor` (see
+                // the DPR 1/2 cases below); without this override,
+                // only WebKit silently doubled every backing-store
+                // pixel dimension and broke those default-DPR cases.
+                deviceScaleFactor: 1,
                 launchOptions:
                     name === "chromium"
                         ? { args: ["--enable-webgl", "--enable-unsafe-swiftshader", "--use-gl=angle", "--use-angle=swiftshader"] }

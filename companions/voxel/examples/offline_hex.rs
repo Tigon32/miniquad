@@ -84,6 +84,16 @@ static PLACE_COLUMN_REQUESTED: AtomicBool = AtomicBool::new(false);
 /// picking, release, or the world-mutation revision: it only pins the
 /// elapsed-time value `draw` uses for the sprite's orbit formula.
 static TIME_FROZEN: AtomicBool = AtomicBool::new(false);
+/// The elapsed-time value (`date::now() - start_time`, as `f32` bits)
+/// `draw` used for the sprite's orbit on its most recently completed
+/// frame. Published every frame; read via `hex_probe_sprite_t_bits()`
+/// alongside a sprite-position sample, so a caller can later freeze at
+/// that EXACT instant through `hex_request_freeze_time(t_bits)`
+/// regardless of how much real time its own check takes.
+static LAST_T_BITS: AtomicU32 = AtomicU32::new(0);
+/// The elapsed-time value `hex_request_freeze_time` was given, as
+/// `f32` bits. Only meaningful once `TIME_FROZEN` is `true`.
+static FROZEN_T_BITS: AtomicU32 = AtomicU32::new(0);
 
 /// Counts real world mutations (currently: successful "Place column"
 /// writes only). Starts at `0` and increments by exactly `1` per
@@ -135,16 +145,35 @@ pub extern "C" fn hex_request_place_column() -> i32 {
     0
 }
 
-/// Freezes the sprite's orbit at its current elapsed-time value (see
-/// `TIME_FROZEN`). Idempotent: later calls have no further effect.
-/// Example-only test support for a deterministic occlusion sample.
+/// Freezes the sprite's orbit at an explicit elapsed-time value (see
+/// `TIME_FROZEN`), given as `f32` bits (same convention as the sprite
+/// position probes). The caller supplies `t_bits` -- normally the
+/// value just read via `hex_probe_sprite_t_bits()` alongside a
+/// position sample -- so freezing reproduces that EXACT historical
+/// instant deterministically (the sprite position is a pure function
+/// of `t`), no matter how much real time a slow caller-side check
+/// (for example a screenshot) takes between sampling and freezing.
+/// Idempotent: later calls have no further effect, including on the
+/// `t_bits` value. Example-only test support for a deterministic
+/// occlusion sample.
 #[no_mangle]
-pub extern "C" fn hex_request_freeze_time() -> i32 {
+pub extern "C" fn hex_request_freeze_time(t_bits: u32) -> i32 {
     if TIME_FROZEN.swap(true, Ordering::Relaxed) {
         1
     } else {
+        FROZEN_T_BITS.store(t_bits, Ordering::Relaxed);
         0
     }
+}
+
+/// Reports the elapsed-time value (`date::now() - start_time`, as
+/// `f32` bits) `draw` used for the most recently published sprite
+/// position (see `LAST_T_BITS`). Example-only test support: pass this
+/// value to `hex_request_freeze_time` to freeze at the exact instant
+/// a position sample was taken.
+#[no_mangle]
+pub extern "C" fn hex_probe_sprite_t_bits() -> u32 {
+    LAST_T_BITS.load(Ordering::Relaxed)
 }
 
 /// Reports the sprite's current world-space X, as `f32` bits (same
@@ -280,13 +309,6 @@ struct Stage {
     screen_size: (f32, f32),
     start_time: f64,
     released: bool,
-    /// Set once `hex_request_freeze_time` latches the sprite's time-
-    /// driven orbit, so a browser proof can sample the exact same
-    /// screen pixel before and after a world mutation without the
-    /// sprite drifting between the two captures. Test support only:
-    /// no UI control exposes it, and it has no effect on picking,
-    /// release, or the revision counter.
-    frozen_t: Option<f32>,
 }
 
 /// Builds the two-chunk demo world (reusing the unchanged cubic
@@ -501,7 +523,6 @@ impl Stage {
             screen_size: window::screen_size(),
             start_time: date::now(),
             released: false,
-            frozen_t: None,
         }
     }
 
@@ -659,13 +680,17 @@ impl EventHandler for Stage {
         });
 
         let t = if TIME_FROZEN.load(Ordering::Relaxed) {
-            *self
-                .frozen_t
-                .get_or_insert((date::now() - self.start_time) as f32)
-                as f64
+            f32::from_bits(FROZEN_T_BITS.load(Ordering::Relaxed)) as f64
         } else {
             date::now() - self.start_time
         };
+        // Publish every frame, AFTER resolving the frozen/live choice
+        // above, so `hex_probe_sprite_t_bits` always matches the
+        // elapsed-time value that actually drove this frame's sprite
+        // position atomics published below -- including every frame
+        // after a freeze, when it must keep reporting the frozen
+        // value, not the live clock.
+        LAST_T_BITS.store((t as f32).to_bits(), Ordering::Relaxed);
         let aspect = self.screen_size.0 / self.screen_size.1;
         let view = self.camera.view_matrix();
         let projection = self.camera.projection_matrix(aspect);

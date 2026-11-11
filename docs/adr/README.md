@@ -25,6 +25,7 @@ The documents are **STE-aligned drafts**. We have not completed a full ASD-STE10
 * [0020 — Clear the active Metal render target in place, not the default framebuffer](0020-metal-clear-reopens-the-active-encoder.md) — **Accepted**
 * [0021 — Deprecate the unverified `ElapsedQuery` timer API](0021-deprecate-unverified-elapsed-query.md) — **Superseded**
 * [0023 — Add a verified WebGL2 GPU timer-query path and supersede the deprecation](0023-webgl2-gpu-timer-query.md) — **Accepted**
+* [0024 — Supply or gate missing Metal texture formats, raw textures, resize, and read-back](0024-metal-texture-format-and-raw-texture-contract.md) — **Accepted**
 
 ## Write a new decision
 

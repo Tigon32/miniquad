@@ -154,6 +154,7 @@ Reuse `compressionReport` and `percentile` from `scripts/profile-browser.mjs` if
 | `medianConfidenceRanks(n, alpha = 0.05)` | Largest `k` with `P(Binomial(n, 0.5) <= k - 1) <= alpha / 2`. Returns `{low: k, high: n - k + 1, coverage}`. For `n = 20`: `{low: 6, high: 15}`, coverage about 0.9586 |
 | `clockResolution(samples)` | Input: arrays of consecutive `performance.now()` readings from section 7.3. Returns the smallest positive difference between consecutive readings, or `null` if no positive difference exists. Never returns `0` |
 | `evaluateMetric({baseline, candidate, resolution})` | Section 7.5. `resolution` is a positive number or `null` |
+| `evaluateRegression(samples)` | Section 7.5 for all three engines. Keep every invalid sample. Use the largest per-run clock resolution |
 | `createReleaseServer({packages})` | Section 6.1. Returns `{url, deploy(name), close()}` |
 
 ## 4. Paths and safety rules
@@ -511,7 +512,7 @@ A skipped, cancelled, pending, or absent job is not a pass.
 | `packages` | Canonical manifest SHA-256 for baseline and candidate; `reproducible: true` from `compare` |
 | `ci` | Output of `collect-ci` |
 | `drill` | `{reference, local}`. Each has the result, the profile, and the SHA-256 of `drill.json` |
-| `regression` | `{profileId, runs: [{runId, result}], result, metrics}`. The profile is `gha-ubuntu-24.04-x64-pw1.56.1`. All runs for the label are listed |
+| `regression` | `{profileId, runs: [{runId, result, profile}], result, metrics}`. The profile is `gha-ubuntu-24.04-x64-pw1.56.1`. Each run records that profile. All runs for the label are listed. `metrics` is the `engines` object from the newest `regression.json`, including results, counts, resolution, and all four metric evaluations for each engine |
 | `sizes` | Totals and deltas from section 7.6 |
 | `security` | Workflow run, open applicable findings, and approved risk decisions |
 | `changelog` | `CHANGELOG.md` at `candidateSha` has the heading `## <label>` |

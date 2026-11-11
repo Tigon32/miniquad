@@ -29,6 +29,8 @@ import {
   medianConfidenceRanks,
   clockResolution,
   evaluateMetric,
+  evaluateRegression,
+  measure,
   createReleaseServer,
 } from "../scripts/release-browser.mjs";
 
@@ -442,6 +444,77 @@ test("evaluateMetric gives INCONCLUSIVE when resolution is null", () => {
   assert.equal(result.result, "INCONCLUSIVE");
 });
 
+test("evaluateMetric never drops or ignores invalid sample values", () => {
+  for (const field of ["baseline", "candidate"]) {
+    for (const value of [NaN, Infinity, -1, undefined, "1"]) {
+      const input = { baseline: Array(30).fill(1), candidate: Array(30).fill(1), resolution: 0.1 };
+      input[field][29] = value;
+      assert.equal(evaluateMetric(input).result, "INCONCLUSIVE", `${field}: ${String(value)}`);
+    }
+  }
+});
+
+test("evaluateMetric rejects an infinite clock resolution", () => {
+  assert.equal(evaluateMetric({
+    baseline: Array(20).fill(1), candidate: Array(20).fill(2), resolution: Infinity,
+  }).result, "INCONCLUSIVE");
+});
+
+function validRegressionSamples() {
+  const timing = () => ({
+    coldStartupToRunningMs: 1,
+    coldStartupToFirstFrameMs: 1,
+    frameIntervalSamples: [0, 1, 2],
+    clockSamplesTop: [0, 0.01, 0.02],
+    clockSamplesRuntime: [0, 0.01, 0.02],
+  });
+  return {
+    profile: "gha-ubuntu-24.04-x64-pw1.56.1",
+    engines: Object.fromEntries(["chromium", "firefox", "webkit"].map((engine) => [engine, {
+      runs: Array.from({ length: 60 }, (_, i) => ({
+        variant: i % 2 ? "candidate" : "baseline", cold: timing(), warm: timing(),
+      })),
+    }])),
+  };
+}
+
+test("evaluateRegression uses the largest per-run clock resolution", () => {
+  const samples = validRegressionSamples();
+  const run = samples.engines.chromium.runs[0];
+  for (const phase of [run.cold, run.warm]) {
+    phase.clockSamplesTop = [0, 0.1, 0.2];
+    phase.clockSamplesRuntime = [0, 0.1, 0.2];
+  }
+  const result = evaluateRegression(samples);
+  assert.equal(result.result, "PASS");
+  assert.equal(result.engines.chromium.resolution, 0.1);
+});
+
+test("evaluateRegression retains invalid samples even when more than 20 pairs remain", () => {
+  for (const change of [
+    (s) => { s.engines.chromium.runs[0].invalidReason = "navigation timeout"; },
+    (s) => { s.engines.chromium.runs[0].cold.coldStartupToRunningMs = NaN; },
+    (s) => {
+      const run = s.engines.chromium.runs[0];
+      for (const phase of [run.cold, run.warm]) {
+        phase.clockSamplesTop = [1, 1];
+        phase.clockSamplesRuntime = [1, 1];
+      }
+    },
+    (s) => { delete s.engines.webkit; },
+  ]) {
+    const samples = validRegressionSamples();
+    change(samples);
+    assert.equal(evaluateRegression(samples).result, "INCONCLUSIVE");
+  }
+});
+
+test("measure rejects invalid pair counts before loading browser dependencies", async () => {
+  for (const pairs of ["invalid", 19, 20.5, Infinity]) {
+    await assert.rejects(measure({ pairs }), /--pairs must be an integer of 20 or more/);
+  }
+});
+
 test("evaluateMetric gives INCONCLUSIVE for a median at or below the limit with ciHigh above it", () => {
   // Baseline tightly clustered near 10 (p90 ~ 10.022, limit ~ 10.023).
   // Candidate: 13 low values keep the median at/below the limit, but 12
@@ -490,6 +563,7 @@ test("prepare role rules: a candidate without an rc label is rejected", async ()
 
 function buildValidGateRecord() {
   return {
+    schema: "miniquad-release-gate/1",
     label: "0.5.0-tigon32.1.rc.1",
     tag: "tigon32-miniquad-v0.5.0-tigon32.1.rc.1",
     candidateSha: "c".repeat(40),
@@ -506,7 +580,7 @@ function buildValidGateRecord() {
     },
     cargoPackage: { name: "miniquad", version: "0.4.11" },
     contracts: { abiVersion: 3, starterParamsVersion: 1 },
-    packages: { baselineManifestSha256: "x".repeat(64), candidateManifestSha256: "y".repeat(64), reproducible: true },
+    packages: { baselineManifestSha256: "a".repeat(64), candidateManifestSha256: "b".repeat(64), reproducible: true },
     ci: [
       { workflow: "Miniquad integration CI", job: "rust-wasm", conclusion: "success", sha: "c".repeat(40) },
       { workflow: "Miniquad three-engine browser acceptance", job: "engines", conclusion: "success", sha: "c".repeat(40) },
@@ -515,14 +589,25 @@ function buildValidGateRecord() {
     ],
     compare: true,
     drill: {
-      reference: { result: "PASS", profile: "gha-ubuntu-24.04-x64-pw1.56.1", sha256: "r".repeat(64) },
-      local: { result: "PASS", profile: "local-macos-shared-rehearsal", sha256: "l".repeat(64) },
+      reference: { result: "PASS", profile: "gha-ubuntu-24.04-x64-pw1.56.1", sha256: "0".repeat(64) },
+      local: { result: "PASS", profile: "local-macos-shared-rehearsal", sha256: "1".repeat(64) },
     },
     regression: {
       profileId: "gha-ubuntu-24.04-x64-pw1.56.1",
       runs: [{ runId: "1", result: "PASS", profile: "gha-ubuntu-24.04-x64-pw1.56.1" }],
       result: "PASS",
-      metrics: {},
+      metrics: Object.fromEntries(["chromium", "firefox", "webkit"].map((engine) => [engine, {
+        result: "PASS",
+        resolution: 0.1,
+        validSampleCount: 40,
+        invalidSampleCount: 0,
+        metrics: Object.fromEntries([
+          "coldStartupToRunningMs", "coldStartupToFirstFrameMs",
+          "warmStartupToRunningMs", "warmFrameIntervalP95Ms",
+        ].map((metric) => [metric, evaluateMetric({
+          baseline: Array(20).fill(10), candidate: Array(20).fill(10), resolution: 0.1,
+        })])),
+      }])),
     },
     sizes: { brotliTotalDelta: 0 },
     security: { workflowRun: "https://example.invalid/run/1", openFindings: [], waivers: [] },
@@ -547,6 +632,66 @@ test("evaluateGate gives QUALIFIED-CANDIDATE for a complete automated-review fix
   const { result, reasons } = evaluateGate(buildValidGateRecord());
   assert.equal(result, "QUALIFIED-CANDIDATE", reasons.join("; "));
 });
+
+test("evaluateGate requires the contract identity and evidence references", () => {
+  for (const path of [
+    "schema", "contracts", "limits", "review.date", "compatibility.evidence",
+    "upstream.importedChanges", "packages.baselineManifestSha256",
+    "packages.candidateManifestSha256", "drill.reference.sha256",
+    "drill.local.sha256", "regression.metrics",
+  ]) {
+    const record = buildValidGateRecord();
+    const parts = path.split(".");
+    let parent = record;
+    for (const key of parts.slice(0, -1)) parent = parent[key];
+    delete parent[parts.at(-1)];
+    assert.equal(evaluateGate(record).result, "BLOCKED", path);
+  }
+});
+
+test("evaluateGate rejects invalid evidence types and contract versions", () => {
+  for (const change of [
+    (r) => { r.schema = "unknown"; },
+    (r) => { r.contracts.abiVersion = 2; },
+    (r) => { r.packages.candidateManifestSha256 = "not-a-hash"; },
+    (r) => { r.upstream.importedChanges = {}; },
+    (r) => { r.compatibility.browserProtocolBreaking = "true"; },
+    (r) => { r.review.reviewer = {}; },
+    (r) => { r.review.waivers = {}; },
+    (r) => { r.drill.local.profile = null; },
+  ]) {
+    const record = buildValidGateRecord();
+    change(record);
+    assert.equal(evaluateGate(record).result, "BLOCKED");
+  }
+});
+
+for (const [name, change, expected] of [
+  ["one security job substituted for all jobs", (r) => { r.ci[2].job = "npm-advisories"; }, "BLOCKED"],
+  ["a later failed required CI job", (r) => { r.ci.push({ ...r.ci[0], conclusion: "failure" }); }, "FAILED"],
+  ["a cancelled security job", (r) => { r.ci.push({ ...r.ci[2], job: "rustsec", conclusion: "cancelled" }); }, "BLOCKED"],
+  ["an older null regression run", (r) => { r.regression.runs.unshift(null); }, "BLOCKED"],
+  ["an empty native inventory", (r) => { r.native = {}; }, "BLOCKED"],
+  ["an unsupported baseline kind", (r) => { r.baseline.kind = "unknown"; }, "BLOCKED"],
+  ["the wrong reference drill profile", (r) => { r.drill.reference.profile = "local-rehearsal"; }, "BLOCKED"],
+  ["missing security details", (r) => { r.security = {}; }, "BLOCKED"],
+  ["an open security finding", (r) => { r.security.openFindings = [{ advisory: "unresolved" }]; }, "BLOCKED"],
+  ["a security waiver", (r) => { r.security.waivers = [{ reason: "unreviewed" }]; }, "BLOCKED"],
+  ["empty metric evidence", (r) => { r.regression.metrics = {}; }, "BLOCKED"],
+  ["a missing engine", (r) => { delete r.regression.metrics.firefox; }, "BLOCKED"],
+  ["an inconclusive engine", (r) => { r.regression.metrics.webkit.result = "INCONCLUSIVE"; }, "BLOCKED"],
+  ["an invalid retained sample", (r) => { r.regression.metrics.chromium.invalidSampleCount = 1; }, "BLOCKED"],
+  ["a failed metric hidden by the aggregate", (r) => { r.regression.metrics.chromium.metrics.coldStartupToRunningMs.result = "FAIL"; }, "FAILED"],
+  ["a missing metric", (r) => { delete r.regression.metrics.firefox.metrics.warmFrameIntervalP95Ms; }, "BLOCKED"],
+  ["inconsistent passing statistics", (r) => { r.regression.metrics.webkit.metrics.coldStartupToFirstFrameMs.ciHigh = 20; }, "BLOCKED"],
+]) {
+  test(`evaluateGate rejects ${name}`, () => {
+    const record = buildValidGateRecord();
+    change(record);
+    const { result, reasons } = evaluateGate(record);
+    assert.equal(result, expected, reasons.join("; "));
+  });
+}
 
 test("evaluateGate gives BLOCKED when ownerApproval is true", () => {
   const record = buildValidGateRecord();

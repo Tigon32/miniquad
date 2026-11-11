@@ -110,7 +110,10 @@ export function evaluateMetric({ baseline, candidate, resolution }) {
   if (!Array.isArray(baseline) || !Array.isArray(candidate) || baseline.length < 20 || candidate.length < 20) {
     return { result: "INCONCLUSIVE", reason: "fewer than 20 valid values", limit: null, ciLow: null, ciHigh: null };
   }
-  if (typeof resolution !== "number" || !(resolution > 0)) {
+  if ([...baseline, ...candidate].some((value) => !Number.isFinite(value) || value < 0)) {
+    return { result: "INCONCLUSIVE", reason: "invalid sample value", limit: null, ciLow: null, ciHigh: null };
+  }
+  if (!Number.isFinite(resolution) || !(resolution > 0)) {
     return { result: "INCONCLUSIVE", reason: "clock resolution is null or not positive", limit: null, ciLow: null, ciHigh: null };
   }
   const sortedBaseline = [...baseline].sort((a, b) => a - b);
@@ -662,10 +665,64 @@ function framesToIntervals(times) {
   return intervals;
 }
 
+export function evaluateRegression(samples) {
+  const regression = { schema: "miniquad-release-regression/1", profileId: samples.profile, engines: {}, result: "PASS" };
+  const metricExtractors = {
+    coldStartupToRunningMs: (r) => r.cold?.coldStartupToRunningMs,
+    coldStartupToFirstFrameMs: (r) => r.cold?.coldStartupToFirstFrameMs,
+    warmStartupToRunningMs: (r) => r.warm?.coldStartupToRunningMs,
+    warmFrameIntervalP95Ms: (r) => {
+      const times = r.warm?.frameIntervalSamples;
+      if (!Array.isArray(times) || times.length < 2 ||
+          !times.every((value) => Number.isFinite(value) && value >= 0)) return undefined;
+      const intervals = framesToIntervals(times);
+      if (intervals.some((value) => value < 0)) return undefined;
+      return nearestRank(intervals.sort((a, b) => a - b), 0.95);
+    },
+  };
+  for (const engineName of ["chromium", "firefox", "webkit"]) {
+    const engineData = samples.engines?.[engineName];
+    const runs = Array.isArray(engineData?.runs) ? engineData.runs : [];
+    const valid = runs.filter((run) => run && !run.invalidReason &&
+      ["baseline", "candidate"].includes(run.variant) &&
+      Object.values(metricExtractors).every((extract) => {
+        const value = extract(run);
+        return Number.isFinite(value) && value >= 0;
+      }));
+    const invalidSampleCount = runs.length - valid.length;
+    const baselineRuns = valid.filter((r) => r.variant === "baseline");
+    const candidateRuns = valid.filter((r) => r.variant === "candidate");
+    const runResolutions = valid.map((r) => clockResolution([
+      r.cold?.clockSamplesTop, r.cold?.clockSamplesRuntime,
+      r.warm?.clockSamplesTop, r.warm?.clockSamplesRuntime,
+    ].filter(Array.isArray)));
+    const resolution = engineData?.versionMismatch || invalidSampleCount > 0 ||
+      runResolutions.length === 0 || runResolutions.some((value) => !Number.isFinite(value) || value <= 0)
+      ? null
+      : runResolutions.reduce((largest, value) => Math.max(largest, value), 0);
+    const metrics = {};
+    let engineResult = "PASS";
+    for (const [metricName, extract] of Object.entries(metricExtractors)) {
+      const evaluation = engineData?.versionMismatch
+        ? { result: "INCONCLUSIVE", reason: "browser version differs between baseline and candidate runs" }
+        : invalidSampleCount > 0
+          ? { result: "INCONCLUSIVE", reason: "a retained sample is invalid" }
+          : evaluateMetric({ baseline: baselineRuns.map(extract), candidate: candidateRuns.map(extract), resolution });
+      metrics[metricName] = evaluation;
+      if (evaluation.result === "FAIL") engineResult = "FAIL";
+      else if (evaluation.result === "INCONCLUSIVE" && engineResult !== "FAIL") engineResult = "INCONCLUSIVE";
+    }
+    regression.engines[engineName] = { result: engineResult, resolution, metrics, validSampleCount: valid.length, invalidSampleCount };
+    if (engineResult === "FAIL") regression.result = "FAIL";
+    else if (engineResult === "INCONCLUSIVE" && regression.result !== "FAIL") regression.result = "INCONCLUSIVE";
+  }
+  return regression;
+}
+
 export async function measure(options) {
-  const playwright = await loadPlaywright();
   const pairs = Number(options.pairs ?? 20);
-  if (pairs < 20) throw new Error("--pairs must be 20 or more");
+  if (!Number.isSafeInteger(pairs) || pairs < 20) throw new Error("--pairs must be an integer of 20 or more");
+  const playwright = await loadPlaywright();
   const baselineDir = resolve(options.baseline);
   const candidateDir = resolve(options.candidate);
   const outDir = resolve(options.out);
@@ -731,36 +788,7 @@ export async function measure(options) {
 
   writeFileSync(join(outDir, "samples.json"), `${JSON.stringify(samples, null, 2)}\n`);
 
-  const regression = { schema: "miniquad-release-regression/1", profileId: samples.profile, engines: {}, result: "PASS" };
-  for (const [engineName, engineData] of Object.entries(samples.engines)) {
-    const valid = engineData.runs.filter((r) => !r.invalidReason);
-    const baselineRuns = valid.filter((r) => r.variant === "baseline");
-    const candidateRuns = valid.filter((r) => r.variant === "candidate");
-    const resolutionSamples = valid.flatMap((r) => [r.cold?.clockSamplesTop, r.cold?.clockSamplesRuntime, r.warm?.clockSamplesTop, r.warm?.clockSamplesRuntime].filter(Boolean));
-    const resolution = engineData.versionMismatch ? null : clockResolution(resolutionSamples);
-
-    const metrics = {};
-    const metricExtractors = {
-      coldStartupToRunningMs: (r) => r.cold?.coldStartupToRunningMs,
-      coldStartupToFirstFrameMs: (r) => r.cold?.coldStartupToFirstFrameMs,
-      warmStartupToRunningMs: (r) => r.warm?.coldStartupToRunningMs,
-      warmFrameIntervalP95Ms: (r) => (r.warm?.frameIntervalSamples ? nearestRank([...framesToIntervals(r.warm.frameIntervalSamples)].sort((a, b) => a - b), 0.95) : undefined),
-    };
-    let engineResult = "PASS";
-    for (const [metricName, extract] of Object.entries(metricExtractors)) {
-      const baselineValues = baselineRuns.map(extract).filter((v) => typeof v === "number");
-      const candidateValues = candidateRuns.map(extract).filter((v) => typeof v === "number");
-      const evaluation = engineData.versionMismatch
-        ? { result: "INCONCLUSIVE", reason: "browser version differs between baseline and candidate runs" }
-        : evaluateMetric({ baseline: baselineValues, candidate: candidateValues, resolution });
-      metrics[metricName] = evaluation;
-      if (evaluation.result === "FAIL") engineResult = "FAIL";
-      else if (evaluation.result === "INCONCLUSIVE" && engineResult !== "FAIL") engineResult = "INCONCLUSIVE";
-    }
-    regression.engines[engineName] = { result: engineResult, resolution, metrics, validSampleCount: valid.length, invalidSampleCount: engineData.runs.length - valid.length };
-    if (engineResult === "FAIL") regression.result = "FAIL";
-    else if (engineResult === "INCONCLUSIVE" && regression.result !== "FAIL") regression.result = "INCONCLUSIVE";
-  }
+  const regression = evaluateRegression(samples);
 
   writeFileSync(join(outDir, "regression.json"), `${JSON.stringify(regression, null, 2)}\n`);
   console.log(JSON.stringify({ result: regression.result, engines: Object.fromEntries(Object.entries(regression.engines).map(([k, v]) => [k, v.result])) }, null, 2));

@@ -419,6 +419,7 @@ function requireField(record, path) {
 }
 
 const REQUIRED_GATE_FIELDS = [
+  "schema",
   "label",
   "tag",
   "candidateSha",
@@ -432,20 +433,26 @@ const REQUIRED_GATE_FIELDS = [
   "cargoPackage.name",
   "cargoPackage.version",
   "packages.reproducible",
+  "packages.baselineManifestSha256",
+  "packages.candidateManifestSha256",
+  "contracts",
   "ci",
   "drill.reference",
   "drill.local",
   "regression.profileId",
   "regression.result",
+  "regression.metrics",
   "sizes",
   "security",
   "changelog",
   "native",
+  "limits",
   "review.reviewerKind",
   "review.reviewer",
   "review.method",
   "review.reference",
   "review.ownerApproval",
+  "review.date",
 ];
 const REQUIRED_CI_JOBS = [
   ["Miniquad integration CI", "rust-wasm"],
@@ -476,6 +483,66 @@ export function evaluateGate(record) {
     }
   }
 
+  if (record?.schema !== "miniquad-release-gate/1") {
+    blocked = true;
+    reasons.push("Gate record schema is invalid");
+  }
+  if (record?.contracts?.abiVersion !== ABI_VERSION ||
+      record?.contracts?.starterParamsVersion !== PARAMS_VERSION) {
+    blocked = true;
+    reasons.push("Browser contract versions do not match the candidate contract");
+  }
+  for (const path of [
+    "upstream.cargoVersion", "compatibility.evidence", "drill.local.profile",
+    "review.reviewer", "review.method", "review.reference", "review.date",
+  ]) {
+    const value = requireField(record, path);
+    if (typeof value !== "string" || !value.trim()) {
+      blocked = true;
+      reasons.push(`Required evidence text is missing or invalid: ${path}`);
+    }
+  }
+  for (const path of ["upstream.importedChanges", "review.waivers"]) {
+    if (!Array.isArray(requireField(record, path))) {
+      blocked = true;
+      reasons.push(`Required evidence list is missing or invalid: ${path}`);
+    }
+  }
+  for (const path of ["limits", "regression.metrics"]) {
+    const value = requireField(record, path);
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      blocked = true;
+      reasons.push(`Required evidence object is missing or invalid: ${path}`);
+    }
+  }
+  for (const path of [
+    "packages.baselineManifestSha256", "packages.candidateManifestSha256",
+    "drill.reference.sha256", "drill.local.sha256",
+  ]) {
+    const value = requireField(record, path);
+    if (typeof value !== "string" || !/^[0-9a-f]{64}$/.test(value)) {
+      blocked = true;
+      reasons.push(`Evidence SHA-256 is missing or invalid: ${path}`);
+    }
+  }
+  for (const field of ["rustApiBreaking", "browserProtocolBreaking", "changed"]) {
+    if (typeof record?.compatibility?.[field] !== "boolean") {
+      blocked = true;
+      reasons.push(`Compatibility flag is missing or invalid: ${field}`);
+    }
+  }
+  for (const path of ["compatibility.previousCore", "compatibility.derivedCore"]) {
+    const core = requireField(record, path);
+    if (!["major", "minor", "patch"].every((key) => Number.isSafeInteger(core?.[key]) && core[key] >= 0)) {
+      blocked = true;
+      reasons.push(`Compatibility version is missing or invalid: ${path}`);
+    }
+  }
+  if (typeof record?.review?.sizeIncreaseAccepted !== "boolean") {
+    blocked = true;
+    reasons.push("review.sizeIncreaseAccepted is not a boolean");
+  }
+
   if (record?.packages?.reproducible !== true) {
     blocked = true;
     reasons.push("packages.reproducible is not true");
@@ -489,6 +556,7 @@ export function evaluateGate(record) {
     ["candidateSha", record?.candidateSha],
     ["toolSha", record?.toolSha],
     ["baseline.sha", record?.baseline?.sha],
+    ["upstream.mergeBaseSha", record?.upstream?.mergeBaseSha],
   ]) {
     if (!isCommitSha(value)) {
       blocked = true;
@@ -510,22 +578,24 @@ export function evaluateGate(record) {
     reasons.push("ci is missing or is not the list of collected CI job results");
   } else {
     for (const [workflow, job] of REQUIRED_CI_JOBS) {
-      const found = record.ci.find((entry) => entry && entry.workflow === workflow && (entry.job === job || job === "all"));
-      if (!found) {
+      const workflowEntries = record.ci.filter((entry) => entry?.workflow === workflow);
+      const matching = workflowEntries.filter((entry) => entry.job === job);
+      if (matching.length !== 1) {
         blocked = true;
-        reasons.push(`Required CI job not present: ${workflow} / ${job}`);
-        continue;
+        reasons.push(`Required CI job must have exactly one record: ${workflow} / ${job}`);
       }
-      if (found.conclusion === "failure") {
-        failed = true;
-        reasons.push(`Required CI job failed: ${workflow} / ${job}`);
-      } else if (found.conclusion !== "success") {
-        blocked = true;
-        reasons.push(`Required CI job not successful: ${workflow} / ${job}`);
-      }
-      if (!isCommitSha(found.sha) || found.sha !== record?.candidateSha) {
-        blocked = true;
-        reasons.push(`Required CI job evidence is not recorded for the candidate SHA: ${workflow} / ${job}`);
+      for (const entry of job === "all" ? workflowEntries : matching) {
+        if (entry.conclusion === "failure") {
+          failed = true;
+          reasons.push(`Required CI job failed: ${workflow} / ${entry.job}`);
+        } else if (entry.conclusion !== "success") {
+          blocked = true;
+          reasons.push(`Required CI job not successful: ${workflow} / ${entry.job}`);
+        }
+        if (!isCommitSha(entry.sha) || entry.sha !== record?.candidateSha) {
+          blocked = true;
+          reasons.push(`Required CI job evidence is not recorded for the candidate SHA: ${workflow} / ${entry.job}`);
+        }
       }
     }
   }
@@ -552,6 +622,10 @@ export function evaluateGate(record) {
     blocked = true;
     reasons.push("Reference drill result is missing or not PASS");
   }
+  if (record?.drill?.reference?.profile !== "gha-ubuntu-24.04-x64-pw1.56.1") {
+    blocked = true;
+    reasons.push("Reference drill profile is not the reference profile");
+  }
   if (record?.drill?.local?.result !== "PASS") {
     blocked = true;
     reasons.push("Local drill result is missing or not PASS");
@@ -573,7 +647,7 @@ export function evaluateGate(record) {
       failed = true;
       reasons.push("A retained regression run is FAIL");
     }
-    const malformedRun = regressionRuns.find(
+    const malformedRun = regressionRuns.some(
       (run) =>
         !run ||
         typeof run.runId !== "string" ||
@@ -602,6 +676,37 @@ export function evaluateGate(record) {
   if (record?.regression?.profileId !== "gha-ubuntu-24.04-x64-pw1.56.1") {
     blocked = true;
     reasons.push("Regression profile ID is not the reference profile");
+  }
+  for (const engineName of ["chromium", "firefox", "webkit"]) {
+    const engine = record?.regression?.metrics?.[engineName];
+    if (engine?.result === "FAIL") {
+      failed = true;
+      reasons.push(`Regression engine failed: ${engineName}`);
+    } else if (engine?.result !== "PASS") {
+      blocked = true;
+      reasons.push(`Regression engine is missing or not PASS: ${engineName}`);
+    }
+    if (!Number.isFinite(engine?.resolution) || engine.resolution <= 0 ||
+        !Number.isSafeInteger(engine?.validSampleCount) || engine.validSampleCount < 40 ||
+        engine?.invalidSampleCount !== 0) {
+      blocked = true;
+      reasons.push(`Regression sample evidence is missing or invalid: ${engineName}`);
+    }
+    for (const metricName of [
+      "coldStartupToRunningMs", "coldStartupToFirstFrameMs",
+      "warmStartupToRunningMs", "warmFrameIntervalP95Ms",
+    ]) {
+      const metric = engine?.metrics?.[metricName];
+      if (metric?.result === "FAIL") {
+        failed = true;
+        reasons.push(`Regression metric failed: ${engineName} / ${metricName}`);
+      } else if (metric?.result !== "PASS" ||
+          ![metric?.limit, metric?.ciLow, metric?.ciHigh].every((v) => Number.isFinite(v) && v >= 0) ||
+          metric.ciLow > metric.ciHigh || metric.ciHigh > metric.limit) {
+        blocked = true;
+        reasons.push(`Regression metric is missing, inconsistent, or not PASS: ${engineName} / ${metricName}`);
+      }
+    }
   }
 
   try {
@@ -632,11 +737,28 @@ export function evaluateGate(record) {
     reasons.push("CHANGELOG.md heading for the label is missing");
   }
 
+  for (const target of ["windows", "linux", "macos", "android", "ios"]) {
+    if (record?.native?.[target] === undefined) {
+      blocked = true;
+      reasons.push(`Native target qualification is missing: ${target}`);
+    }
+  }
   for (const [target, value] of Object.entries(record?.native ?? {})) {
-    if (value !== "unqualified" && !(value && typeof value === "object" && value.evidence)) {
+    if (value !== "unqualified" && !(value && typeof value.evidence === "string" && value.evidence.trim())) {
       blocked = true;
       reasons.push(`Native target not unqualified and has no evidence link: ${target}`);
     }
+  }
+
+  const security = record?.security;
+  if (typeof security?.workflowRun !== "string" || !security.workflowRun.trim() ||
+      !Array.isArray(security.openFindings) || !Array.isArray(security.waivers)) {
+    blocked = true;
+    reasons.push("Security workflow, findings, or waiver details are missing or invalid");
+  }
+  if (security?.openFindings?.length > 0 || security?.waivers?.length > 0) {
+    blocked = true;
+    reasons.push("Open security findings or waivers remain");
   }
 
   const review = record?.review ?? {};
@@ -665,6 +787,10 @@ export function evaluateGate(record) {
   }
 
   const hasReleaseTag = Boolean(record?.existingReleaseTag);
+  if (!["bootstrap-reference", "qualified-release"].includes(record?.baseline?.kind)) {
+    blocked = true;
+    reasons.push("baseline.kind is invalid");
+  }
   if (record?.baseline?.kind === "bootstrap-reference" && hasReleaseTag) {
     blocked = true;
     reasons.push("Bootstrap baseline used while a .release tag exists");

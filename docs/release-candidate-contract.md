@@ -243,7 +243,7 @@ Rules for `canonicalizeManifest`:
 3. The set of `files[].file` plus `MANIFEST.json` equals the set of regular files in `web/`. A directory, a symbolic link, or an extra file fails.
 4. The set of `files[].file` is exactly `app.wasm`, `gl.js`, `host-preferences.mjs`, `index.html`, `miniquad.mjs`, `runtime.html`, and `runtime.mjs`.
 5. Each `sha256` and `bytes` value equals the file bytes.
-6. `gl.js` bytes equal `git show <sha>:js/gl.js`. Each other copied asset equals its `sourcePath` at `<sha>`.
+6. Each of the five copied assets (`gl.js`, `host-preferences.mjs`, `miniquad.mjs`, `runtime.html`, `runtime.mjs`) has one fixed `sourcePath`: `js/gl.js`, `js/host-preferences.mjs`, `js/miniquad.mjs`, `js/runtime.html`, and `js/runtime.mjs`. A `null`, missing, or different `sourcePath` fails. The payload bytes must equal the bytes committed at that fixed path and `<sha>`; a caller that does not supply those real source bytes also fails, rather than the rule being skipped. `app.wasm` and `index.html` have no fixed source path; they are not copied from one source file.
 7. `sourcePath`, if present, is a relative path without `..` and without a leading `/`.
 8. Any other top-level key, except `generatedAt` and `updatedAt`, fails.
 
@@ -321,6 +321,10 @@ These are computed file sizes, not network transfer measurements.
 
 `verify --package <dir>` repeats rules 2 to 5 and 7 of section 5.3 against `payload/`, runs the leak scan, compiles `app.wasm` with `new WebAssembly.Module`, and requires exports `memory`, `main`, `frame`, `crate_version`, `allocate_transfer_vec_u8`, `discard_transfer_vec_u8`, and `mq_params_version`.
 
+`verify` also checks the canonical manifest's own identity fields, so a well-formed but unlabeled or misattributed package fails: `schema` is `"miniquad-release-payload/1"`; `role` is `baseline` or `candidate`; for `candidate`, `label` matches the label grammar and `reference` is `null`; for `baseline`, `label` is `null` and `reference` is `bootstrap-reference` or `qualified-release`; `source.repository` is the fixed Miniquad repository URL; `source.sha` is 40 hexadecimal characters; `abiVersion` is `3`.
+
+If `provenance.json` is present next to `payload/`, `verify` also checks that its `canonicalManifestSha256` equals the SHA-256 of the real `payload/MANIFEST.json` bytes, and that its `assetSource.sha` equals the manifest's `source.sha`. A provenance record that does not match its own package is not valid evidence for that package.
+
 `compare --a <package> --b <package>` passes only when both canonical manifests are byte-identical and every payload file is byte-identical.
 
 **Reproducibility rule:** prepare the candidate twice, in two different new `--out` directories, on one host and toolchain. Use `--lockfile` from the first package for the second. `compare` must pass.
@@ -363,7 +367,7 @@ Chromium uses the launch arguments of `playwright.config.mjs`.
 Phase check. All conditions must pass:
 
 1. Node `fetch` of every manifest file gives the SHA-256 of the expected package.
-2. The browser receives `index.html`, `gl.js`, `miniquad.mjs`, `runtime.html`, `runtime.mjs`, `host-preferences.mjs`, and `app.wasm`. The SHA-256 of each response body equals the expected package. A `304` response is not valid in `rollback-reload`, because the ETag changed.
+2. The browser's own observed response for every one of `index.html`, `gl.js`, `miniquad.mjs`, `runtime.html`, `runtime.mjs`, `host-preferences.mjs`, and `app.wasm` has status `200` and a body whose SHA-256 equals the expected package's hash, in every phase including `rollback-reload`. A `304`, any other non-`200` status, or an unreadable body fails the phase in every phase, not only `rollback-reload`: a fresh context has no prior `ETag`, so a non-`200` response there is equally unable to prove which bytes the browser actually received. Rule 1 alone is not sufficient evidence, because it proves only that the server holds the right bytes, not that the browser fetched and ran them.
 3. `#status` has `data-state="running"` within 30 seconds.
 4. In the runtime frame, `miniquadRuntime.exports.crate_version()` is `3`, `mq_params_version()` is `1`, and `miniquadRuntime.frames` reaches at least 3.
 5. Canvas screenshot: the pixel at (10, 10) is exactly `[16, 16, 26]`, and the center pixel is different.
@@ -371,7 +375,8 @@ Phase check. All conditions must pass:
 7. No `pageerror`, no console message of type `error`, and no failed request.
 
 Keep a full-page PNG and a canvas PNG for each engine and phase, and all error text.
-Write `drill.json` (`schema: "miniquad-release-drill/1"`) with the browser versions, the user agents, the phase results, the observed hashes, and the SHA-256 of each PNG.
+Write `drill.json` (`schema: "miniquad-release-drill/1"`) with the browser versions, the user agents, the phase results, the browser-observed response hashes (rule 2) and whether they passed, and the SHA-256 of each PNG.
+Also write a top-level `packages` field: for the `baseline` and `candidate` roles exercised, the canonical manifest's `role`, `label`, `source.sha`, and SHA-256 of the raw `MANIFEST.json` bytes. This binds the retained drill evidence to the two concrete packages it exercised, so a gate record cannot combine drill evidence with a package it was never run against (see section 9.2).
 The result is `PASS` only if all phases pass in all requested engines. Otherwise it is `FAIL`.
 
 ## 7. Regression guard
@@ -522,9 +527,9 @@ A skipped, cancelled, pending, or absent job is not a pass.
 | `compatibility` | `{previousCore, rustApiBreaking, browserProtocolBreaking, changed, evidence, derivedCore}`. `derivedCore` equals `deriveCore(...)` and the label core |
 | `cargoPackage` | `{name: "miniquad", version: "0.4.11"}` |
 | `contracts` | Section 2.6 values |
-| `packages` | Canonical manifest SHA-256 for baseline and candidate; `reproducible: true` from `compare` |
+| `packages` | Canonical manifest SHA-256 for baseline and candidate; `reproducible: true` from `compare`. `baselineManifestSha256` must not equal `candidateManifestSha256` |
 | `ci` | Output of `collect-ci`. Each required entry has positive safe-integer `runId` and `jobId` values. An `all` entry has a non-empty list of distinct job IDs. Its URL is `https://github.com/Tigon32/miniquad/actions/runs/<runId>` |
-| `drill` | `{reference, local}`. Each has the result, the profile, and the SHA-256 of `drill.json` |
+| `drill` | `{reference, local}`. Each has the result, the profile, the SHA-256 of `drill.json`, and a `packages` field with `baseline.canonicalManifestSha256` and `candidate.canonicalManifestSha256`, each equal to the record's own `packages.baselineManifestSha256`/`packages.candidateManifestSha256`. A retained drill file whose own recorded package identity does not match the record's `packages` field is not valid evidence, even when its `sha256` field is present: a hash alone does not prove which two packages the drill actually exercised |
 | `regression` | `{profileId, runs: [{runId, result, profile}], result, metrics}`. The profile is `gha-ubuntu-24.04-x64-pw1.56.1`. Each run records that profile. Run IDs are distinct positive safe integers written as decimal strings. All runs for the label are listed. The newest run ID equals the collected `Miniquad release candidate` run ID. `metrics` is the `engines` object from the newest `regression.json`, including results, counts, resolution, and all four metric evaluations for each engine |
 | `sizes` | `{baseline, candidate, deltas}` per section 7.6. `baseline` and `candidate` each give non-negative integer `rawBytes`, `gzipBytes`, `brotliBytes` totals. `deltas` gives the signed `candidate - baseline` difference for each of the three counts; an inconsistent delta is invalid evidence |
 | `security` | Workflow run, open applicable findings, and approved risk decisions. `workflowRun` equals the collected `Security advisory review` run URL |
@@ -538,7 +543,7 @@ A skipped, cancelled, pending, or absent job is not a pass.
 Evaluate all rules. Return all reasons.
 
 * `FAILED` if any of these is true: the drill result is `FAIL`; a retained regression run is `FAIL`; a required CI job has conclusion `failure`; `compare` failed; a payload leak finding exists.
-* Else `BLOCKED` if any of these is true: a field is missing or invalid; a CI job is absent or not `success`; the drill result is missing for the reference profile or the local exercise; the regression result is not `PASS`; the profile ID is different; `compatibility.derivedCore` differs from the label core; `cargoPackage` differs; the change log heading is missing; a native target is not `unqualified` and has no evidence link; `review.reviewerKind`, `review.reviewer`, `review.method`, or `review.reference` is empty or invalid; `review.ownerApproval` is not `false`; the size increased without acceptance; a waiver exists; `baseline.kind` is `bootstrap-reference` while a `tigon32-miniquad-v*.release` tag exists; `baseline.kind` is `qualified-release` and the baseline tag does not point to `baseline.sha`.
+* Else `BLOCKED` if any of these is true: a field is missing or invalid; a CI job is absent or not `success`; the drill result is missing for the reference profile or the local exercise; a retained drill's recorded package identity does not match `packages.baselineManifestSha256`/`packages.candidateManifestSha256`; `packages.baselineManifestSha256` equals `packages.candidateManifestSha256`; the regression result is not `PASS`; the profile ID is different; `compatibility.derivedCore` differs from the label core; `cargoPackage` differs; the change log heading is missing; a native target is not `unqualified` and has no evidence link; `review.reviewerKind`, `review.reviewer`, `review.method`, or `review.reference` is empty or invalid; `review.ownerApproval` is not `false`; the size increased without acceptance; a waiver exists; `baseline.kind` is `bootstrap-reference` while a `tigon32-miniquad-v*.release` tag exists; `baseline.kind` is `qualified-release` and the baseline tag does not point to `baseline.sha`.
 * Else `QUALIFIED-CANDIDATE`.
 
 `QUALIFIED-CANDIDATE` means that this candidate passed the listed checks in the listed profile and engines.
@@ -642,5 +647,6 @@ These questions do not block the candidate. They block a `.release` publication.
 2. Decide the `Cargo.toml` version for a publication, and the product name under MADR 0006.
 3. Decide whether a GitHub Release object is necessary for a publication.
 4. Decide whether a physical device profile is necessary before a publication.
+5. Decide whether `evaluateGate` must itself verify, by a Git command, that the annotated tag named in `tag` actually points to `candidateSha` (`git cat-file -t <tag>` is `tag` and `git rev-parse <tag>^{commit}` equals `candidateSha`), or whether a documented reviewer-evidence field for that check is sufficient. This contract already requires the tag to point to `candidateSha` (section 9.2); the open question is only the exact binding mechanism, not whether the requirement exists.
 
 **Writing review:** STE-aligned draft. Full dictionary review not done.

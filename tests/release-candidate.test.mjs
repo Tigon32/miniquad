@@ -22,6 +22,7 @@ import {
   evaluateGate,
   gate,
   collectCi,
+  verify,
 } from "../scripts/release-candidate.mjs";
 
 import {
@@ -780,8 +781,20 @@ function buildValidGateRecord() {
     ],
     compare: true,
     drill: {
-      reference: { result: "PASS", profile: "gha-ubuntu-24.04-x64-pw1.56.1", sha256: "0".repeat(64) },
-      local: { result: "PASS", profile: "local-macos-shared-rehearsal", sha256: "1".repeat(64) },
+      reference: {
+        result: "PASS", profile: "gha-ubuntu-24.04-x64-pw1.56.1", sha256: "0".repeat(64),
+        packages: {
+          baseline: { canonicalManifestSha256: "a".repeat(64) },
+          candidate: { canonicalManifestSha256: "b".repeat(64) },
+        },
+      },
+      local: {
+        result: "PASS", profile: "local-macos-shared-rehearsal", sha256: "1".repeat(64),
+        packages: {
+          baseline: { canonicalManifestSha256: "a".repeat(64) },
+          candidate: { canonicalManifestSha256: "b".repeat(64) },
+        },
+      },
     },
     regression: {
       profileId: "gha-ubuntu-24.04-x64-pw1.56.1",
@@ -1161,15 +1174,16 @@ test("gate CLI reports a successful exit code for a QUALIFIED-CANDIDATE record",
 // Server (section 6.1)
 // ---------------------------------------------------------------------
 
-import { mkdtempSync, mkdirSync as mkdirSyncFs, writeFileSync as writeFileSyncFs, rmSync } from "node:fs";
+import { mkdtempSync, mkdirSync as mkdirSyncFs, writeFileSync as writeFileSyncFs, readFileSync as readFileSyncFs, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-function buildFixturePackage(role, label) {
+function buildFixturePackage(role, label, overrides = {}) {
   const dir = mkdtempSync(join(tmpdir(), "release-server-test-"));
   const payloadDir = join(dir, "payload");
   mkdirSyncFs(payloadDir, { recursive: true });
-  const files = Object.entries(PAYLOAD_BYTES).map(([file, bytes]) => {
+  const payloadBytes = { ...PAYLOAD_BYTES, ...(overrides.payloadBytes ?? {}) };
+  const files = Object.entries(payloadBytes).map(([file, bytes]) => {
     writeFileSyncFs(join(payloadDir, file), bytes);
     return { file, sha256: sha256(bytes), bytes: bytes.length, sourcePath: SOURCE_PATHS[file] ?? null };
   });
@@ -1181,8 +1195,12 @@ function buildFixturePackage(role, label) {
     source: { repository: "https://github.com/Tigon32/miniquad", sha: SHA },
     abiVersion: 3,
     files,
+    ...(overrides.manifest ?? {}),
   };
   writeFileSyncFs(join(payloadDir, "MANIFEST.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+  if (overrides.provenance !== undefined) {
+    writeFileSyncFs(join(dir, "provenance.json"), `${JSON.stringify(overrides.provenance, null, 2)}\n`);
+  }
   return dir;
 }
 
@@ -1226,4 +1244,204 @@ test("createReleaseServer: a matching ETag gives 304, and deploy() changes the s
     rmSync(baselineDir, { recursive: true, force: true });
     rmSync(candidateDir, { recursive: true, force: true });
   }
+});
+
+// ---------------------------------------------------------------------
+// `verify` (section 5.6): package identity, WASM exports, and provenance
+// (issue #19 artifact-acceptance review, findings F2 and F3)
+// ---------------------------------------------------------------------
+
+function u32leb(value) {
+  const bytes = [];
+  let n = value;
+  do {
+    let byte = n & 0x7f;
+    n >>>= 7;
+    if (n !== 0) byte |= 0x80;
+    bytes.push(byte);
+  } while (n !== 0);
+  return bytes;
+}
+
+function wasmSection(id, bytes) {
+  return [id, ...u32leb(bytes.length), ...bytes];
+}
+
+function wasmName(name) {
+  const utf8 = Buffer.from(name, "utf8");
+  return [...u32leb(utf8.length), ...utf8];
+}
+
+/** Builds the smallest valid WASM module that exports `memory` plus the
+ * given function names, each as a no-op `() -> ()` function. `verify` only
+ * checks export names, not signatures, so this is sufficient evidence for
+ * the exports rule without needing a real compiled Miniquad build. */
+function buildWasmWithExports(functionNames) {
+  const typeSec = wasmSection(1, [1, 0x60, 0, 0]);
+  const funcSec = wasmSection(3, [functionNames.length, ...functionNames.map(() => 0)]);
+  const memSec = wasmSection(5, [1, 0x00, 1]);
+  const exportEntries = [...wasmName("memory"), 2, 0];
+  functionNames.forEach((name, i) => exportEntries.push(...wasmName(name), 0, i));
+  const exportSec = wasmSection(7, [functionNames.length + 1, ...exportEntries]);
+  const codeContent = [functionNames.length, ...functionNames.flatMap(() => [2, 0x00, 0x0b])];
+  const codeSec = wasmSection(10, codeContent);
+  return Buffer.from([
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+    ...typeSec, ...funcSec, ...memSec, ...exportSec, ...codeSec,
+  ]);
+}
+
+const REQUIRED_WASM_EXPORT_NAMES = [
+  "main", "frame", "crate_version",
+  "allocate_transfer_vec_u8", "discard_transfer_vec_u8", "mq_params_version",
+];
+const VALID_WASM_BYTES = buildWasmWithExports(REQUIRED_WASM_EXPORT_NAMES);
+const EXPORT_LESS_WASM_BYTES = buildWasmWithExports([]);
+
+test("verify accepts a well-formed package with required exports and a valid identity manifest", () => {
+  const dir = buildFixturePackage("candidate", "0.5.0-tigon32.1.rc.1", {
+    payloadBytes: { "app.wasm": VALID_WASM_BYTES },
+  });
+  try {
+    const result = verify({ package: dir });
+    assert.equal(result.ok, true, JSON.stringify(result.reasons));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("verify rejects a compiled app.wasm with none of the required exports (F2)", () => {
+  const dir = buildFixturePackage("candidate", "0.5.0-tigon32.1.rc.1", {
+    payloadBytes: { "app.wasm": EXPORT_LESS_WASM_BYTES },
+  });
+  try {
+    const result = verify({ package: dir });
+    assert.equal(result.ok, false);
+    assert.ok(result.reasons.some((r) => r.includes("missing required export")));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+for (const [name, manifestOverrides] of [
+  ["schema is absent", { schema: undefined }],
+  ["role is absent", { role: undefined }],
+  ["label is null for a candidate", { label: null }],
+  ["reference is not null for a candidate", { reference: "bootstrap-reference" }],
+  ["source.repository is wrong", { source: { repository: "https://example.invalid/not-miniquad", sha: SHA } }],
+  ["source.sha is not a commit SHA", { source: { repository: "https://github.com/Tigon32/miniquad", sha: "not-a-sha" } }],
+  ["abiVersion is wrong", { abiVersion: 99 }],
+]) {
+  test(`verify rejects an identity-free or mislabeled manifest: ${name} (F2)`, () => {
+    const dir = buildFixturePackage("candidate", "0.5.0-tigon32.1.rc.1", {
+      payloadBytes: { "app.wasm": VALID_WASM_BYTES },
+      manifest: manifestOverrides,
+    });
+    try {
+      const result = verify({ package: dir });
+      assert.equal(result.ok, false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+test("verify rejects a provenance.json whose canonicalManifestSha256 does not match the real manifest bytes (F2)", () => {
+  const dir = buildFixturePackage("candidate", "0.5.0-tigon32.1.rc.1", {
+    payloadBytes: { "app.wasm": VALID_WASM_BYTES },
+    provenance: { canonicalManifestSha256: "0".repeat(64), assetSource: { sha: SHA } },
+  });
+  try {
+    const result = verify({ package: dir });
+    assert.equal(result.ok, false);
+    assert.ok(result.reasons.some((r) => r.includes("canonicalManifestSha256")));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("verify rejects a provenance.json whose assetSource.sha does not match manifest.source.sha (F2)", () => {
+  const dir = buildFixturePackage("candidate", "0.5.0-tigon32.1.rc.1", {
+    payloadBytes: { "app.wasm": VALID_WASM_BYTES },
+    provenance: { canonicalManifestSha256: "placeholder", assetSource: { sha: OTHER_SHA } },
+  });
+  // Overwrite with the real manifest hash after the manifest is written, so
+  // only assetSource.sha is wrong.
+  const manifestBytes = readFileSyncFs(join(dir, "payload", "MANIFEST.json"));
+  const realHash = sha256(manifestBytes);
+  writeFileSyncFs(join(dir, "provenance.json"), `${JSON.stringify({ canonicalManifestSha256: realHash, assetSource: { sha: OTHER_SHA } }, null, 2)}\n`);
+  try {
+    const result = verify({ package: dir });
+    assert.equal(result.ok, false);
+    assert.ok(result.reasons.some((r) => r.includes("assetSource.sha")));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------
+// `canonicalizeManifest` rule 6: fixed copied-asset source-path binding
+// (issue #19 artifact-acceptance review, finding F3)
+// ---------------------------------------------------------------------
+
+test("canonicalizeManifest rejects a copied-asset entry with a null sourcePath (F3)", () => {
+  const { raw, fileEntries, expected } = buildValidManifest();
+  const glEntry = raw.files.find((entry) => entry.file === "gl.js");
+  glEntry.sourcePath = null;
+  assert.throws(() => canonicalizeManifest(raw, fileEntries, expected), /source-path-mismatch/);
+});
+
+test("canonicalizeManifest rejects a copied-asset entry pointing at an uncopied path (F3)", () => {
+  const { raw, fileEntries, expected } = buildValidManifest();
+  const glEntry = raw.files.find((entry) => entry.file === "gl.js");
+  glEntry.sourcePath = "js/not-copied.js";
+  assert.throws(() => canonicalizeManifest(raw, fileEntries, expected), /source-path-mismatch/);
+});
+
+test("canonicalizeManifest throws when no source bytes were supplied for a copied asset, instead of skipping the rule (F3)", () => {
+  const { raw, fileEntries, expected } = buildValidManifest();
+  expected.sourceAssetBytes.delete("js/gl.js");
+  assert.throws(() => canonicalizeManifest(raw, fileEntries, expected), /source-bytes-unavailable/);
+});
+
+test("canonicalizeManifest rejects gl.js bytes that differ from the real js/gl.js bytes at the fixed path (F3)", () => {
+  const { raw, fileEntries, expected } = buildValidManifest();
+  expected.sourceAssetBytes.set("js/gl.js", Buffer.from("const version = 3; // REAL COMMIT BYTES, not the payload copy"));
+  assert.throws(() => canonicalizeManifest(raw, fileEntries, expected), /source-bytes-mismatch/);
+});
+
+// ---------------------------------------------------------------------
+// `evaluateGate` drill/package identity binding (issue #19 artifact
+// acceptance review, finding F4)
+// ---------------------------------------------------------------------
+
+test("evaluateGate gives BLOCKED when baseline and candidate packages share one manifest hash", () => {
+  const record = buildValidGateRecord();
+  record.packages.candidateManifestSha256 = record.packages.baselineManifestSha256;
+  record.drill.reference.packages.candidate.canonicalManifestSha256 = record.packages.baselineManifestSha256;
+  record.drill.local.packages.candidate.canonicalManifestSha256 = record.packages.baselineManifestSha256;
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "BLOCKED", reasons.join("; "));
+  assert.ok(reasons.some((r) => r.includes("must not equal")));
+});
+
+test("evaluateGate gives BLOCKED when a retained drill's package hash does not match packages.baselineManifestSha256", () => {
+  const record = buildValidGateRecord();
+  record.drill.reference.packages.baseline.canonicalManifestSha256 = "f".repeat(64);
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "BLOCKED", reasons.join("; "));
+  assert.ok(reasons.some((r) => r.includes("drill.reference.packages.baseline")));
+});
+
+test("evaluateGate gives BLOCKED when a retained drill has no package-identity binding at all", () => {
+  const record = buildValidGateRecord();
+  delete record.drill.local.packages;
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "BLOCKED", reasons.join("; "));
+  assert.ok(reasons.some((r) => r.includes("drill.local.packages")));
+});
+
+test("evaluateGate still gives QUALIFIED-CANDIDATE for the complete, correctly bound fixture", () => {
+  const { result, reasons } = evaluateGate(buildValidGateRecord());
+  assert.equal(result, "QUALIFIED-CANDIDATE", reasons.join("; "));
 });

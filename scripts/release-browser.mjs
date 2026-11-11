@@ -388,6 +388,14 @@ async function phaseCheck({ serverUrl, page, errors, expectManifest, expectRollb
     fetchChecks.push({ file, ok: file === "MANIFEST.json" || actual === expected, actual, expected });
   }
 
+  // Section 6.2 rule 2: every one of the 7 phase files must be PROVEN to
+  // the browser, not only to Node's own `fetch` above. A fresh context has
+  // no prior ETag, so a 304 (or any non-200) there cannot prove the bytes
+  // either; only a 200 response with a body whose SHA-256 is read is valid
+  // evidence in any phase, including rollback-reload (a 304 there is
+  // invalid because the ETag changed back to the baseline value, and a 304
+  // anywhere else means the browser never actually fetched the body this
+  // check must verify).
   const responseHashes = {};
   const responseListener = async (response) => {
     const url = new URL(response.url());
@@ -395,17 +403,20 @@ async function phaseCheck({ serverUrl, page, errors, expectManifest, expectRollb
     if (!match) return;
     const fileName = match[1] || "index.html";
     if (!PHASE_CHECK_FILES.includes(fileName)) return;
-    if (expectRollbackReload && response.status() === 304) {
-      responseHashes[fileName] = { invalidReason: "304 is not valid in rollback-reload" };
+    const status = response.status();
+    if (status !== 200) {
+      responseHashes[fileName] = {
+        status,
+        sha256: null,
+        invalidReason: `status ${status} does not prove the response bytes in this phase`,
+      };
       return;
     }
     try {
       const body = await response.body();
-      responseHashes[fileName] = { status: response.status(), sha256: sha256(body) };
-    } catch {
-      // A 304 response has no body; that is expected for a warm reload
-      // outside rollback-reload.
-      responseHashes[fileName] = { status: response.status(), sha256: null };
+      responseHashes[fileName] = { status, sha256: sha256(body) };
+    } catch (error) {
+      responseHashes[fileName] = { status, sha256: null, invalidReason: `could not read response body: ${error.message}` };
     }
   };
   page.on("response", responseListener);
@@ -441,13 +452,27 @@ async function phaseCheck({ serverUrl, page, errors, expectManifest, expectRollb
 
   page.off("response", responseListener);
 
+  const userAgent = await page.evaluate(() => navigator.userAgent);
+
   const pixelChecksPass =
     beforePixel.corner[0] === 16 && beforePixel.corner[1] === 16 && beforePixel.corner[2] === 26 &&
     (beforePixel.center[0] !== beforePixel.corner[0] || beforePixel.center[1] !== beforePixel.corner[1] || beforePixel.center[2] !== beforePixel.corner[2]) &&
     afterPixel[0] === 17 && afterPixel[1] === 34 && afterPixel[2] === 51;
 
+  // Rule 2 is proven by the browser's own observed responses, not by
+  // Node's independent `fetch` above (that only proves the server has the
+  // right bytes, not that the browser actually received and ran them). A
+  // missing record, an `invalidReason`, a non-200 status, or a hash that
+  // does not equal the expected package's hash each fail the phase.
+  const responseChecksPass = PHASE_CHECK_FILES.every((file) => {
+    const recorded = responseHashes[file];
+    return Boolean(recorded) && !recorded.invalidReason && recorded.status === 200 &&
+      recorded.sha256 === expectedHashes.get(file);
+  });
+
   const pass =
     fetchChecks.every((c) => c.ok) &&
+    responseChecksPass &&
     abi.crateVersion === 3 &&
     abi.paramsVersion === 1 &&
     abi.frames >= 3 &&
@@ -458,6 +483,8 @@ async function phaseCheck({ serverUrl, page, errors, expectManifest, expectRollb
     pass,
     fetchChecks,
     responseHashes,
+    responseChecksPass,
+    userAgent,
     abi,
     beforePixel,
     afterPixel,
@@ -519,7 +546,16 @@ export async function runDrillEngine({ playwright, PNG, engineName, serverUrl, b
     phases: Object.fromEntries(
       Object.entries(phases).map(([name, phase]) => [
         name,
-        { pass: phase.pass, fetchChecks: phase.fetchChecks, abi: phase.abi, errors: phase.errors, screenshotSha256: phase.screenshotSha256 },
+        {
+          pass: phase.pass,
+          fetchChecks: phase.fetchChecks,
+          responseHashes: phase.responseHashes,
+          responseChecksPass: phase.responseChecksPass,
+          userAgent: phase.userAgent,
+          abi: phase.abi,
+          errors: phase.errors,
+          screenshotSha256: phase.screenshotSha256,
+        },
       ]),
     ),
   };
@@ -534,8 +570,12 @@ export async function drill(options) {
   if (existsSync(outDir)) throw new Error(`--out must not already exist: ${outDir}`);
   mkdirSync(outDir, { recursive: true });
 
-  const baselineManifest = JSON.parse(readFileSync(join(baselineDir, "payload", "MANIFEST.json"), "utf8"));
-  const candidateManifest = JSON.parse(readFileSync(join(candidateDir, "payload", "MANIFEST.json"), "utf8"));
+  const baselineManifestBytes = readFileSync(join(baselineDir, "payload", "MANIFEST.json"));
+  const candidateManifestBytes = readFileSync(join(candidateDir, "payload", "MANIFEST.json"));
+  const baselineManifest = JSON.parse(baselineManifestBytes.toString("utf8"));
+  const candidateManifest = JSON.parse(candidateManifestBytes.toString("utf8"));
+  const baselineManifestSha256 = sha256(baselineManifestBytes);
+  const candidateManifestSha256 = sha256(candidateManifestBytes);
   const server = await createReleaseServer({
     packages: { baseline: { dir: baselineDir }, candidate: { dir: candidateDir } },
   });
@@ -563,8 +603,16 @@ export async function drill(options) {
     await server.close();
   }
 
+  // Binds this drill run to the two concrete packages it exercised (section
+  // 9.2/11): a gate record can then require its retained drill evidence to
+  // match `packages.baselineManifestSha256`/`candidateManifestSha256`,
+  // instead of trusting an arbitrary, package-independent drill hash.
   const record = {
     schema: "miniquad-release-drill/1",
+    packages: {
+      baseline: { role: baselineManifest.role, label: baselineManifest.label, sourceSha: baselineManifest.source?.sha, canonicalManifestSha256: baselineManifestSha256 },
+      candidate: { role: candidateManifest.role, label: candidateManifest.label, sourceSha: candidateManifest.source?.sha, canonicalManifestSha256: candidateManifestSha256 },
+    },
     engines: results,
     result: results.every((r) => r.result === "PASS") ? "PASS" : "FAIL",
   };

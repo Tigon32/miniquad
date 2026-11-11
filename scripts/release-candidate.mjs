@@ -42,6 +42,19 @@ const SOURCE_COPIED_ASSETS = [
   "js/runtime.mjs",
   "js/host-preferences.mjs",
 ];
+// Section 5.3 rule 6: the payload file name for each copied asset binds to
+// exactly one committed source path. This is fixed, not whatever the
+// generated manifest happens to record: a manifest entry with a missing,
+// null, or different `sourcePath` for one of these five files is not
+// evidence that the bytes came from the selected commit, and must not be
+// accepted (see `canonicalizeManifest` rule 6 below).
+const FIXED_SOURCE_PATH_BY_PAYLOAD_FILE = {
+  "gl.js": "js/gl.js",
+  "miniquad.mjs": "js/miniquad.mjs",
+  "runtime.html": "js/runtime.html",
+  "runtime.mjs": "js/runtime.mjs",
+  "host-preferences.mjs": "js/host-preferences.mjs",
+};
 const PAYLOAD_FILES = [
   "app.wasm",
   "gl.js",
@@ -51,6 +64,7 @@ const PAYLOAD_FILES = [
   "runtime.html",
   "runtime.mjs",
 ].sort();
+
 
 const LABEL_RE =
   /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)-tigon32\.([1-9]\d*)\.(?:rc\.([1-9]\d*)|release)$/u;
@@ -278,12 +292,33 @@ export function canonicalizeManifest(raw, fileEntries, expected) {
     if (bytes.length !== entry.bytes) {
       throw new ManifestError("bytes-mismatch", `byte length mismatch for ${entry.file}`);
     }
-    if (entry.sourcePath) {
-      const expectedBytes = expected.sourceAssetBytes?.get(entry.sourcePath);
-      if (expectedBytes !== undefined && Buffer.compare(bytes, expectedBytes) !== 0) {
+    // Rule 6: for each of the five copied assets, the manifest must record
+    // the one fixed source path for that payload file, and the payload
+    // bytes must equal the bytes actually committed at that path and SHA.
+    // A missing, null, or different `sourcePath`, or a missing expected
+    // bytes entry (the caller did not read the real source), must throw
+    // rather than silently skip the rule: skipping it is exactly how an
+    // unrelated or forged asset can pass as though it came from the
+    // selected commit.
+    const fixedSourcePath = FIXED_SOURCE_PATH_BY_PAYLOAD_FILE[entry.file];
+    if (fixedSourcePath) {
+      if (entry.sourcePath !== fixedSourcePath) {
+        throw new ManifestError(
+          "source-path-mismatch",
+          `${entry.file} must record sourcePath ${fixedSourcePath}, got ${JSON.stringify(entry.sourcePath)}`,
+        );
+      }
+      const expectedBytes = expected.sourceAssetBytes?.get(fixedSourcePath);
+      if (expectedBytes === undefined) {
+        throw new ManifestError(
+          "source-bytes-unavailable",
+          `No source bytes were supplied to verify ${entry.file} against ${fixedSourcePath} at ${expected.sha}`,
+        );
+      }
+      if (Buffer.compare(bytes, expectedBytes) !== 0) {
         throw new ManifestError(
           "source-bytes-mismatch",
-          `${entry.file} bytes do not equal ${entry.sourcePath} at ${expected.sha}`,
+          `${entry.file} bytes do not equal ${fixedSourcePath} at ${expected.sha}`,
         );
       }
     }
@@ -660,6 +695,37 @@ export function evaluateGate(record) {
   if (record?.drill?.local?.result !== "PASS") {
     blocked = true;
     reasons.push("Local drill result is missing or not PASS");
+  }
+
+  // Section 9.2/11: a drill result only proves something about the real
+  // baseline/candidate packages when it is bound to them. A hash that is
+  // merely present (e.g. an arbitrary or identical value reused for both
+  // packages) is not provenance; require each retained drill's own package
+  // identity to match this record's `packages` manifest hashes. Genuine
+  // baseline and candidate canonical manifests always differ (role, label,
+  // and source SHA are each part of the hashed manifest and never equal
+  // between baseline and candidate), so requiring that inequality here
+  // rejects a record built from one package reused for both roles, without
+  // relying on inequality alone: the binding check above still requires
+  // each drill to independently and correctly name both hashes.
+  for (const drillKind of ["reference", "local"]) {
+    const drillPackages = record?.drill?.[drillKind]?.packages;
+    for (const role of ["baseline", "candidate"]) {
+      const key = `${role}ManifestSha256`;
+      const recorded = drillPackages?.[role]?.canonicalManifestSha256;
+      if (typeof recorded !== "string" || !/^[0-9a-f]{64}$/.test(recorded) || recorded !== record?.packages?.[key]) {
+        blocked = true;
+        reasons.push(`drill.${drillKind}.packages.${role}.canonicalManifestSha256 is missing or does not match packages.${key}`);
+      }
+    }
+  }
+  if (
+    typeof record?.packages?.baselineManifestSha256 === "string" &&
+    typeof record?.packages?.candidateManifestSha256 === "string" &&
+    record.packages.baselineManifestSha256 === record.packages.candidateManifestSha256
+  ) {
+    blocked = true;
+    reasons.push("packages.baselineManifestSha256 must not equal packages.candidateManifestSha256; a genuine baseline and candidate manifest always differ");
   }
 
   // Section 7.5/9.3: evaluate the actual retained regression runs, not only
@@ -1286,10 +1352,73 @@ export function verify(options) {
     reasons.push("app.wasm is missing from the payload");
   } else {
     try {
-      // eslint-disable-next-line no-new
-      new WebAssembly.Module(wasmEntry.bytes);
+      const wasmModule = new WebAssembly.Module(wasmEntry.bytes);
+      const exportNames = new Set(WebAssembly.Module.exports(wasmModule).map((item) => item.name));
+      const missingExports = REQUIRED_WASM_EXPORTS.filter((name) => !exportNames.has(name));
+      if (missingExports.length > 0) {
+        reasons.push(`app.wasm is missing required export(s): ${missingExports.join(", ")}`);
+      }
     } catch (error) {
       reasons.push(`app.wasm did not compile: ${error.message}`);
+    }
+  }
+
+  // Section 5.3/9.2 identity: a payload whose WASM compiles and whose bytes
+  // match their own (possibly forged) manifest is still not evidence of a
+  // real candidate or baseline unless the canonical manifest itself carries
+  // a genuine schema, role, label, repository, source SHA, and ABI version.
+  // `verifyCanonicalManifest` above re-checks the file list and hashes, but
+  // not these identity fields; check them here so an identity-free or
+  // mislabeled manifest cannot pass.
+  if (manifest?.schema !== "miniquad-release-payload/1") {
+    reasons.push("manifest.schema must be \"miniquad-release-payload/1\"");
+  }
+  if (!["baseline", "candidate"].includes(manifest?.role)) {
+    reasons.push("manifest.role must be \"baseline\" or \"candidate\"");
+  }
+  if (manifest?.role === "candidate") {
+    if (typeof manifest?.label !== "string" || !LABEL_RE.test(manifest.label)) {
+      reasons.push("manifest.label must be a valid label for a candidate package");
+    }
+    if (manifest?.reference !== null) {
+      reasons.push("manifest.reference must be null for a candidate package");
+    }
+  } else if (manifest?.role === "baseline") {
+    if (manifest?.label !== null) {
+      reasons.push("manifest.label must be null for a baseline package");
+    }
+    if (!["bootstrap-reference", "qualified-release"].includes(manifest?.reference)) {
+      reasons.push("manifest.reference must be \"bootstrap-reference\" or \"qualified-release\" for a baseline package");
+    }
+  }
+  if (manifest?.source?.repository !== REPOSITORY_HTTPS) {
+    reasons.push(`manifest.source.repository must be ${REPOSITORY_HTTPS}`);
+  }
+  if (!isCommitSha(manifest?.source?.sha)) {
+    reasons.push("manifest.source.sha must be a 40-character lowercase hex commit SHA");
+  }
+  if (manifest?.abiVersion !== ABI_VERSION) {
+    reasons.push(`manifest.abiVersion must be ${ABI_VERSION}`);
+  }
+
+  // Section 5.5: when `provenance.json` ships alongside the payload, its
+  // recorded canonical-manifest hash and asset source SHA must match the
+  // manifest actually present. An absent provenance.json is not checked
+  // here (callers of `compare`/`gate` that need provenance evidence read it
+  // separately); a present but inconsistent one must not be accepted.
+  const provenancePath = join(packageDir, "provenance.json");
+  if (existsSync(provenancePath)) {
+    try {
+      const provenance = JSON.parse(readFileSync(provenancePath, "utf8"));
+      const manifestBytes = readFileSync(join(payloadDir, "MANIFEST.json"));
+      if (provenance?.canonicalManifestSha256 !== sha256Hex(manifestBytes)) {
+        reasons.push("provenance.json canonicalManifestSha256 does not match payload/MANIFEST.json bytes");
+      }
+      if (provenance?.assetSource?.sha !== manifest?.source?.sha) {
+        reasons.push("provenance.json assetSource.sha does not match manifest.source.sha");
+      }
+    } catch (error) {
+      reasons.push(`Could not read or parse provenance.json: ${error.message}`);
     }
   }
 

@@ -21,7 +21,9 @@ The Metal backend left four parts of the public texture contract unimplemented:
 
 Per [MADR 0002](0002-risk-based-verification-and-selective-tdd.md) and the issue's acceptance
 conditions, each of these must end in one of two states, never a silent/success-shaped
-fallback: it works correctly, or it exposes a documented, testable unsupported state.
+fallback: it works correctly, or it exposes a documented, testable unsupported state. For the
+latter, "testable" means a caller can query the unsupported state in advance, not only observe
+it as a panic after calling the operation.
 
 ## Decision Drivers
 
@@ -35,6 +37,10 @@ fallback: it works correctly, or it exposes a documented, testable unsupported s
   `TextureFormat::Depth`'s documented 2 bytes/pixel.
 * A raw-texture wrap must decide, explicitly, which side owns the texture object and where its
   sampler/parameters come from — the issue flags this as the open design question.
+* A documented panic alone is not a queryable capability: a caller cannot branch on it without
+  a `catch_unwind`, which this codebase does not use as a control-flow mechanism elsewhere.
+  Each unsupported condition therefore also needs a plain `bool`-returning query a caller can
+  check before invoking the operation.
 
 ## Considered Options (texture formats)
 
@@ -52,11 +58,31 @@ fallback: it works correctly, or it exposes a documented, testable unsupported s
 | Add a large new public API: a `TextureParams`-carrying `from_raw_id` variant | Caller controls every parameter explicitly | Issue's own wording warns against inventing a material API change when a smaller fix suffices; also diverges from GL's existing (parameter-light) raw-texture precedent |
 | **Synthesize a `Texture` entry from the real `MTLTexture`'s own metadata (width/height/pixel format/mipmap count) on first use, with a fresh miniquad-owned sampler; never retain/release the caller's texture pointer** | No new public API surface; uses data Metal already carries on the object; mirrors (and improves on) GL's existing raw-texture precedent (`TextureParams::default()` with real `raw` id) | `texture_resize` cannot be supported for a texture miniquad does not own — must be a documented panic, not silently ignored |
 
+## Considered Options (capability query)
+
+| Option | Benefit | Problem |
+| --- | --- | --- |
+| Document the panic conditions only, leave discovery to `catch_unwind` | No new API surface | The issue explicitly requires queryable unsupported state, not only a documented panic; `catch_unwind` is not used as control flow anywhere else in this codebase and Metal FFI calls inside a caught panic are not guaranteed unwind-safe |
+| Add a crate-wide `Features`/capability-flags struct describing all backend limits | One central place for every capability | Far larger surface than this issue needs; the only two gated operations are `texture_resize` and `texture_read_pixels`, each with a single texture-specific condition — a generic flags struct would duplicate per-texture state already on `TextureParams`/`TextureIdInner` |
+| **Add `texture_supports_resize`/`texture_supports_read_pixels` to `RenderingBackend`, each taking the `TextureId` and returning `bool`, with a default `true` implementation so every existing backend/implementor keeps compiling unchanged** | Minimal, additive, non-breaking public API; mirrors the existing `ElapsedQuery::is_supported()` query-before-use pattern already in this codebase; checked directly against the exact condition each panic uses, so the two cannot drift apart silently | Adds two new trait methods every `RenderingBackend` implementor could, in principle, override; accepted since the default covers all non-Metal backends with zero code change |
+
 ## Decision Outcome
 
 **Accepted.**
 
-### Texture formats
+### Capability query
+
+`RenderingBackend::texture_supports_resize(&self, texture)` and
+`RenderingBackend::texture_supports_read_pixels(&self, texture)` default to `true` and are
+overridden on Metal to return `false` for exactly the conditions `texture_resize`/
+`texture_read_pixels` panic on: `texture_supports_resize` is `false` for a raw `TextureId` or a
+`TextureFormat::Depth` texture; `texture_supports_read_pixels` is `false` for a
+`TextureFormat::Depth` texture. A regression test
+(`capability_queries_match_actual_panic_behavior`) asserts both queries agree with the actual
+panic/success outcome for a managed non-Depth texture, a `Depth` texture, and a raw texture, so
+the query and the panic cannot silently drift apart.
+
+
 
 * `RGB8` is stored as Metal's `RGBA8Unorm`. `new_texture`/`texture_update_part` convert
   3-byte RGB input to 4-byte RGBA on upload (`rgb8_to_rgba8`); `texture_read_pixels` converts
@@ -133,6 +159,10 @@ uniformly for managed and raw textures, since both resolve through the same `Tex
   panics instead of `unimplemented!()`/silently-wrong byte math — the documented, testable
   unsupported state the issue requires. `TextureFormat::Depth32` remains the supported
   alternative for any caller that needs a readable/resizable depth texture.
+* `RenderingBackend::texture_supports_resize`/`texture_supports_read_pixels` let a caller
+  query, before calling, whether `texture_resize`/`texture_read_pixels` will succeed for a
+  given `TextureId` — satisfying the issue's requirement for queryable unsupported state, not
+  only a documented panic. Every non-Metal backend keeps its default `true` unchanged.
 * iOS/tvOS were not tested as part of this change (no such device/simulator was available on
   this host); the Metal-specific storage-mode branches for those targets were left unchanged
   from the pre-existing code and are **not tested** here.

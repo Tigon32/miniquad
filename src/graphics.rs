@@ -444,7 +444,7 @@ impl TextureId {
     /// retains or releases the wrapped `MTLTexture` itself, and `delete_texture` releases only
     /// the synthesized sampler. `texture_resize` is unsupported for a raw texture (miniquad
     /// cannot reallocate storage it does not own). See
-    /// docs/adr/0021-metal-texture-format-and-raw-texture-contract.md.
+    /// docs/adr/0024-metal-texture-format-and-raw-texture-contract.md.
     pub fn from_raw_id(raw_id: RawId) -> TextureId {
         TextureId(TextureIdInner::Raw(raw_id))
     }
@@ -1213,15 +1213,48 @@ pub trait RenderingBackend {
     /// Also note that if MipmapFilter is set to None, mipmaps will not be visible, even if
     /// generated.
     fn texture_generate_mipmaps(&mut self, texture: TextureId);
+    /// Reports whether [`RenderingBackend::texture_resize`] can be called for `texture`
+    /// without panicking. Callers that may run on Metal and accept a texture from elsewhere
+    /// should check this before calling `texture_resize` rather than relying on the panic.
+    ///
+    /// Default: always `true`.
+    ///
+    /// Metal-specific note: returns `false` for a texture wrapped with
+    /// `TextureId::from_raw_id` (miniquad does not own that storage) and for a texture whose
+    /// format is `TextureFormat::Depth` (see
+    /// docs/adr/0024-metal-texture-format-and-raw-texture-contract.md).
+    fn texture_supports_resize(&self, texture: TextureId) -> bool {
+        let _ = texture;
+        true
+    }
     /// Reallocates the texture's backing storage at the new dimensions, optionally re-uploading
     /// `bytes` (same per-pixel contract as `new_texture`: `format.size(width, height)` bytes).
+    ///
+    /// Use [`RenderingBackend::texture_supports_resize`] to check in advance whether this call
+    /// is supported for `texture` instead of relying on the panic below.
     ///
     /// Metal-specific note: panics for a texture wrapped with `TextureId::from_raw_id` — Metal
     /// does not own the caller's texture and cannot reallocate it — and for
     /// `TextureFormat::Depth` (see `texture_read_pixels`'s note on that format).
     fn texture_resize(&mut self, texture: TextureId, width: u32, height: u32, bytes: Option<&[u8]>);
+    /// Reports whether [`RenderingBackend::texture_read_pixels`] can be called for `texture`
+    /// without panicking. Callers that may run on Metal and accept a texture from elsewhere
+    /// should check this before calling `texture_read_pixels` rather than relying on the panic.
+    ///
+    /// Default: always `true`.
+    ///
+    /// Metal-specific note: returns `false` for a texture whose format is
+    /// `TextureFormat::Depth` (see
+    /// docs/adr/0024-metal-texture-format-and-raw-texture-contract.md).
+    fn texture_supports_read_pixels(&self, texture: TextureId) -> bool {
+        let _ = texture;
+        true
+    }
     /// Reads the texture's pixels into `bytes`, which must be exactly
     /// `format.size(width, height)` bytes — the same per-pixel contract as `new_texture`.
+    ///
+    /// Use [`RenderingBackend::texture_supports_read_pixels`] to check in advance whether this
+    /// call is supported for `texture` instead of relying on the panic below.
     ///
     /// Metal-specific note: panics for `TextureFormat::Depth`. Metal has no pixel format whose
     /// CPU-visible storage matches `TextureFormat::Depth`'s documented 2 bytes/pixel (Metal's

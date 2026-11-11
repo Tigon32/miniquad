@@ -32,6 +32,7 @@ See [MADR 0003](adr/0003-use-asd-ste100-for-communication.md).
 | **Texture** | An image resource that the GPU uses for drawing. | Source image file |
 | **Raw texture** | A platform GPU texture object that the application creates and owns outside Miniquad, then wraps with `TextureId::from_raw_id`. Miniquad reads it but does not take ownership of it. | Managed texture |
 | **Managed texture** | A texture that Miniquad creates, owns, and releases through `new_texture`/`delete_texture`. | Raw texture |
+| **Capability query** | A function that reports, before a call, whether an operation will succeed for a given resource — for example `texture_supports_resize`. | An undocumented panic |
 | **Render target** | The screen or an offscreen resource that receives a rendered image. | Input-only texture |
 | **Render pass** | A set of drawing operations that use one target and one defined state. | One draw call |
 | **Draw call** | A command that tells the GPU to draw geometry. | Game update |

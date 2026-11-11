@@ -369,7 +369,7 @@ struct Textures {
     /// `RefCell` lets read-only `RenderingBackend` methods (`texture_params`,
     /// `texture_raw_id`) populate the cache on first use without `&mut self`.
     ///
-    /// Ownership contract (see docs/adr/0021-metal-texture-format-and-raw-texture-contract.md): miniquad creates
+    /// Ownership contract (see docs/adr/0024-metal-texture-format-and-raw-texture-contract.md): miniquad creates
     /// and owns the sampler/sampler_descriptor in each entry; it never retains or releases the
     /// caller's `texture` object. `delete_texture` on a raw id releases only the synthesized
     /// sampler/descriptor and stops tracking the entry.
@@ -2217,6 +2217,88 @@ mod tests {
 
     #[test]
     #[ignore = "requires a real macOS arm64 Metal device"]
+    fn capability_queries_match_actual_panic_behavior() {
+        // Regression for Tigon32/miniquad#142: callers must be able to query the unsupported
+        // state in advance rather than discover it only via a panic. Each assertion below
+        // must track the exact condition the corresponding operation panics on.
+        autoreleasepool(|| unsafe {
+            let mut harness = render_harness();
+            let context = &mut harness.context;
+
+            let managed = context.new_texture(
+                TextureAccess::Static,
+                TextureSource::Empty,
+                TextureParams {
+                    width: 2,
+                    height: 2,
+                    format: TextureFormat::RGBA8,
+                    ..TextureParams::default()
+                },
+            );
+            assert!(context.texture_supports_resize(managed));
+            assert!(context.texture_supports_read_pixels(managed));
+            assert!(catch_unwind(AssertUnwindSafe(|| {
+                context.texture_resize(managed, 3, 3, None)
+            }))
+            .is_ok());
+            let mut bytes = [0_u8; 2 * 2 * 4];
+            assert!(catch_unwind(AssertUnwindSafe(|| {
+                // resize above changed dimensions to 3x3; re-resize back for a stable read.
+                context.texture_resize(managed, 2, 2, None);
+                context.texture_read_pixels(managed, &mut bytes)
+            }))
+            .is_ok());
+            context.delete_texture(managed);
+
+            let depth = context.new_texture(
+                TextureAccess::RenderTarget,
+                TextureSource::Empty,
+                TextureParams {
+                    width: 1,
+                    height: 1,
+                    format: TextureFormat::Depth,
+                    ..TextureParams::default()
+                },
+            );
+            assert!(!context.texture_supports_resize(depth));
+            assert!(!context.texture_supports_read_pixels(depth));
+            assert!(catch_unwind(AssertUnwindSafe(|| {
+                context.texture_resize(depth, 2, 2, None)
+            }))
+            .is_err());
+            let mut depth_bytes = [0_u8; 2];
+            assert!(catch_unwind(AssertUnwindSafe(|| {
+                context.texture_read_pixels(depth, &mut depth_bytes)
+            }))
+            .is_err());
+            context.delete_texture(depth);
+
+            let descriptor = msg_send_![class!(MTLTextureDescriptor),
+                       texture2DDescriptorWithPixelFormat:MTLPixelFormat::RGBA8Unorm
+                       width: 2u64
+                       height: 2u64
+                       mipmapped: NO];
+            msg_send_![descriptor, setStorageMode: MTLStorageMode::Shared];
+            let raw_texture =
+                owned(msg_send![context.device, newTextureWithDescriptor: descriptor]);
+            let raw = TextureId::from_raw_id(RawId::Metal(raw_texture.as_id()));
+            assert!(
+                !context.texture_supports_resize(raw),
+                "miniquad does not own a raw texture's storage and cannot resize it"
+            );
+            assert!(
+                catch_unwind(AssertUnwindSafe(|| context.texture_resize(raw, 4, 4, None))).is_err()
+            );
+            assert!(
+                context.texture_supports_read_pixels(raw),
+                "read-back does not require ownership of the texture's storage"
+            );
+            context.delete_texture(raw);
+        });
+    }
+
+    #[test]
+    #[ignore = "requires a real macOS arm64 Metal device"]
     fn raw_metal_texture_is_introspected_and_its_ownership_is_not_taken() {
         // Regression for Tigon32/miniquad#142: wrapping a caller-owned `MTLTexture` through
         // `TextureId::from_raw_id` must synthesize real metadata (dimensions/format) and its
@@ -2373,15 +2455,25 @@ impl RenderingBackend for MetalContext {
         }
         texture.update_sampler(self.device);
     }
+    /// See `RenderingBackend::texture_supports_resize`'s general contract. Metal: `false` for a
+    /// texture wrapped with `TextureId::from_raw_id` (unowned storage) and for a texture whose
+    /// format is `TextureFormat::Depth` (see
+    /// docs/adr/0024-metal-texture-format-and-raw-texture-contract.md) — both are the exact
+    /// conditions `texture_resize` panics on below.
+    fn texture_supports_resize(&self, texture: TextureId) -> bool {
+        matches!(texture.0, TextureIdInner::Managed(_))
+            && self.textures.get(texture).params.format != TextureFormat::Depth
+    }
     /// Reallocates a managed texture's backing `MTLTexture` at the new dimensions, keeping its
     /// sampler. `bytes`, when given, must be `format.size(width, height)` bytes — the same
     /// public per-pixel contract as `new_texture`/`texture_update_part`.
     ///
     /// Unsupported for a texture wrapped with `TextureId::from_raw_id`: miniquad does not own
     /// the caller's `MTLTexture` and cannot reallocate it (see
-    /// docs/adr/0021-metal-texture-format-and-raw-texture-contract.md). Also unsupported for
+    /// docs/adr/0024-metal-texture-format-and-raw-texture-contract.md). Also unsupported for
     /// `TextureFormat::Depth`, for the same combined depth/stencil reason documented on
-    /// `mtl_storage_bytes_per_pixel`.
+    /// `mtl_storage_bytes_per_pixel`. Use `texture_supports_resize` to check both conditions
+    /// before calling.
     fn texture_resize(
         &mut self,
         texture: TextureId,
@@ -2419,6 +2511,13 @@ impl RenderingBackend for MetalContext {
             self.texture_update_part(texture, 0, 0, width as _, height as _, bytes);
         }
     }
+    /// See `RenderingBackend::texture_supports_read_pixels`'s general contract. Metal: `false`
+    /// for `TextureFormat::Depth` (see
+    /// docs/adr/0024-metal-texture-format-and-raw-texture-contract.md) — the exact condition
+    /// `texture_read_pixels` panics on below.
+    fn texture_supports_read_pixels(&self, texture: TextureId) -> bool {
+        self.textures.get(texture).params.format != TextureFormat::Depth
+    }
     /// Reads the texture's pixels back through a blit to a CPU-visible buffer: `new_texture`
     /// allocates render targets with `StorageModePrivate`, so `getBytes` on the texture itself
     /// is unavailable. `bytes` must be exactly `format.size(width, height)` bytes — the public
@@ -2426,7 +2525,8 @@ impl RenderingBackend for MetalContext {
     /// internally (see `mtl_storage_bytes_per_pixel`); the alpha channel is dropped on the way
     /// out.
     ///
-    /// Unsupported for `TextureFormat::Depth`: see `mtl_storage_bytes_per_pixel`.
+    /// Unsupported for `TextureFormat::Depth`: see `mtl_storage_bytes_per_pixel`. Use
+    /// `texture_supports_read_pixels` to check before calling.
     fn texture_read_pixels(&mut self, texture: TextureId, bytes: &mut [u8]) {
         let t = self.textures.get(texture);
         let format = t.params.format;

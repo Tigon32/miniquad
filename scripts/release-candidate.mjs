@@ -482,6 +482,10 @@ function isCommitSha(value) {
   return typeof value === "string" && SHA_HEX_RE.test(value);
 }
 
+function isPositiveId(value) {
+  return Number.isSafeInteger(value) && value > 0;
+}
+
 export function evaluateGate(record) {
   const reasons = [];
   let failed = false;
@@ -608,7 +612,22 @@ export function evaluateGate(record) {
           blocked = true;
           reasons.push(`Required CI job evidence is not recorded for the candidate SHA: ${workflow} / ${entry.job}`);
         }
+        const jobIds = entry.job === "all" ? entry.jobId : [entry.jobId];
+        if (!isPositiveId(entry.runId) ||
+            !Array.isArray(jobIds) || jobIds.length === 0 ||
+            !jobIds.every(isPositiveId) || new Set(jobIds).size !== jobIds.length ||
+            entry.url !== `https://github.com/Tigon32/miniquad/actions/runs/${entry.runId}`) {
+          blocked = true;
+          reasons.push(`Required CI run or job reference is missing or invalid: ${workflow} / ${entry.job}`);
+        }
       }
+    }
+    const securityCi = record.ci.find(
+      (entry) => entry?.workflow === "Security advisory review" && entry.job === "all",
+    );
+    if (!securityCi || record?.security?.workflowRun !== securityCi.url) {
+      blocked = true;
+      reasons.push("Security evidence does not match the collected security workflow run");
     }
   }
 
@@ -663,13 +682,18 @@ export function evaluateGate(record) {
       (run) =>
         !run ||
         typeof run.runId !== "string" ||
-        run.runId === "" ||
+        !/^[1-9][0-9]*$/.test(run.runId) ||
+        !isPositiveId(Number(run.runId)) ||
         !REGRESSION_RESULTS.has(run.result) ||
         run.profile !== record?.regression?.profileId,
     );
     if (malformedRun) {
       blocked = true;
       reasons.push("A retained regression run is malformed, has an unrecognized result, or is not from the declared reference profile");
+    }
+    if (new Set(regressionRuns.map((run) => run?.runId)).size !== regressionRuns.length) {
+      blocked = true;
+      reasons.push("A regression workflow run is recorded more than once");
     }
     if (regressionRuns.length > 3) {
       blocked = true;
@@ -679,6 +703,13 @@ export function evaluateGate(record) {
     if (!newestRun || newestRun.result !== record?.regression?.result) {
       blocked = true;
       reasons.push("regression.result does not match the newest retained run's result");
+    }
+    const referenceCi = Array.isArray(record?.ci)
+      ? record.ci.find((entry) => entry?.workflow === "Miniquad release candidate" && entry.job === "reference")
+      : undefined;
+    if (!referenceCi || newestRun?.runId !== String(referenceCi.runId)) {
+      blocked = true;
+      reasons.push("Newest regression evidence does not match the collected reference workflow run");
     }
   }
   if (record?.regression?.result !== "PASS") {

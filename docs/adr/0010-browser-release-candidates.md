@@ -158,6 +158,10 @@ When a `tigon32-miniquad-v*.release` tag exists, the gate rejects a bootstrap ro
 
 The gate result is `QUALIFIED-CANDIDATE`, `BLOCKED`, or `FAILED`.
 Missing CI, ABI, browser, rollback, regression, security, change log, or approval evidence gives `BLOCKED`.
+Each collected CI record keeps its run ID, job IDs, and repository run URL.
+The security evidence names that collected security run.
+The newest regression result names the collected reference run.
+Duplicate regression run IDs give `BLOCKED`.
 `QUALIFIED-CANDIDATE` applies only to the recorded reference profile and engines.
 The candidate reviewer can be a person or an automated agent, such as GitHub Copilot.
 The record states the reviewer kind, the identity, and the exact method.

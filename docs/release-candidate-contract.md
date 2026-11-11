@@ -516,11 +516,11 @@ A skipped, cancelled, pending, or absent job is not a pass.
 | `cargoPackage` | `{name: "miniquad", version: "0.4.11"}` |
 | `contracts` | Section 2.6 values |
 | `packages` | Canonical manifest SHA-256 for baseline and candidate; `reproducible: true` from `compare` |
-| `ci` | Output of `collect-ci` |
+| `ci` | Output of `collect-ci`. Each required entry has positive safe-integer `runId` and `jobId` values. An `all` entry has a non-empty list of distinct job IDs. Its URL is `https://github.com/Tigon32/miniquad/actions/runs/<runId>` |
 | `drill` | `{reference, local}`. Each has the result, the profile, and the SHA-256 of `drill.json` |
-| `regression` | `{profileId, runs: [{runId, result, profile}], result, metrics}`. The profile is `gha-ubuntu-24.04-x64-pw1.56.1`. Each run records that profile. All runs for the label are listed. `metrics` is the `engines` object from the newest `regression.json`, including results, counts, resolution, and all four metric evaluations for each engine |
+| `regression` | `{profileId, runs: [{runId, result, profile}], result, metrics}`. The profile is `gha-ubuntu-24.04-x64-pw1.56.1`. Each run records that profile. Run IDs are distinct positive safe integers written as decimal strings. All runs for the label are listed. The newest run ID equals the collected `Miniquad release candidate` run ID. `metrics` is the `engines` object from the newest `regression.json`, including results, counts, resolution, and all four metric evaluations for each engine |
 | `sizes` | Totals and deltas from section 7.6 |
-| `security` | Workflow run, open applicable findings, and approved risk decisions |
+| `security` | Workflow run, open applicable findings, and approved risk decisions. `workflowRun` equals the collected `Security advisory review` run URL |
 | `changelog` | `CHANGELOG.md` at `candidateSha` has the heading `## <label>` |
 | `native` | Windows, Linux, macOS, Android, iOS, and other native targets: each `unqualified`, or a link to a separate evidence record |
 | `limits` | Section 12 limits, at least |

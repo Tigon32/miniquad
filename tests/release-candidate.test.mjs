@@ -653,10 +653,10 @@ function buildValidGateRecord() {
     contracts: { abiVersion: 3, starterParamsVersion: 1 },
     packages: { baselineManifestSha256: "a".repeat(64), candidateManifestSha256: "b".repeat(64), reproducible: true },
     ci: [
-      { workflow: "Miniquad integration CI", job: "rust-wasm", conclusion: "success", sha: "c".repeat(40) },
-      { workflow: "Miniquad three-engine browser acceptance", job: "engines", conclusion: "success", sha: "c".repeat(40) },
-      { workflow: "Security advisory review", job: "all", conclusion: "success", sha: "c".repeat(40) },
-      { workflow: "Miniquad release candidate", job: "reference", conclusion: "success", sha: "c".repeat(40) },
+      { workflow: "Miniquad integration CI", job: "rust-wasm", conclusion: "success", sha: "c".repeat(40), runId: 1, jobId: 10, url: "https://github.com/Tigon32/miniquad/actions/runs/1" },
+      { workflow: "Miniquad three-engine browser acceptance", job: "engines", conclusion: "success", sha: "c".repeat(40), runId: 2, jobId: 20, url: "https://github.com/Tigon32/miniquad/actions/runs/2" },
+      { workflow: "Security advisory review", job: "all", conclusion: "success", sha: "c".repeat(40), runId: 3, jobId: [30, 31], url: "https://github.com/Tigon32/miniquad/actions/runs/3" },
+      { workflow: "Miniquad release candidate", job: "reference", conclusion: "success", sha: "c".repeat(40), runId: 4, jobId: 40, url: "https://github.com/Tigon32/miniquad/actions/runs/4" },
     ],
     compare: true,
     drill: {
@@ -665,7 +665,7 @@ function buildValidGateRecord() {
     },
     regression: {
       profileId: "gha-ubuntu-24.04-x64-pw1.56.1",
-      runs: [{ runId: "1", result: "PASS", profile: "gha-ubuntu-24.04-x64-pw1.56.1" }],
+      runs: [{ runId: "4", result: "PASS", profile: "gha-ubuntu-24.04-x64-pw1.56.1" }],
       result: "PASS",
       metrics: Object.fromEntries(["chromium", "firefox", "webkit"].map((engine) => [engine, {
         result: "PASS",
@@ -681,7 +681,7 @@ function buildValidGateRecord() {
       }])),
     },
     sizes: { brotliTotalDelta: 0 },
-    security: { workflowRun: "https://example.invalid/run/1", openFindings: [], waivers: [] },
+    security: { workflowRun: "https://github.com/Tigon32/miniquad/actions/runs/3", openFindings: [], waivers: [] },
     changelog: { hasHeading: true },
     native: { windows: "unqualified", linux: "unqualified", macos: "unqualified", android: "unqualified", ios: "unqualified" },
     limits: { reason: "see section 12" },
@@ -702,6 +702,37 @@ function buildValidGateRecord() {
 test("evaluateGate gives QUALIFIED-CANDIDATE for a complete automated-review fixture", () => {
   const { result, reasons } = evaluateGate(buildValidGateRecord());
   assert.equal(result, "QUALIFIED-CANDIDATE", reasons.join("; "));
+});
+
+test("evaluateGate blocks absent or inconsistent retained CI references", () => {
+  for (const change of [
+    (record) => { delete record.ci[0].runId; },
+    (record) => { record.ci[0].runId = 0; },
+    (record) => { record.ci[0].runId = "1"; },
+    (record) => { delete record.ci[0].jobId; },
+    (record) => { record.ci[0].jobId = -1; },
+    (record) => { record.ci[2].jobId = []; },
+    (record) => { record.ci[2].jobId = [30, 30]; },
+    (record) => { delete record.ci[0].url; },
+    (record) => { record.ci[0].url = "https://example.invalid/run/1"; },
+    (record) => { record.ci[0].url = "https://github.com/Tigon32/miniquad/actions/runs/2"; },
+  ]) {
+    const record = buildValidGateRecord();
+    change(record);
+    assert.equal(evaluateGate(record).result, "BLOCKED", JSON.stringify(record.ci));
+  }
+});
+
+test("evaluateGate binds security and newest regression evidence to their collected CI runs", () => {
+  for (const change of [
+    (record) => { record.security.workflowRun = "https://github.com/Tigon32/miniquad/actions/runs/9"; },
+    (record) => { record.regression.runs[0].runId = "9"; },
+    (record) => { record.regression.runs.unshift({ ...record.regression.runs[0] }); },
+  ]) {
+    const record = buildValidGateRecord();
+    change(record);
+    assert.equal(evaluateGate(record).result, "BLOCKED");
+  }
 });
 
 test("evaluateGate requires the contract identity and evidence references", () => {

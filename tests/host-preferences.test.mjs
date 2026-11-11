@@ -485,6 +485,47 @@ test("subscribe receives a snapshot on a preference change and can unsubscribe",
     handle.dispose();
 });
 
+test("a prefers-contrast change recomputes from all three queries instead of sticking to the last positive match",()=>{
+    const view=fakeView({"(prefers-contrast: more)":true});
+    const application=fakeApplication();
+    const handle=createHostPreferences({element:{},application,view});
+    assert.equal(handle.getState().contrast,"more");
+    const seen=[];
+    handle.subscribe((state)=>seen.push(state));
+    // The system preference changes back to no-preference: the real
+    // "(prefers-contrast: more)" query now reports false, matching how a
+    // browser actually fires this event.
+    view.lists.get("(prefers-contrast: more)").matches=false;
+    view.lists.get("(prefers-contrast: more)").fire(false);
+    assert.equal(handle.getState().contrast,"no-preference");
+    assert.equal(seen.length,1);
+    assert.equal(seen[0].contrast,"no-preference");
+    handle.dispose();
+});
+
+test("a prefers-contrast change from less to custom recomputes the new value",()=>{
+    const view=fakeView({"(prefers-contrast: less)":true});
+    const application=fakeApplication();
+    const handle=createHostPreferences({element:{},application,view});
+    assert.equal(handle.getState().contrast,"less");
+    view.lists.get("(prefers-contrast: less)").matches=false;
+    view.lists.get("(prefers-contrast: custom)").matches=true;
+    view.lists.get("(prefers-contrast: custom)").fire(true);
+    assert.equal(handle.getState().contrast,"custom");
+    handle.dispose();
+});
+
+test("a prefers-contrast change never calls pause(), resume(), or setParameters()",()=>{
+    const view=fakeView({"(prefers-contrast: more)":true});
+    const application=fakeApplication();
+    const handle=createHostPreferences({element:{},application,view});
+    application.calls.length=0;
+    view.lists.get("(prefers-contrast: more)").matches=false;
+    view.lists.get("(prefers-contrast: more)").fire(false);
+    assert.deepEqual(application.calls,[]);
+    handle.dispose();
+});
+
 test("dispose removes every media listener and further state changes are not observed",()=>{
     const view=fakeView();
     const application=fakeApplication();

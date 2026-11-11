@@ -37,6 +37,8 @@ See [MADR 0003](adr/0003-use-asd-ste100-for-communication.md).
 | **SSE (server-side execution)** | Game simulation or other work that runs on a server. | Intel SSE instructions or HTTP Server-Sent Events |
 | **BDD** | Behavior-driven development. It records user behavior in test scenarios. | A guarantee that all tests pass |
 | **STE-aligned draft** | Text written with the project controlled-English rules. | Verified ASD-STE100 compliance |
+| **Hexagonal-prism voxel** | An optional voxel shape: a flat-top hexagon cell, extruded by one integer layer height. It is separate from the default cubic voxel. | Cubic voxel |
+| **Axial coordinate** | A cell position `(q, r)` on a flat-top hexagon grid, used with an integer layer for a hexagonal-prism voxel. | Cube coordinate, offset coordinate |
 
 ## Add a term
 

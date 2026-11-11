@@ -62,6 +62,7 @@ jobs:
       - name: Build unoptimized adoption fixtures for full-suite compatibility
         run: |
           cargo build --release --target wasm32-unknown-unknown --manifest-path companions/draw/Cargo.toml --example showcase
+          cargo build --release --locked --target wasm32-unknown-unknown --manifest-path experiments/drawing-comparison/external-consumer/Cargo.toml --example consume
           cargo build --release --target wasm32-unknown-unknown --manifest-path companions/voxel/Cargo.toml --example offline
           node scripts/create-browser-project.mjs "$RUNNER_TEMP/miniquad-browser-starter" --source path --miniquad-path "$GITHUB_WORKSPACE" --name miniquad-browser-starter
           node "$RUNNER_TEMP/miniquad-browser-starter/scripts/build.mjs"

@@ -32,6 +32,7 @@
 pub mod camera;
 pub mod chunk;
 pub mod hex;
+pub mod hex_pick;
 pub mod math;
 pub mod mesh;
 pub mod terrain;

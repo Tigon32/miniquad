@@ -238,6 +238,41 @@ a cell at the one diagonal-touching corner per chunk
 holds up to 9 entries (the theoretical maximum across all three axes)
 with a tracked length; `as_slice()` exposes only the filled entries.
 
+## Analytic picking
+
+Use the public `miniquad_voxel::hex_pick` module with a hex world:
+
+1. Call `ray_from_pixel` with an `OrbitCamera`, a pixel position, and the viewport size.
+2. Use backing-store pixels for both values. Multiply CSS-relative positions by the device pixel ratio.
+3. Call `pick_hex` with the world, ray, and `HexPickParams`.
+4. Handle `Ok(Some(hit))`, `Ok(None)`, and `Err(error)` separately.
+
+`HexHit` supplies the cell, entry face, and ray distance.
+The entry face is `None` when the ray starts in a solid cell.
+The walk stops at `max_distance` or `max_steps`.
+`max_steps` must be in `1..=4_096`.
+The layer range must stay within the coordinate bound.
+Missing chunks are air. A start cell outside the bound gives no hit.
+An invalid ray or parameter gives `HexPickError`.
+
+Use `hex_cell_at_xz` for a world-space point without a ray.
+It selects the nearest cell center.
+At an edge or vertex tie, it selects the smallest `(q, r)` in lexicographic order.
+The picker uses the analytic `f64` lattice, not the rounded `f32` mesh.
+See [the picking contract](hex-voxel-contract.md#2-picking-contract-131) for both tie rules.
+
+The fresh [downstream consumer](../tests/hex-picker-consumer/src/main.rs) uses only public items.
+It checks meshing, negative coordinates, direct and camera rays, and the distance limit.
+Run it on the host. Build it for WASM:
+
+```sh
+cargo run --manifest-path tests/hex-picker-consumer/Cargo.toml
+cargo build --target wasm32-unknown-unknown --manifest-path tests/hex-picker-consumer/Cargo.toml
+```
+
+This pure API does not qualify the browser example.
+Browser rendering, pointer events, disposal, and equal-condition measurements remain in #131.
+
 ## Limits (tested, not estimated)
 
 * Coordinate bound: `HEX_COORD_MIN..=HEX_COORD_MAX` (`-65_536..=65_535`)

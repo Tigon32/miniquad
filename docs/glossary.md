@@ -19,6 +19,13 @@ See [MADR 0003](adr/0003-use-asd-ste100-for-communication.md).
 | **Embedding host** | The web page that owns controls and a container for an optional Miniquad runtime frame. | Browser bridge |
 | **Runtime frame** | A same-origin iframe that owns one Miniquad application, its canvas, and its browser state. | Security boundary |
 | **WebGL** | The browser graphics API that sends drawing commands to the GPU. | WebAssembly |
+| **WebGPU** | The explicit browser GPU API used by the proposed graphics migration. It is not a WebGL compatibility backend. | WebGL, WebAssembly |
+| **WGSL** | The shader language used by WebGPU. | GLSL, MSL |
+| **GPU adapter** | A WebGPU interface that exposes an available graphics implementation, its features, and its limits. | GPU device |
+| **GPU device** | The WebGPU interface that owns resources and submits work through its queue. | HTML canvas element |
+| **Device loss** | A terminal loss of a WebGPU device. The application must report the loss and stop using the device. | Automatic recovery |
+| **Software adapter** | A graphics implementation that performs GPU API work in software. A passing test does not qualify hardware behavior. | Hardware GPU |
+| **Compatibility backend** | A legacy graphics path that an application selects explicitly during migration. | Silent fallback |
 | **Graphics context** | The state and access that a graphics backend uses for GPU operations. | HTML canvas element |
 | **GPU buffer** | Memory on the GPU that holds data for drawing. | JavaScript ArrayBuffer |
 | **Buffer update** | An operation that changes data in a GPU buffer. The API contract defines the exact action. | A CPU memory write |

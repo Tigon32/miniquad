@@ -55,6 +55,11 @@ impl<T> ResourceManager<T> {
         // Let it crash if the resource is not found
         self.resources.remove(&id).unwrap()
     }
+
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        self.resources.values_mut()
+    }
 }
 
 impl<T> Index<usize> for ResourceManager<T> {

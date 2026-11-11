@@ -64,6 +64,10 @@ jobs:
         run: cargo clippy --lib -- -D clippy::correctness
       - name: Rust library tests
         run: cargo test --lib
+      - name: WebGPU proof Rust state tests
+        run: |
+          cargo test --locked --manifest-path experiments/webgpu-manual/Cargo.toml --lib
+          cargo test --locked --manifest-path experiments/webgpu-wgpu/Cargo.toml --lib
       - name: WASM library check
         run: cargo check --target wasm32-unknown-unknown --lib
       - name: Build WASM example
@@ -123,6 +127,8 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: ESLint browser bridge
         run: npm run lint:js
+      - name: WebGPU proof harness unit tests
+        run: node --test tests/webgpu-proof/*.test.mjs experiments/webgpu-manual/tests/*.test.mjs
       - name: Restore browser binaries for the selected lane
         if: ${{ !env.ACT }}
         id: playwright-cache

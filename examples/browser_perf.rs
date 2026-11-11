@@ -39,10 +39,34 @@ fn quad_vertices(frame_index: u64) -> [Vertex; 4] {
     let dx = phase.sin() * 0.2;
     let dy = (phase * 1.5).cos() * 0.2;
     [
-        Vertex { pos: Vec2 { x: -0.5 + dx, y: -0.5 + dy }, uv: Vec2 { x: 0., y: 0. } },
-        Vertex { pos: Vec2 { x: 0.5 + dx, y: -0.5 + dy }, uv: Vec2 { x: 1., y: 0. } },
-        Vertex { pos: Vec2 { x: 0.5 + dx, y: 0.5 + dy }, uv: Vec2 { x: 1., y: 1. } },
-        Vertex { pos: Vec2 { x: -0.5 + dx, y: 0.5 + dy }, uv: Vec2 { x: 0., y: 1. } },
+        Vertex {
+            pos: Vec2 {
+                x: -0.5 + dx,
+                y: -0.5 + dy,
+            },
+            uv: Vec2 { x: 0., y: 0. },
+        },
+        Vertex {
+            pos: Vec2 {
+                x: 0.5 + dx,
+                y: -0.5 + dy,
+            },
+            uv: Vec2 { x: 1., y: 0. },
+        },
+        Vertex {
+            pos: Vec2 {
+                x: 0.5 + dx,
+                y: 0.5 + dy,
+            },
+            uv: Vec2 { x: 1., y: 1. },
+        },
+        Vertex {
+            pos: Vec2 {
+                x: -0.5 + dx,
+                y: 0.5 + dy,
+            },
+            uv: Vec2 { x: 0., y: 1. },
+        },
     ]
 }
 
@@ -50,7 +74,10 @@ fn stress_vertices(count: usize, seed: u64) -> Vec<Vertex> {
     (0..count)
         .map(|i| {
             let v = ((seed.wrapping_add(i as u64)) % 1000) as f32 / 1000.0;
-            Vertex { pos: Vec2 { x: v, y: v }, uv: Vec2 { x: v, y: 1.0 - v } }
+            Vertex {
+                pos: Vec2 { x: v, y: v },
+                uv: Vec2 { x: v, y: 1.0 - v },
+            }
         })
         .collect()
 }
@@ -121,7 +148,9 @@ impl Stage {
                         vertex: shader::VERTEX,
                         fragment: shader::FRAGMENT,
                     },
-                    Backend::Metal => ShaderSource::Msl { program: shader::METAL },
+                    Backend::Metal => ShaderSource::Msl {
+                        program: shader::METAL,
+                    },
                 },
                 shader::meta(),
             )
@@ -185,7 +214,9 @@ impl EventHandler for Stage {
         self.ctx.apply_pipeline(&self.pipeline);
         self.ctx.apply_bindings(&self.bindings);
         self.ctx
-            .apply_uniforms(UniformsSource::table(&shader::Uniforms { offset: (0.0, 0.0) }));
+            .apply_uniforms(UniformsSource::table(&shader::Uniforms {
+                offset: (0.0, 0.0),
+            }));
         self.ctx.draw(0, 6, 1);
         self.ctx.end_render_pass();
 

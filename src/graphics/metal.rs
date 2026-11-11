@@ -221,7 +221,9 @@ pub struct Buffer {
     size: usize,
     /// Cached `MTLResourceOptions` for grow-on-demand allocations.
     options: u64,
-    //index_type: Option<IndexType>,
+    /// Set for index buffers from the source element size; `draw`
+    /// uses it to pick `MTLIndexType` and the index byte offset.
+    index_type: Option<MTLIndexType>,
     value: usize,
     next_value: usize,
 }
@@ -248,7 +250,7 @@ struct PipelineInternal {
     //layout: Vec<BufferLayout>,
     //attributes: Vec<VertexAttributeInternal>,
     _shader: ShaderId,
-    //params: PipelineParams,
+    primitive_type: MTLPrimitiveType,
 }
 
 #[derive(Clone, Copy)]
@@ -341,6 +343,8 @@ pub struct MetalContext {
     uniform_buffers: [ObjcId; 3],
     // cached index_buffer from apply_bindings
     index_buffer: Option<ObjcId>,
+    // cached index element type from apply_bindings, for `draw`
+    index_type: MTLIndexType,
     // cached pipeline from apply_pipeline
     current_pipeline: Option<Pipeline>,
     current_ub_offset: u64,
@@ -438,6 +442,7 @@ impl MetalContext {
                 textures: Textures(Vec::new()),
                 passes: ResourceManager::default(),
                 index_buffer: None,
+                index_type: MTLIndexType::UInt16,
                 current_pipeline: None,
                 uniform_buffers,
                 current_frame_index: 1,
@@ -576,6 +581,7 @@ mod tests {
                     current_frame_index: 1,
                     uniform_buffers: [nil; 3],
                     index_buffer: None,
+                    index_type: MTLIndexType::UInt16,
                     current_pipeline: None,
                     current_ub_offset: 0,
                 },
@@ -891,6 +897,377 @@ mod tests {
             );
         });
     }
+
+    const LINE_PROGRAM: &str = r#"
+            #include <metal_stdlib>
+            using namespace metal;
+            struct VertexIn { float2 position [[attribute(0)]]; };
+            vertex float4 vertexShader(VertexIn in [[stage_in]]) {
+                return float4(in.position, 0.0, 1.0);
+            }
+            fragment float4 fragmentShader() { return float4(1.0, 1.0, 1.0, 1.0); }
+        "#;
+
+    extern "C" fn render_color_format(_: &Object, _: Sel) -> u64 {
+        MTLPixelFormat::RGBA8Unorm as u64
+    }
+
+    extern "C" fn render_depth_format(_: &Object, _: Sel) -> u64 {
+        MTLPixelFormat::Depth32Float_Stencil8 as u64
+    }
+
+    // A real-rendering view stub: unlike `harness()`'s opaque
+    // BGRA8Unorm, this reports a pixel format the test can decode
+    // byte-for-byte, and a real depth/stencil format so pipelines
+    // match an attached depth texture.
+    fn render_harness() -> Harness {
+        static VIEW_CLASS: OnceLock<&'static Class> = OnceLock::new();
+        let view_class = VIEW_CLASS.get_or_init(|| {
+            let mut declaration =
+                ClassDecl::new("MQMetalRenderTestView", class!(NSObject)).unwrap();
+            unsafe {
+                declaration.add_method(
+                    sel!(colorPixelFormat),
+                    render_color_format as extern "C" fn(&Object, Sel) -> u64,
+                );
+                declaration.add_method(
+                    sel!(depthStencilPixelFormat),
+                    render_depth_format as extern "C" fn(&Object, Sel) -> u64,
+                );
+                declaration.add_method(
+                    sel!(sampleCount),
+                    sample_count as extern "C" fn(&Object, Sel) -> u64,
+                );
+            }
+            declaration.register()
+        });
+        unsafe {
+            let device = owned(MTLCreateSystemDefaultDevice());
+            let view = owned(msg_send![*view_class, new]);
+            let queue = owned(msg_send![device.as_id(), newCommandQueue]);
+            Harness {
+                context: MetalContext {
+                    buffers: Default::default(),
+                    shaders: Default::default(),
+                    pipelines: Default::default(),
+                    textures: Textures(Vec::new()),
+                    passes: Default::default(),
+                    command_queue: queue.as_id(),
+                    command_buffer: None,
+                    render_encoder: None,
+                    current_pass_width: 0,
+                    current_pass_height: 0,
+                    current_pass_target: None,
+                    pending_end_encoder: false,
+                    view: view.as_id(),
+                    device: device.as_id(),
+                    current_frame_index: 1,
+                    uniform_buffers: [nil; 3],
+                    index_buffer: None,
+                    index_type: MTLIndexType::UInt16,
+                    current_pipeline: None,
+                    current_ub_offset: 0,
+                },
+                _queue: queue,
+                _view: view,
+                _device: device,
+            }
+        }
+    }
+
+    // Read an `RGBA8Unorm` `RenderTarget` texture's pixels through a
+    // blit to a CPU-visible buffer. Production `new_texture`
+    // allocates render targets with `StorageModePrivate`, so
+    // `getBytes` on the texture itself is unavailable; this mirrors
+    // the standard Metal readback path instead.
+    fn read_rgba8_texture(
+        context: &MetalContext,
+        texture: ObjcId,
+        width: u64,
+        height: u64,
+    ) -> Vec<u8> {
+        unsafe {
+            let bytes_per_row = width * 4;
+            let total_bytes = bytes_per_row * height;
+            let readback: ObjcId = msg_send![context.device,
+                newBufferWithLength: total_bytes
+                options: MTLResourceOptions::StorageModeShared];
+            assert!(
+                !readback.is_null(),
+                "Metal: readback buffer creation failed"
+            );
+            let blit_cmd: ObjcId = msg_send![context.command_queue, commandBuffer];
+            let blit_encoder = msg_send_![blit_cmd, blitCommandEncoder];
+            msg_send_![blit_encoder, copyFromTexture: texture
+                       sourceSlice: 0u64
+                       sourceLevel: 0u64
+                       sourceOrigin: MTLOrigin { x: 0, y: 0, z: 0 }
+                       sourceSize: MTLSize { width, height, depth: 1 }
+                       toBuffer: readback
+                       destinationOffset: 0u64
+                       destinationBytesPerRow: bytes_per_row
+                       destinationBytesPerImage: total_bytes];
+            msg_send_![blit_encoder, endEncoding];
+            msg_send_![blit_cmd, commit];
+            msg_send_![blit_cmd, waitUntilCompleted];
+            let ptr: *const u8 = msg_send![readback, contents];
+            let bytes = std::slice::from_raw_parts(ptr, total_bytes as usize).to_vec();
+            msg_send_![readback, release];
+            bytes
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a real macOS arm64 Metal device"]
+    fn draw_honors_base_element_offset_lines_primitive_and_u32_indices() {
+        autoreleasepool(|| unsafe {
+            let mut harness = render_harness();
+            let context = &mut harness.context;
+
+            let color = context.new_texture(
+                TextureAccess::RenderTarget,
+                TextureSource::Empty,
+                TextureParams {
+                    width: 4,
+                    height: 1,
+                    format: TextureFormat::RGBA8,
+                    ..TextureParams::default()
+                },
+            );
+            let depth = context.new_texture(
+                TextureAccess::RenderTarget,
+                TextureSource::Empty,
+                TextureParams {
+                    width: 4,
+                    height: 1,
+                    format: TextureFormat::Depth,
+                    ..TextureParams::default()
+                },
+            );
+            let pass = context.new_render_pass_mrt(&[color], None, Some(depth));
+
+            let shader = context
+                .new_shader(
+                    ShaderSource::Msl {
+                        program: LINE_PROGRAM,
+                    },
+                    shader_meta(),
+                )
+                .unwrap();
+            let pipeline = context.new_pipeline(
+                &[BufferLayout::default()],
+                &[VertexAttribute::new("position", VertexFormat::Float2)],
+                shader,
+                PipelineParams {
+                    primitive_type: PrimitiveType::Lines,
+                    ..Default::default()
+                },
+            );
+
+            // Vertices 0,1 are an off-screen, zero-length sentinel
+            // line. Vertices 2,3 are a full-width horizontal line
+            // through the texture's single row. A correct
+            // `base_element` of 2 draws indices [2, 3]; an
+            // implementation that ignores `base_element` draws
+            // indices [0, 1] instead and leaves the texture cleared.
+            let vertex_buffer = context.new_buffer(
+                BufferType::VertexBuffer,
+                BufferUsage::Immutable,
+                BufferSource::slice(&[10.0_f32, 10.0, 10.0, 10.0, -1.0, 0.0, 1.0, 0.0]),
+            );
+            let index_buffer = context.new_buffer(
+                BufferType::IndexBuffer,
+                BufferUsage::Immutable,
+                BufferSource::slice(&[0_u32, 1, 2, 3]),
+            );
+
+            context.begin_pass(
+                Some(pass),
+                PassAction::Clear {
+                    color: Some((0., 0., 0., 1.)),
+                    depth: Some(1.),
+                    stencil: None,
+                },
+            );
+            context.apply_pipeline(&pipeline);
+            context.apply_bindings_from_slice(&[vertex_buffer], index_buffer, &[]);
+            context.draw(2, 2, 1);
+            context.end_render_pass();
+            context.really_end_encoder();
+            let command_buffer = context.command_buffer.take().unwrap();
+            msg_send_![command_buffer, commit];
+            msg_send_![command_buffer, waitUntilCompleted];
+
+            let color_texture = context.textures.get(color).texture;
+            let pixels = read_rgba8_texture(context, color_texture, 4, 1);
+            assert_eq!(
+                pixels,
+                vec![255_u8; 16],
+                "a correct base_element draws the real line across every column: {:?}",
+                pixels
+            );
+
+            context.delete_buffer(vertex_buffer);
+            context.delete_buffer(index_buffer);
+            context.delete_pipeline(pipeline);
+            context.delete_shader(shader);
+            context.delete_render_pass(pass);
+            context.delete_texture(depth);
+            context.delete_texture(color);
+        });
+    }
+
+    #[test]
+    #[ignore = "requires a real macOS arm64 Metal device"]
+    fn clear_action_sets_requested_depth_and_stencil_on_the_real_pass_descriptor() {
+        autoreleasepool(|| unsafe {
+            let mut harness = render_harness();
+            let context = &mut harness.context;
+            let color = context.new_texture(
+                TextureAccess::RenderTarget,
+                TextureSource::Empty,
+                TextureParams {
+                    width: 1,
+                    height: 1,
+                    format: TextureFormat::RGBA8,
+                    ..TextureParams::default()
+                },
+            );
+            let depth = context.new_texture(
+                TextureAccess::RenderTarget,
+                TextureSource::Empty,
+                TextureParams {
+                    width: 1,
+                    height: 1,
+                    format: TextureFormat::Depth,
+                    ..TextureParams::default()
+                },
+            );
+            let pass = context.new_render_pass_mrt(&[color], None, Some(depth));
+
+            context.begin_pass(
+                Some(pass),
+                PassAction::Clear {
+                    color: None,
+                    depth: Some(0.25),
+                    stencil: Some(7),
+                },
+            );
+            let descriptor = context.pass(pass).render_pass_desc;
+            let depth_attachment = msg_send_![descriptor, depthAttachment];
+            let stencil_attachment = msg_send_![descriptor, stencilAttachment];
+            let depth_load: u64 = msg_send![depth_attachment, loadAction];
+            let clear_depth: f64 = msg_send![depth_attachment, clearDepth];
+            let stencil_load: u64 = msg_send![stencil_attachment, loadAction];
+            let clear_stencil: u32 = msg_send![stencil_attachment, clearStencil];
+            assert_eq!(depth_load, MTLLoadAction::Clear as u64);
+            assert_eq!(clear_depth, 0.25, "PassAction::Clear's depth value must reach the real descriptor, not a hardcoded 1.0");
+            assert_eq!(stencil_load, MTLLoadAction::Clear as u64);
+            assert_eq!(clear_stencil, 7);
+            context.really_end_encoder();
+
+            // A later `PassAction::Nothing` on the same pass must
+            // preserve the depth/stencil contents (`Load`), not
+            // clear them again.
+            context.begin_pass(Some(pass), PassAction::Nothing);
+            let depth_load_after_nothing: u64 = msg_send![depth_attachment, loadAction];
+            let stencil_load_after_nothing: u64 = msg_send![stencil_attachment, loadAction];
+            assert_eq!(depth_load_after_nothing, MTLLoadAction::Load as u64);
+            assert_eq!(stencil_load_after_nothing, MTLLoadAction::Load as u64);
+            context.really_end_encoder();
+
+            context.delete_render_pass(pass);
+            context.delete_texture(depth);
+            context.delete_texture(color);
+        });
+    }
+
+    #[test]
+    #[ignore = "requires a real macOS arm64 Metal device"]
+    fn resolve_attachments_feature_matches_the_implementation() {
+        autoreleasepool(|| {
+            let mut harness = harness();
+            let context = &mut harness.context;
+            assert!(
+                context.info().features.resolve_attachments,
+                "new_render_pass_mrt accepts and uses resolve textures; the \
+                 advertised capability must agree: Tigon32/miniquad#143"
+            );
+            let color = context.new_texture(
+                TextureAccess::RenderTarget,
+                TextureSource::Empty,
+                TextureParams {
+                    width: 2,
+                    height: 2,
+                    format: TextureFormat::RGBA8,
+                    sample_count: 4,
+                    ..TextureParams::default()
+                },
+            );
+            let resolve = context.new_texture(
+                TextureAccess::RenderTarget,
+                TextureSource::Empty,
+                TextureParams {
+                    width: 2,
+                    height: 2,
+                    format: TextureFormat::RGBA8,
+                    ..TextureParams::default()
+                },
+            );
+            // Must not panic: Features::resolve_attachments == true
+            // permits a not-none resolve_img.
+            let pass = context.new_render_pass_mrt(&[color], Some(&[resolve]), None);
+
+            context.delete_render_pass(pass);
+            context.delete_texture(resolve);
+            context.delete_texture(color);
+        });
+    }
+
+    #[test]
+    #[ignore = "requires a real macOS arm64 Metal device"]
+    fn begin_pass_during_an_active_non_deferred_pass_ends_the_open_encoder_first() {
+        autoreleasepool(|| {
+            let mut harness = render_harness();
+            let context = &mut harness.context;
+            let color = context.new_texture(
+                TextureAccess::RenderTarget,
+                TextureSource::Empty,
+                TextureParams {
+                    width: 1,
+                    height: 1,
+                    format: TextureFormat::RGBA8,
+                    ..TextureParams::default()
+                },
+            );
+            let pass = context.new_render_pass_mrt(&[color], None, None);
+            // Open a pass and leave its encoder genuinely active (not
+            // deferred-end, i.e. `end_render_pass` was never called).
+            // Re-entering `begin_pass` on the same target must not ask
+            // Metal for a second encoder on this command buffer before
+            // the first encoder's `endEncoding`: Tigon32/miniquad#143.
+            context.begin_pass(Some(pass), PassAction::clear_color(0., 0., 0., 1.));
+            let first_encoder = context.render_encoder.unwrap();
+            assert!(!context.pending_end_encoder);
+
+            context.begin_pass(Some(pass), PassAction::clear_color(1., 1., 1., 1.));
+
+            assert!(context.render_encoder.is_some());
+            assert_ne!(
+                context.render_encoder.unwrap(),
+                first_encoder,
+                "begin_pass must open a fresh encoder, not reuse the still-active one"
+            );
+            unsafe {
+                context.really_end_encoder();
+                let command_buffer = context.command_buffer.take().unwrap();
+                msg_send_![command_buffer, commit];
+                msg_send_![command_buffer, waitUntilCompleted];
+            }
+            context.delete_render_pass(pass);
+            context.delete_texture(color);
+        });
+    }
 }
 impl RenderingBackend for MetalContext {
     fn info(&self) -> ContextInfo {
@@ -900,7 +1277,7 @@ impl RenderingBackend for MetalContext {
             glsl_support: Default::default(),
             features: Features {
                 instancing: true,
-                resolve_attachments: false,
+                resolve_attachments: true,
             },
         }
     }
@@ -1111,11 +1488,10 @@ impl RenderingBackend for MetalContext {
             if let Some(depth_img) = depth_img {
                 let depth_texture = self.textures.get(depth_img).texture;
 
+                // `begin_pass` sets loadAction/storeAction/clearDepth
+                // per call from the requested `PassAction`.
                 let depth_attachment = msg_send_![render_pass_desc, depthAttachment];
                 msg_send_![depth_attachment, setTexture: depth_texture];
-                msg_send_![depth_attachment, setLoadAction: MTLLoadAction::Clear];
-                msg_send_![depth_attachment, setStoreAction: MTLStoreAction::Store];
-                msg_send_![depth_attachment, setClearDepth:1.];
 
                 let stencil_attachment = msg_send_![render_pass_desc, stencilAttachment];
                 msg_send_![stencil_attachment, setTexture: depth_texture];
@@ -1148,10 +1524,26 @@ impl RenderingBackend for MetalContext {
         &self.pass(render_pass).texture
     }
 
-    fn new_buffer(&mut self, _: BufferType, _usage: BufferUsage, data: BufferSource) -> BufferId {
-        let size = match &data {
-            BufferSource::Slice(data) => data.size,
-            BufferSource::Empty { size, .. } => *size,
+    fn new_buffer(
+        &mut self,
+        buffer_type: BufferType,
+        _usage: BufferUsage,
+        data: BufferSource,
+    ) -> BufferId {
+        let (size, element_size) = match &data {
+            BufferSource::Slice(data) => (data.size, data.element_size),
+            BufferSource::Empty { size, element_size } => (*size, *element_size),
+        };
+        let index_type = match buffer_type {
+            BufferType::IndexBuffer => Some(match element_size {
+                2 => MTLIndexType::UInt16,
+                4 => MTLIndexType::UInt32,
+                other => panic!(
+                    "Metal: index buffer element size must be 2 (u16) or 4 (u32), got {}",
+                    other
+                ),
+            }),
+            BufferType::VertexBuffer => None,
         };
         // Cached on the `Buffer` so grow-on-demand allocations in
         // `buffer_update` match the original storage mode.
@@ -1189,6 +1581,7 @@ impl RenderingBackend for MetalContext {
             raw: vec![buffer],
             size,
             options,
+            index_type,
             value: 0,
             next_value: 0,
         };
@@ -1706,7 +2099,7 @@ impl RenderingBackend for MetalContext {
                 //layout: buffer_layout.to_vec(),
                 //attributes: vertex_layout,
                 _shader: shader,
-                //params,
+                primitive_type: params.primitive_type.into(),
             };
 
             Pipeline(self.pipelines.add(pipeline))
@@ -1754,8 +2147,12 @@ impl RenderingBackend for MetalContext {
             }
             let index_buffer = self.buffer_mut(index_buffer);
             let index_raw = index_buffer.raw[index_buffer.value];
+            let index_type = index_buffer
+                .index_type
+                .expect("apply_bindings: index_buffer argument must be a BufferType::IndexBuffer");
             index_buffer.next_value = index_buffer.value + 1;
             self.index_buffer = Some(index_raw);
+            self.index_type = index_type;
 
             let img_count = textures.len();
             if img_count > 0 {
@@ -1834,7 +2231,13 @@ impl RenderingBackend for MetalContext {
                 self.pending_end_encoder = false;
                 return;
             }
-            if self.pending_end_encoder {
+            // End any encoder that is still open, deferred or not.
+            // Without this, re-entering `begin_pass` (e.g. `clear`
+            // called while a pass is active) would ask Metal for a
+            // second render encoder on the same command buffer
+            // before the first one's `endEncoding`, which Metal
+            // rejects: Tigon32/miniquad#143.
+            if self.render_encoder.is_some() {
                 self.really_end_encoder();
             }
 
@@ -1911,6 +2314,40 @@ impl RenderingBackend for MetalContext {
                 }
             }
 
+            // Apply the requested depth/stencil action. A depth
+            // texture is present both for the default pass (MTKView's
+            // own depth attachment) and an offscreen pass with a
+            // depth target: Tigon32/miniquad#143.
+            let depth_attachment = msg_send_![descriptor, depthAttachment];
+            let depth_texture: ObjcId = msg_send![depth_attachment, texture];
+            if !depth_texture.is_null() {
+                msg_send_![depth_attachment, setStoreAction: MTLStoreAction::Store];
+                match action {
+                    PassAction::Clear { depth, .. } => {
+                        msg_send_![depth_attachment, setLoadAction: MTLLoadAction::Clear];
+                        msg_send_![depth_attachment, setClearDepth: depth.unwrap_or(1.) as f64];
+                    }
+                    PassAction::Nothing => {
+                        msg_send_![depth_attachment, setLoadAction: MTLLoadAction::Load];
+                    }
+                }
+
+                let stencil_attachment = msg_send_![descriptor, stencilAttachment];
+                let stencil_texture: ObjcId = msg_send![stencil_attachment, texture];
+                if !stencil_texture.is_null() {
+                    msg_send_![stencil_attachment, setStoreAction: MTLStoreAction::Store];
+                    match action {
+                        PassAction::Clear { stencil, .. } => {
+                            msg_send_![stencil_attachment, setLoadAction: MTLLoadAction::Clear];
+                            msg_send_![stencil_attachment, setClearStencil: stencil.unwrap_or(0) as u32];
+                        }
+                        PassAction::Nothing => {
+                            msg_send_![stencil_attachment, setLoadAction: MTLLoadAction::Load];
+                        }
+                    }
+                }
+            }
+
             let render_encoder = msg_send_![
                 self.command_buffer.unwrap(),
                 renderCommandEncoderWithDescriptor: descriptor
@@ -1955,15 +2392,21 @@ impl RenderingBackend for MetalContext {
         let render_encoder = self.render_encoder.unwrap();
         assert!(self.index_buffer.is_some());
         let index_buffer = self.index_buffer.unwrap();
-
-        // Non-zero base_element is not supported yet: Tigon32/miniquad#143.
-        assert!(base_element == 0);
+        let primitive_type = self
+            .current_pipeline
+            .map(|pipeline| self.pipeline(pipeline).primitive_type)
+            .expect("draw before apply_pipeline");
+        let index_byte_size = match self.index_type {
+            MTLIndexType::UInt16 => 2,
+            MTLIndexType::UInt32 => 4,
+        };
+        let index_buffer_offset = base_element as u64 * index_byte_size;
         unsafe {
-            msg_send_![render_encoder, drawIndexedPrimitives:MTLPrimitiveType::Triangle
+            msg_send_![render_encoder, drawIndexedPrimitives:primitive_type
                        indexCount:num_elements as u64
-                       indexType:MTLIndexType::UInt16
+                       indexType:self.index_type
                        indexBuffer:index_buffer
-                       indexBufferOffset:0
+                       indexBufferOffset:index_buffer_offset
                        instanceCount:num_instances as u64
                        baseVertex:0
                        baseInstance:0

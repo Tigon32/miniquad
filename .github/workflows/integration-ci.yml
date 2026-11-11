@@ -118,6 +118,8 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: ESLint browser bridge
         run: npm run lint:js
+      - name: WebGPU proof harness unit tests
+        run: node --test tests/webgpu-proof/*.test.mjs
       - name: Restore browser binaries for the selected lane
         if: ${{ !env.ACT }}
         id: playwright-cache

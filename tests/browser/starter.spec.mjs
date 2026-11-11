@@ -8,6 +8,12 @@ const project = resolve(process.env.MINIQUAD_STARTER_PATH || "target/browser-sta
 const address = "http://127.0.0.1:4174/demo/";
 let server;
 
+function backgroundPixel(image) {
+    // The host can clip the canvas corners with a border radius.
+    const offset = (10 * image.width + 10) * 4;
+    return [...image.data.subarray(offset, offset + 3)];
+}
+
 test.beforeAll(async () => {
     let output = "";
     let spawnError;
@@ -51,7 +57,7 @@ test("external starter renders under a deployment subpath and changes real WASM 
     await page.locator("#background").dispatchEvent("input");
     await page.waitForTimeout(100);
     const image = PNG.sync.read(await canvas.screenshot());
-    expect([...image.data.subarray(0, 3)]).toEqual([17, 34, 51]);
+    expect(backgroundPixel(image)).toEqual([17, 34, 51]);
     const contract = await page.locator("#host iframe").evaluate(frame => {
         const exports = frame.contentWindow.miniquadRuntime.exports;
         return {
@@ -73,7 +79,7 @@ test("external starter renders under a deployment subpath and changes real WASM 
 });
 
 for (const width of [320, 1280, 1440]) {
-    test(`starter supports host preferences and reduced motion at ${width}px`, async ({ page }) => {
+    test(`starter supports host preferences and reduced motion at ${width}px`, async ({ page }, testInfo) => {
         const errors = [];
         page.on("pageerror", error => errors.push(error.message));
         await page.setViewportSize({ width, height: 900 });
@@ -93,7 +99,21 @@ for (const width of [320, 1280, 1440]) {
             await page.emulateMedia(media);
             await expect(page.locator("#status")).not.toHaveAttribute("data-state", "error");
             expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
-            await page.frameLocator("#host iframe").locator("#glcanvas").screenshot();
+            const expected = await page.evaluate(async () => {
+                const { parseCssColor } = await import(new URL("./host-preferences.mjs", location.href));
+                return parseCssColor(getComputedStyle(document.documentElement)
+                    .getPropertyValue("--miniquad-background")).slice(0, 3).map(value => Math.round(value * 255));
+            });
+            await page.waitForTimeout(80);
+            const image = PNG.sync.read(await page.frameLocator("#host iframe").locator("#glcanvas").screenshot());
+            const clear = await page.locator("#host iframe").evaluate(frame => {
+                const gl = frame.contentWindow.gl;
+                return [...gl.getParameter(gl.COLOR_CLEAR_VALUE)];
+            });
+            expect(backgroundPixel(image), JSON.stringify({ media, clear })).toEqual(expected);
+            await testInfo.attach(`${width}-${media.colorScheme}-${media.contrast}-${media.forcedColors}.png`, {
+                body: await page.screenshot({ fullPage: true }), contentType: "image/png"
+            });
         }
         expect(errors).toEqual([]);
     });

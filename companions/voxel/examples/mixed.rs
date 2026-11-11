@@ -19,6 +19,27 @@
 //! (offline mode, before the first snapshot / while the host has no
 //! transport), plus the in-frame seven-segment HUD described in
 //! `miniquad_voxel::hud`.
+//!
+//! # Optional app-parameters export surface
+//!
+//! This example exposes the same small, optional "app parameters"
+//! surface as `examples/offline.rs` and the `miniquad-starter`
+//! browser template, so a parent host page can reuse one
+//! `setParameters` contract across example applications. It is not
+//! part of the Miniquad core ABI.
+//!
+//!   - `mq_params_version() -> u32`: always `1`.
+//!   - `mq_param_set_f32(1, value) -> i32`: sets this client's own
+//!     sprite-bobbing animation rate, range `0..=2`. Returns `0` on
+//!     success, `1` for a non-finite or out-of-range value, `2` for
+//!     an unknown `id`.
+//!   - `mq_param_set_rgba8(1, color) -> i32`: sets the sprite tint.
+//!   - `mq_param_set_rgba8(2, color) -> i32`: sets the clear
+//!     (background) color. Returns `0` on success, `2` for an
+//!     unknown `id`.
+//!
+//! `color` is an unsigned 32-bit value packed as `0xRRGGBBAA`,
+//! straight alpha, sRGB channel bytes.
 
 use miniquad::*;
 use miniquad_voxel::camera::OrbitCamera;
@@ -84,6 +105,36 @@ static HAVE_SNAPSHOT: AtomicBool = AtomicBool::new(false);
 static RELEASE_GPU: AtomicBool = AtomicBool::new(false);
 static RESOURCES_LIVE: AtomicU32 = AtomicU32::new(0);
 
+/// A raw pointer to the live `Stage`, as `usize` (so the static stays
+/// `Send`/`Sync` without `unsafe impl`). Set exactly once, in `main`,
+/// immediately after `Box::new(Stage::new())` allocates `Stage` on the
+/// heap - *not* inside `Stage::new()` itself, where `self`'s address
+/// is still a soon-to-move stack temporary. A `Box`'s heap allocation
+/// is never moved or reallocated by a later move of the `Box` value,
+/// and `miniquad`'s event loop keeps this `Box<dyn EventHandler>` in
+/// place for the app's life, so the address stays valid.
+///
+/// This is read back only by `vx_release_gpu`, so the HUD/UI
+/// contract's "explicit GPU release flag serviced even when the app
+/// is paused" requirement holds: `draw()` (and so `RELEASE_GPU`'s
+/// prior read site) never runs at all while the host has paused the
+/// app (see `js/runtime.mjs`'s `setPaused`, which stops scheduling
+/// every animation-frame callback), so a release requested while
+/// paused must run synchronously inside the export call itself.
+///
+/// Safety: WASM (as built here, no `wasm-bindgen` threads) is single
+/// threaded and exported functions cannot re-enter each other, so
+/// this is never read while `update`/`draw` are executing, and vice
+/// versa - there is exactly one mutable borrow of `Stage` live at a
+/// time. This corrects, with that evidence, this file's earlier
+/// stricter "no export stores a pointer to `Stage`" comment (also
+/// updated in `docs/architecture/voxel-protocol.md`): the true
+/// invariant this code preserves is "no export stores a pointer to a
+/// `Stage` value that can be invalidated by a move or by aliasing",
+/// which a pointer captured only after `Stage` is heap-boxed, with no
+/// re-entrant access, satisfies.
+static STAGE_PTR: Mutex<Option<usize>> = Mutex::new(None);
+
 /// Shared simulation core. Behind a `Mutex` only because it is
 /// touched from both `update` (apply) and the `vx_state_hash_lo/hi`
 /// staging exports (read); there is exactly one WASM thread, so this
@@ -102,9 +153,23 @@ static SPRITE_PIXEL: AtomicU32 = AtomicU32::new(0);
 /// input (`vx_input(2, ...)`) is a network command queued for the
 /// *server's* authoritative `Sim`. The HUD/UI contract calls for a
 /// host control that drives both at once.
+///
+/// `mq_param_set_rgba8` mirrors `examples/offline.rs`'s contract
+/// exactly (`id` 1 sprite tint, `id` 2 background clear color,
+/// packed `0xRRGGBBAA`, straight alpha), so this example reaches full
+/// parity with `offline.rs`'s app-parameters surface: both exports
+/// the host's `setParameters` checks for (`mq_param_set_f32` and
+/// `mq_param_set_rgba8`) must exist, or `supportsParameters` is
+/// `false` and every `setParameters` call throws
+/// (`js/miniquad.mjs`), even for a caller that only ever sets
+/// `speed`.
 const PARAMS_VERSION: u32 = 1;
 const DEFAULT_SPEED_BITS: u32 = 0x3F80_0000; // f32::to_bits(1.0)
+const DEFAULT_SPRITE_RGBA8: u32 = 0x3075_C8FF; // this example's prior fixed tint, repacked
+const DEFAULT_BACKGROUND_RGBA8: u32 = 0x10_18_24_FF; // this example's prior fixed clear color, repacked
 static SPEED_BITS: AtomicU32 = AtomicU32::new(DEFAULT_SPEED_BITS);
+static SPRITE_RGBA8: AtomicU32 = AtomicU32::new(DEFAULT_SPRITE_RGBA8);
+static BACKGROUND_RGBA8: AtomicU32 = AtomicU32::new(DEFAULT_BACKGROUND_RGBA8);
 
 /// Reports the app-parameters surface version.
 #[no_mangle]
@@ -130,6 +195,35 @@ pub extern "C" fn mq_param_set_f32(id: u32, value: f32) -> i32 {
         }
         _ => 2,
     }
+}
+
+/// Sets a packed `0xRRGGBBAA` color parameter. `id` 1 is the sprite
+/// tint, `id` 2 is the background clear color. Returns `0` on
+/// success, `2` for an unknown `id`.
+#[no_mangle]
+pub extern "C" fn mq_param_set_rgba8(id: u32, color: u32) -> i32 {
+    match id {
+        1 => {
+            SPRITE_RGBA8.store(color, Ordering::Relaxed);
+            0
+        }
+        2 => {
+            BACKGROUND_RGBA8.store(color, Ordering::Relaxed);
+            0
+        }
+        _ => 2,
+    }
+}
+
+/// Unpacks a straight-alpha `0xRRGGBBAA` color into sRGB-byte
+/// `[r, g, b, a]` floats in `0.0..=1.0`, matching
+/// `examples/offline.rs`'s helper of the same name exactly.
+fn unpack_rgba8(packed: u32) -> [f32; 4] {
+    let r = ((packed >> 24) & 0xFF) as f32 / 255.0;
+    let g = ((packed >> 16) & 0xFF) as f32 / 255.0;
+    let b = ((packed >> 8) & 0xFF) as f32 / 255.0;
+    let a = (packed & 0xFF) as f32 / 255.0;
+    [r, g, b, a]
 }
 
 // ---------------------------------------------------------------------
@@ -256,6 +350,26 @@ pub extern "C" fn vx_input(op: u32, id: u32, x: i32, y: i32, z: i32) -> i32 {
     0
 }
 
+/// Returns the Y of the highest solid voxel in world column `(x, z)`,
+/// or `-1` if the column is empty. Bounded by `SCENE_CHUNK_DIMS.y`
+/// (12) lookups. Used by the HUD/UI contract's Add/Remove controls
+/// ("one above the highest" / "the top voxel") at the documented
+/// `x=8, z=4` column, so edits never duplicate or miss the current
+/// top voxel.
+#[no_mangle]
+pub extern "C" fn vx_column_height(x: i32, z: i32) -> i32 {
+    let sim = SIM.lock().unwrap();
+    let Some(sim) = sim.as_ref() else { return -1 };
+    let world = sim.world();
+    let top = SCENE_CHUNK_DIMS.y as i32 - 1;
+    for y in (0..=top).rev() {
+        if world.is_solid(SCENE_CHUNK_COORDS[0], x, y, z) {
+            return y;
+        }
+    }
+    -1
+}
+
 #[no_mangle]
 pub extern "C" fn vx_state_hash_lo() -> u32 {
     let hash = SIM.lock().unwrap().as_ref().map(|s| s.state_hash()).unwrap_or(0);
@@ -286,6 +400,12 @@ pub extern "C" fn vx_sprite_pixel() -> u32 {
 #[no_mangle]
 pub extern "C" fn vx_release_gpu() {
     RELEASE_GPU.store(true, Ordering::Relaxed);
+    let ptr = *STAGE_PTR.lock().unwrap();
+    if let Some(ptr) = ptr {
+        // SAFETY: see the comment on `STAGE_PTR`.
+        let stage = unsafe { &mut *(ptr as *mut Stage) };
+        stage.release_gpu_now();
+    }
 }
 
 #[no_mangle]
@@ -324,9 +444,10 @@ fn hud_mode_and_status() -> (Mode, Status) {
 
 fn hud_revision() -> Revision {
     if HAVE_SNAPSHOT.load(Ordering::Relaxed) {
-        Revision::Known(SIM.lock().unwrap().as_ref().map(|s| s.rev()).unwrap_or(0))
+        let rev = SIM.lock().unwrap().as_ref().map(|s| s.rev()).unwrap_or(0);
+        hud::classify_revision(Some(rev))
     } else {
-        Revision::Unknown
+        hud::classify_revision(None)
     }
 }
 
@@ -604,6 +725,29 @@ impl Stage {
         }
     }
 
+    /// Deletes every GPU buffer this example owns and zeroes
+    /// `RESOURCES_LIVE`. Idempotent (`self.released` guards a second
+    /// call). Called both from `draw()` (the normal running-app path)
+    /// and directly from `vx_release_gpu()` via `STAGE_PTR` (see that
+    /// static's safety comment), so release is serviced even while
+    /// the host has paused the app and no further frame callback will
+    /// ever run.
+    fn release_gpu_now(&mut self) {
+        if self.released {
+            return;
+        }
+        if let Some(mesh) = self.terrain_mesh.take() {
+            self.ctx.delete_buffer(mesh.vertex_buffer);
+            self.ctx.delete_buffer(mesh.index_buffer);
+        }
+        self.ctx.delete_buffer(self.sprite_bindings.vertex_buffers[0]);
+        self.ctx.delete_buffer(self.sprite_bindings.index_buffer);
+        self.ctx.delete_buffer(self.hud_bindings.vertex_buffers[0]);
+        self.ctx.delete_buffer(self.hud_bindings.index_buffer);
+        RESOURCES_LIVE.store(0, Ordering::Relaxed);
+        self.released = true;
+    }
+
     /// Applies any inbound mailbox frame, and in offline-local mode
     /// (status never set), applies pending local inputs directly.
     fn drain_network(&mut self) {
@@ -788,18 +932,7 @@ impl EventHandler for Stage {
 
     fn draw(&mut self) {
         if RELEASE_GPU.load(Ordering::Relaxed) {
-            if !self.released {
-                if let Some(mesh) = self.terrain_mesh.take() {
-                    self.ctx.delete_buffer(mesh.vertex_buffer);
-                    self.ctx.delete_buffer(mesh.index_buffer);
-                }
-                self.ctx.delete_buffer(self.sprite_bindings.vertex_buffers[0]);
-                self.ctx.delete_buffer(self.sprite_bindings.index_buffer);
-                self.ctx.delete_buffer(self.hud_bindings.vertex_buffers[0]);
-                self.ctx.delete_buffer(self.hud_bindings.index_buffer);
-                RESOURCES_LIVE.store(0, Ordering::Relaxed);
-                self.released = true;
-            }
+            self.release_gpu_now();
             // Draws no scene after release, per the contract.
             return;
         }
@@ -809,8 +942,9 @@ impl EventHandler for Stage {
         let projection = self.camera.projection_matrix(aspect);
         let view_projection = projection.mul(&view);
 
+        let background = unpack_rgba8(BACKGROUND_RGBA8.load(Ordering::Relaxed));
         self.ctx.begin_default_pass(PassAction::Clear {
-            color: Some((0.063, 0.094, 0.141, 1.0)),
+            color: Some((background[0], background[1], background[2], background[3])),
             depth: Some(1.0),
             stencil: None,
         });
@@ -852,7 +986,7 @@ impl EventHandler for Stage {
         self.ctx
             .apply_uniforms(UniformsSource::table(&shader::SpriteUniforms {
                 model_view_projection: mvp.0,
-                tint: [0.188, 0.459, 0.784, 1.0],
+                tint: unpack_rgba8(SPRITE_RGBA8.load(Ordering::Relaxed)),
             }));
         self.ctx.draw(0, 6, 1);
 
@@ -1002,7 +1136,13 @@ fn main() {
         },
         ..Default::default()
     };
-    miniquad::start(conf, move || Box::new(Stage::new()));
+    miniquad::start(conf, move || {
+        let mut stage = Box::new(Stage::new());
+        // See `STAGE_PTR`'s doc comment: captured only now, after
+        // `Stage` is heap-boxed, so its address is stable.
+        *STAGE_PTR.lock().unwrap() = Some(stage.as_mut() as *mut Stage as usize);
+        stage
+    });
 }
 
 mod shader {
@@ -1114,5 +1254,47 @@ mod shader {
     #[repr(C)]
     pub struct HudUniforms {
         pub projection: [f32; 16],
+    }
+}
+
+#[cfg(test)]
+mod column_height_tests {
+    use super::*;
+
+    /// Serializes access to the shared `SIM` static across tests in
+    /// this module: `cargo test` runs tests in parallel by default,
+    /// and `vx_column_height`/`SIM` are process-global statics.
+    static TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn column_height_finds_the_highest_solid_voxel_in_the_real_scene() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        *SIM.lock().unwrap() = Some(Sim::new_scene());
+
+        let top = SCENE_CHUNK_DIMS.y as i32 - 1;
+        let expected = {
+            let guard = SIM.lock().unwrap();
+            let world = guard.as_ref().unwrap().world();
+            // Cross-check directly against `World::is_solid` at the
+            // same coordinate, rather than hard-coding an expected
+            // height that could silently drift if
+            // `terrain::generate_chunk` changes.
+            (0..=top)
+                .rev()
+                .find(|&y| world.is_solid(SCENE_CHUNK_COORDS[0], 8, y, 4))
+                .unwrap_or(-1)
+        };
+        let reported = vx_column_height(8, 4);
+        assert_eq!(reported, expected);
+        assert!(reported >= 0, "the real scene must have terrain under x=8,z=4");
+
+        *SIM.lock().unwrap() = None;
+    }
+
+    #[test]
+    fn column_height_is_negative_one_when_sim_is_not_yet_initialized() {
+        let _guard = TEST_LOCK.lock().unwrap();
+        *SIM.lock().unwrap() = None;
+        assert_eq!(vx_column_height(8, 4), -1);
     }
 }

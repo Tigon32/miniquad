@@ -101,17 +101,37 @@ impl Status {
     }
 }
 
-/// Saturating six-digit revision cell, or `------` before the first
-/// snapshot is applied.
+/// The displayed revision cell: `Unknown` before the first snapshot
+/// (`------`), `Known` for a value that fits the six-digit display
+/// (`0..=999_999`, zero-padded), or `Overflow` once the real
+/// revision exceeds six decimal digits (`EEEEEE`): the HUD cannot
+/// truthfully show a full `u32` in six digits, so values at or above
+/// `1_000_000` are shown as an explicit overflow marker rather than
+/// silently saturated to a smaller, wrong-looking number. The host's
+/// semantic status text (not this fixed-width glyph strip) must
+/// always carry the full decimal revision; see
+/// `docs/architecture/voxel-protocol.md`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Revision {
     /// No snapshot applied yet.
     Unknown,
-    /// Applied revision, saturated for display at `999_999`.
+    /// Applied revision, `0..=999_999`: fits the six-digit display.
     Known(u32),
+    /// Applied revision `>= 1_000_000`: too large for six digits.
+    Overflow,
 }
 
 const MAX_DISPLAY_REVISION: u32 = 999_999;
+
+/// Classifies a raw revision `u32` (or `None` before the first
+/// snapshot) into the displayable [`Revision`] the HUD renders.
+pub fn classify_revision(rev: Option<u32>) -> Revision {
+    match rev {
+        None => Revision::Unknown,
+        Some(rev) if rev <= MAX_DISPLAY_REVISION => Revision::Known(rev),
+        Some(_) => Revision::Overflow,
+    }
+}
 
 /// Builds the fixed 16-token HUD cell string (ASCII, one token per
 /// cell; `'_'` means "blank cell" and is mapped to a space glyph by
@@ -133,9 +153,9 @@ pub fn cell_tokens(mode: Mode, status: Status, revision: Revision) -> [char; CEL
     cells[9] = 'r';
     let digits: [char; 6] = match revision {
         Revision::Unknown => ['-', '-', '-', '-', '-', '-'],
+        Revision::Overflow => ['E', 'E', 'E', 'E', 'E', 'E'],
         Revision::Known(rev) => {
-            let saturated = rev.min(MAX_DISPLAY_REVISION);
-            let s = format!("{:06}", saturated);
+            let s = format!("{:06}", rev);
             let mut out = [' '; 6];
             for (i, c) in s.chars().enumerate() {
                 out[i] = c;
@@ -310,9 +330,29 @@ mod tests {
     }
 
     #[test]
-    fn revision_saturates_at_999999_instead_of_overflowing_six_digits() {
-        let cells = cell_tokens(Mode::Server, Status::Online, Revision::Known(u32::MAX));
-        assert_eq!(&cells[10..16], &['9', '9', '9', '9', '9', '9']);
+    fn revision_overflow_renders_eeeeee_at_and_above_one_million() {
+        let cells = cell_tokens(Mode::Server, Status::Online, Revision::Overflow);
+        assert_eq!(&cells[10..16], &['E', 'E', 'E', 'E', 'E', 'E']);
+    }
+
+    #[test]
+    fn classify_revision_boundaries_are_exact() {
+        assert_eq!(classify_revision(None), Revision::Unknown);
+        assert_eq!(classify_revision(Some(0)), Revision::Known(0));
+        assert_eq!(classify_revision(Some(42)), Revision::Known(42));
+        assert_eq!(classify_revision(Some(999_999)), Revision::Known(999_999));
+        assert_eq!(classify_revision(Some(1_000_000)), Revision::Overflow);
+        assert_eq!(classify_revision(Some(u32::MAX)), Revision::Overflow);
+    }
+
+    #[test]
+    fn classified_overflow_revision_renders_eeeeee_end_to_end() {
+        let cells = cell_tokens(
+            Mode::Server,
+            Status::Online,
+            classify_revision(Some(u32::MAX)),
+        );
+        assert_eq!(&cells[10..16], &['E', 'E', 'E', 'E', 'E', 'E']);
     }
 
     #[test]

@@ -46,6 +46,12 @@ pub enum SimError {
     UnknownMaterial,
     /// The speed value exceeds [`MAX_SPEED_MILLI`].
     SpeedOutOfRange,
+    /// `rev` is already [`u32::MAX`]; applying the command would wrap
+    /// it back to `0` instead of monotonically increasing it. The
+    /// command is rejected and `rev`/world state are left unchanged,
+    /// matching every other [`SimError`] variant and the wire
+    /// protocol's `ErrorCode::Rejected` (7).
+    RevisionOverflow,
 }
 
 impl std::fmt::Display for SimError {
@@ -54,6 +60,7 @@ impl std::fmt::Display for SimError {
             SimError::OutOfScene => "voxel coordinate is outside the resident scene",
             SimError::UnknownMaterial => "material id is not in the demo palette",
             SimError::SpeedOutOfRange => "speed exceeds the maximum permitted value",
+            SimError::RevisionOverflow => "revision counter is already at its maximum value",
         };
         f.write_str(message)
     }
@@ -183,7 +190,15 @@ impl Sim {
     /// Applies one command. On success, increments `rev` by exactly 1.
     /// On error, the `Sim` is unchanged (strong exception safety: the
     /// voxel write only happens after every check passes).
+    ///
+    /// Checks `rev.checked_add(1)` first, before any other check or
+    /// mutation: a command applied at `rev == u32::MAX` is rejected
+    /// with [`SimError::RevisionOverflow`] rather than wrapping `rev`
+    /// back to `0`, which would make the revision counter no longer
+    /// monotonically increasing (`docs/architecture/voxel-protocol.md`
+    /// "Revision overflow").
     pub fn apply(&mut self, command: Command) -> Result<(), SimError> {
+        let next_rev = self.rev.checked_add(1).ok_or(SimError::RevisionOverflow)?;
         match command {
             Command::SetVoxel { x, y, z, id } => {
                 if id != AIR
@@ -221,7 +236,7 @@ impl Sim {
                 self.speed_milli = milli;
             }
         }
-        self.rev = self.rev.wrapping_add(1);
+        self.rev = next_rev;
         Ok(())
     }
 
@@ -483,6 +498,86 @@ mod tests {
         .unwrap();
         assert_eq!(sim.speed_milli(), MAX_SPEED_MILLI);
         assert_eq!(sim.rev(), 1);
+    }
+
+    /// Builds a `Sim` whose `rev` is `rev`, by resyncing a fresh scene
+    /// onto itself via `load_snapshot` (the only public way to set an
+    /// arbitrary `rev` without calling `apply`, which is exactly the
+    /// method under test here).
+    fn sim_at_rev(rev: u32) -> Sim {
+        let source = Sim::new_scene();
+        let chunk_bytes: Vec<Vec<u8>> = SCENE_CHUNK_COORDS
+            .iter()
+            .map(|&c| dense_chunk_bytes(&source, c))
+            .collect();
+        let chunks: Vec<(ChunkCoord, u8, u8, u8, &[u8])> = SCENE_CHUNK_COORDS
+            .iter()
+            .zip(chunk_bytes.iter())
+            .map(|(&coord, bytes)| {
+                (
+                    coord,
+                    SCENE_CHUNK_DIMS.x as u8,
+                    SCENE_CHUNK_DIMS.y as u8,
+                    SCENE_CHUNK_DIMS.z as u8,
+                    bytes.as_slice(),
+                )
+            })
+            .collect();
+        let mut sim = Sim::new_scene();
+        sim.load_snapshot(source.seed(), source.speed_milli(), rev, &chunks)
+            .expect("well-formed snapshot of the fixed scene must load");
+        sim
+    }
+
+    #[test]
+    fn apply_rejects_at_u32_max_rev_without_mutating_state_or_rev() {
+        let mut sim = sim_at_rev(u32::MAX);
+        let before_speed = sim.speed_milli();
+        let before_hash = sim.state_hash();
+        let err = sim
+            .apply(Command::SetSpeed {
+                milli: MAX_SPEED_MILLI,
+            })
+            .unwrap_err();
+        assert_eq!(err, SimError::RevisionOverflow);
+        // Rejected: rev does not wrap back to 0, and no other state
+        // (world or speed) changed either.
+        assert_eq!(sim.rev(), u32::MAX);
+        assert_eq!(sim.speed_milli(), before_speed);
+        assert_eq!(sim.state_hash(), before_hash);
+    }
+
+    #[test]
+    fn apply_rejects_at_u32_max_rev_even_for_an_otherwise_valid_set_voxel() {
+        let mut sim = sim_at_rev(u32::MAX);
+        let before = sim.world().get(ChunkCoord::new(0, 0, 0)).unwrap().get(0, 0, 0);
+        // Picks a material guaranteed to differ from whatever
+        // `terrain::generate_chunk` placed at (0,0,0), so a real
+        // write (if one incorrectly happened) would be observable.
+        let write_id = if before == Some(terrain::MATERIAL_STONE) {
+            AIR
+        } else {
+            terrain::MATERIAL_STONE
+        };
+        let err = sim
+            .apply(Command::SetVoxel {
+                x: 0,
+                y: 0,
+                z: 0,
+                id: write_id,
+            })
+            .unwrap_err();
+        assert_eq!(err, SimError::RevisionOverflow);
+        assert_eq!(sim.rev(), u32::MAX);
+        let chunk = sim.world().get(ChunkCoord::new(0, 0, 0)).unwrap();
+        assert_eq!(chunk.get(0, 0, 0), before);
+    }
+
+    #[test]
+    fn apply_accepts_one_below_u32_max_rev_and_reaches_u32_max() {
+        let mut sim = sim_at_rev(u32::MAX - 1);
+        sim.apply(Command::SetSpeed { milli: 500 }).unwrap();
+        assert_eq!(sim.rev(), u32::MAX);
     }
 
     #[test]

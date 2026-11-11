@@ -146,7 +146,7 @@ test("backoff is capped exponential: 250ms, 500ms, 1000ms, ... capped at 4000ms"
     assert.equal(retryDelays[5], 4000, "stays capped at 4000ms");
 });
 
-test("status reports offline on failure and online once the host confirms a decoded frame", async () => {
+test("status reports offline on failure and online once the host confirms a decoded frame", async (t) => {
     const scheduler = makeFakeScheduler();
     const statuses = [];
     let shouldFail = true;
@@ -154,25 +154,44 @@ test("status reports offline on failure and online once the host confirms a deco
         shouldFail
             ? Promise.reject(new Error("down"))
             : Promise.resolve({ ok: true, arrayBuffer: async () => new ArrayBuffer(4) });
+    // The production `.then(async (response) => ...)` chain awaits
+    // `readBoundedResponseBody`, which itself awaits
+    // `response.arrayBuffer()`: a real frame takes more real
+    // microtask turns to reach `onFrame` than two fixed
+    // `await Promise.resolve()` calls (that assumption was wrong, not
+    // flaky; the production reader itself is correct). Wait on the
+    // actual `onFrame` callback instead of counting microtasks, bound
+    // by a real 2s timeout so a genuine regression still fails fast.
+    let frameSeen;
+    const framePromise = new Promise((resolve) => {
+        frameSeen = resolve;
+    });
     const client = createVoxelNetClient({
         url: "http://127.0.0.1:4230/vx/v1/sync",
         buildRequest: () => new Uint8Array([1]),
-        onFrame: () => client.reportOnline(),
+        onFrame: () => {
+            client.reportOnline();
+            frameSeen();
+        },
         onStatus: (s) => statuses.push(s),
         fetchImpl,
         setTimeoutImpl: scheduler.setTimeoutImpl,
         clearTimeoutImpl: scheduler.clearTimeoutImpl,
     });
+    t.after(() => client.dispose());
     client.start();
     await Promise.resolve();
     await Promise.resolve();
     assert.ok(statuses.includes(VoxelNetStatus.OFFLINE));
     shouldFail = false;
     scheduler.advance(300);
-    await Promise.resolve();
-    await Promise.resolve();
+    await Promise.race([
+        framePromise,
+        new Promise((_, reject) =>
+            setTimeout(() => reject(new Error("timed out waiting for onFrame")), 2000),
+        ),
+    ]);
     assert.equal(client.status, VoxelNetStatus.ONLINE);
-    client.dispose();
 });
 
 test("version error stops all retry and further polling permanently", async () => {

@@ -70,5 +70,11 @@ Record the selection in a new MADR or a revision, with codec and parity evidence
 
 ## Evidence status
 
-No hex implementation, test run, or browser run exists for this decision.
-The decision stays **Proposed** until the #130 tests pass with recorded commands.
+The pure geometry implementation exists at `0d03cebea542314f4312ed21de912a60dc626fe0`.
+The #130 integration adds checks for all six shared sides, every lateral chunk
+boundary, the emitted triangle winding, and the exact 84 exterior faces of a
+solid 3x3x3 block.
+On macOS arm64, `cargo test --manifest-path companions/voxel/Cargo.toml` passed
+67 tests. The companion WASM check and the 10 root library tests also passed.
+The PR records the exact source revision and full commands.
+No browser or network result is claimed here. The decision stays **Proposed**.

@@ -22,17 +22,17 @@ cell shape beside the existing cubic voxel system in
 existing `Chunk`, `ChunkDims`, `World`, `ChunkCoord`, `MeshBuffers`, and
 `Vertex` types without change; there is no `HexChunkDims` or
 `HexWorld`. A hex cell's `(q, layer, r)` axes map onto an existing
-chunk's `(x, y, z)` axes (see the table below). One `World` can hold
-cubic chunks, hex-interpreted chunks, or both; the module does not add
-a stored "topology kind" flag. The call site decides whether to read a
-chunk with `mesh::build_chunk_mesh` (cubic) or
-`hex::build_hex_chunk_mesh` (hex).
+chunk's `(x, y, z)` axes (see the table below). `World` does not store a
+topology flag. The call site selects `mesh::build_chunk_mesh` (cubic) or
+`hex::build_hex_chunk_mesh` (hex). The selected mesher interprets all
+neighbor chunks with the same topology. Mixing adjacent cubic and hex
+chunks needs a separate boundary policy; this module does not supply it.
 
 Not implemented, and out of scope for this module:
 
-* A picker, a browser example, or any UI. Issue #131 (browser,
-  2D/3D picking) and issue #132 (network protocol) are separate work
-  by other contributors.
+* A picker, a browser example, or any UI. Issue #131 owns 3D picking
+  and the offline browser example. Issues #133 and #134 own the
+  separate 2D layouts and example. Issue #132 owns the network decision.
 * Greedy meshing. Only per-cell visible-face culling is implemented.
 * Any change to the cubic mesher's error semantics. The cubic mesher
   falls back to a white color for an unknown material; the hex mesher
@@ -44,7 +44,7 @@ Not implemented, and out of scope for this module:
 
 A hex cell is `HexCell { q, r, layer }` (all `i32`, private fields,
 built only through the checked `HexCell::new`). The hexagon is
-**flat-top**: two of its six sides are vertical in the `X` axis. `q`
+**flat-top**: two sides are parallel to the `X` axis in the X/Z plane. `q`
 and `r` are axial coordinates on one flat-top hex layer; `layer` is an
 integer extrusion height, one layer per unit, matching the cubic `y`
 axis idea of "one more voxel up".
@@ -52,24 +52,21 @@ axis idea of "one more voxel up".
 ```text
 Flat-top hex cell at (q, r), one layer:
 
-          ____
-         /    \      r-1 row is offset by +0.5q in world X
-        /      \
-        \      /
-         \____/
-         (q, r)
+          ______
+         /      \
+         \______/
 
-Six lateral neighbors (angle order used by HexFace, see below):
-                    PosR (0,+1)
-                      ____
-      NegQPosR       /    \       PosQ (+1,0)
-      (-1,+1)  _____/      \_____
-               \    (q, r)       \
-          NegQ  \      /\        /  PosQNegR
-          (-1,0)  \___/  \______/   (+1,-1)
-                      \  /
+Top view: X increases right; Z increases down.
+
                     NegR (0,-1)
+    NegQ (-1,0)                    PosQNegR (+1,-1)
+                       (q,r)
+    NegQPosR (-1,+1)                PosQ (+1,0)
+                    PosR (0,+1)
 ```
+
+Increasing `q` by one adds `1.5` to X and `sqrt(3)/2` to Z.
+Increasing `r` by one adds `sqrt(3)` to Z and does not change X.
 
 `Top` and `Bottom` move by one `layer` step (`+1`/`-1`) with no change
 to `q`/`r`; they are each other's opposite, matching the cubic "up"/
@@ -156,8 +153,8 @@ z = Z as f32 * HEX_Z_STEP   // 0.866_025_4
 `HexCell::corners` returns `[[f32; 3]; 12]`: indices `0..6` are the
 bottom ring (`y = layer as f32 * HEX_LAYER_HEIGHT`), indices `6..12`
 are the top ring at the same `(x, z)` (`y = (layer + 1) as f32 *
-HEX_LAYER_HEIGHT`). `HexCell::center` is the cell's horizontal center
-at its bottom-ring `y`.
+HEX_LAYER_HEIGHT`). `HexCell::center` is the prism centre at
+`y = (layer + 0.5) * HEX_LAYER_HEIGHT`.
 
 ## Mesh building: `build_hex_chunk_mesh`
 
@@ -282,7 +279,7 @@ an isolated prism's exact vertex/index/triangle counts; a solid 3×3×3
 block's exact exterior-only face count; chunk-boundary face culling on
 a plain axis and on both diagonal corners; exact dirty-chunk-set
 contents for an interior, edge, non-diagonal-corner, and
-diagonal-corner cell; and rejection (with no buffer mutation) of an
+diagonal-corner cell; and rejection (with an empty output buffer) of an
 out-of-range chunk, a non-resident chunk, an unknown material, an
 invalid (including non-finite) color, and a mesh that would exceed the
 vertex budget.

@@ -458,7 +458,14 @@ impl State {
             return false;
         }
         self.disposed_device = true;
-        self.phase = Phase::Disposed;
+        // Contract section 5: "A terminal phase never changes to another
+        // phase." `failed` and `lost` are already terminal; only a
+        // still-live phase moves to `disposed`. GPU handles are released
+        // either way (contract section 7: "dispose and device loss
+        // release all handles"), signaled by this `true` return.
+        if !self.phase.is_terminal() {
+            self.phase = Phase::Disposed;
+        }
         self.step = None;
         true
     }
@@ -824,6 +831,36 @@ mod tests {
         assert_eq!(state.phase, Phase::Disposed);
         assert!(!state.dispose(), "a second dispose call must be a no-op");
         assert_eq!(state.phase, Phase::Disposed);
+    }
+
+    #[test]
+    fn dispose_after_failed_keeps_the_failed_phase_and_error() {
+        // Contract section 5: "A terminal phase never changes to another
+        // phase." `failed` is already terminal; `dispose()` must still
+        // release GPU handles (signaled by returning `true` once) but
+        // must not overwrite the phase or the error with "disposed".
+        let mut state = running_state();
+        state.fail_internal("boom");
+        assert_eq!(state.phase, Phase::Failed);
+        assert!(state.dispose(), "dispose must still report the first call so handles are released");
+        assert_eq!(state.phase, Phase::Failed, "dispose must not change an already-terminal phase");
+        assert_eq!(state.error.as_ref().unwrap().code, ProofErrorCode::Internal);
+        assert_eq!(state.error.as_ref().unwrap().message, "boom");
+        assert!(!state.dispose(), "a second dispose call must still be a no-op");
+        assert_eq!(state.phase, Phase::Failed);
+    }
+
+    #[test]
+    fn dispose_after_lost_keeps_the_lost_phase_and_error() {
+        let mut state = running_state();
+        state.on_device_lost(true);
+        assert_eq!(state.phase, Phase::Lost);
+        assert!(state.dispose(), "dispose must still report the first call so handles are released");
+        assert_eq!(state.phase, Phase::Lost, "dispose must not change an already-terminal phase");
+        assert_eq!(state.error.as_ref().unwrap().code, ProofErrorCode::DeviceLost);
+        assert_eq!(state.error.as_ref().unwrap().reason, Some("destroyed"));
+        assert!(!state.dispose(), "a second dispose call must still be a no-op");
+        assert_eq!(state.phase, Phase::Lost);
     }
 
     #[test]

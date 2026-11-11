@@ -31,3 +31,15 @@ block-mesh = "=0.2.0"
 [[bin]]
 name = "compare"
 path = "src/bin/compare.rs"
+
+# Isolated single-mesher binaries (issue #29 WASM footprint evidence,
+# docs/performance-evidence/): each reaches only one mesher's code so
+# a `wasm32-unknown-unknown` release build's binary size reflects that
+# mesher's own contribution. Not built by any core/production/CI path.
+[[bin]]
+name = "wasm_footprint_miniquad"
+path = "src/bin/wasm_footprint_miniquad.rs"
+
+[[bin]]
+name = "wasm_footprint_block_mesh"
+path = "src/bin/wasm_footprint_block_mesh.rs"

@@ -1,9 +1,12 @@
 # Pinned block-mesh visible-face comparison (native) — 2026-11-11
 
 **Evidence status:** Native-only, single-machine, single-process-run paired
-timing receipt for the exact source revision below. **Not** a WASM
-measurement, **not** a cross-engine or reference-device measurement, and
-**not** a promoted optimization. Benchmark-only: the `block-mesh` dependency
+timing receipt for the exact source revision below, plus (see the
+dedicated section further down) a separate single-host
+`wasm32-unknown-unknown` compiled-*size* split added the same day. Neither
+is a WASM *timing* measurement, **not** a cross-engine or
+reference-device measurement, and **not** a promoted optimization.
+Benchmark-only: the `block-mesh` dependency
 is pinned in `experiments/voxel-comparison/` alone and is never a
 core/production/companion dependency (see
 [docs/adr/0008-optional-voxel-topologies.md](../adr/0008-optional-voxel-topologies.md)).
@@ -110,13 +113,83 @@ correctness: quad counts match (742 == 742).
   `block-mesh`'s performance characteristics in `companions/voxel/`
   itself would be a separate, explicitly-scoped change with its own
   ADR and evidence.
-- **No WASM measurement was taken.** This binary is a native `std` CLI
-  tool; it was not built for `wasm32-unknown-unknown` and makes no claim
-  about WASM-side relative performance. A WASM-side comparison remains
-  **NOT RUN**.
+- **No WASM *timing* measurement was taken** (see the separate compiled-size
+  section below for what *was* measured). The `compare` binary above is a
+  native `std` CLI tool and was not run under any WASM engine; it makes no
+  claim about WASM-side relative execution speed. A WASM-side timing
+  comparison remains **NOT RUN**.
 - **No GPU time/memory measurement applies here**: this is a pure CPU
   meshing comparison; no GPU resources are created by either side.
 - Only one repetition count (200/400) at one chunk size was measured; no
   sweep across chunk sizes or voxel-density ratios was run. Treat the 19x
   figure as a single data point for this exact workload, not a general
   multiplier.
+
+## WASM compiled-size footprint (code size only, not timing)
+
+**Evidence status:** Native-host `wasm32-unknown-unknown` release
+compiles of two new isolated single-mesher binaries in
+`experiments/voxel-comparison/src/bin/`, measured by raw file size and
+generic compressors. **Not** a browser measurement, **not** a
+`wasm-bindgen`/JS-glue size, **not** a measurement of either mesher as
+actually linked into `companions/voxel`'s own `mixed`/`offline` WASM
+artifacts (which also include the renderer, HUD, and net-client code and
+so are not a clean per-mesher split), and **not** a timing or execution
+measurement. It answers only: "how much compiled code size does each
+mesher's own dependency tree add, isolated from everything else, in a
+`wasm32-unknown-unknown` release build on this one host/toolchain."
+
+- Source revision: `7ed1ee9` tree plus two new files added for this
+  measurement: `wasm_footprint_miniquad.rs` (calls only
+  `miniquad_voxel::mesh::build_chunk_mesh` on the workload chunk; no
+  `block_mesh::*` symbol is reachable) and `wasm_footprint_block_mesh.rs`
+  (calls only `block_mesh::visible_block_faces`; no
+  `miniquad_voxel::mesh::*` symbol is reachable), both registered as
+  `[[bin]]` targets in `experiments/voxel-comparison/Cargo.toml`. Neither
+  binary is built by any core/production/CI path — same isolation as
+  `compare`.
+- Toolchain: `rustc 1.99.0 (b940084d7 2026-09-28)`, `wasm32-unknown-unknown`
+  std component, `cargo build --release --target wasm32-unknown-unknown`.
+  Compressors: `gzip -9`, `brotli -q 11` (both system tools, not part of
+  the build output itself).
+- Correctness check (same as the native comparison, re-run against these
+  two binaries natively before trusting the WASM build): both print
+  `quads: 742` when run natively on the identical workload chunk — same
+  output as the paired `compare` binary's quad counts above.
+
+| Binary | Reachable mesher | Raw `.wasm` bytes | gzip -9 bytes | brotli -q11 bytes |
+| --- | --- | ---: | ---: | ---: |
+| `wasm_footprint_miniquad` | `miniquad-voxel build_chunk_mesh` only | 52,255 | 20,061 | 17,231 |
+| `wasm_footprint_block_mesh` | `block-mesh visible_block_faces` only | 44,370 | 16,780 | 14,350 |
+| `compare` (both meshers + timing/formatting) | both | 88,538 | 33,039 | 28,533 |
+
+### Interpretation and limits
+
+- On this one measurement, the isolated `block-mesh` binary's compiled
+  WASM is **smaller** than the isolated `miniquad-voxel` mesher binary
+  (roughly 15% smaller raw, 16-17% smaller compressed) — the opposite
+  direction of a "block-mesh costs more code size" assumption. Plausible
+  structural reason, not separately verified: `wasm_footprint_miniquad`
+  also pulls in `World`/`ChunkCoord`/the hash map used by `World::insert`
+  and `World::is_solid`, where `wasm_footprint_block_mesh` only needs the
+  flat padded array and `block-mesh`'s own `ndshape`/`ilattice` codata;
+  neither binary strips that scaffolding from the comparison, so this is
+  a **"mesher plus its own immediate call path," not a hand-isolated
+  "just the inner loop"** comparison.
+- No `wasm-opt`, `wasm-bindgen`, or dead-code-elimination pass beyond
+  rustc/LLVM's own default release optimization was run — `wasm-opt` is
+  **not installed on this host** (confirmed: `which wasm-opt` found
+  nothing). The real `companions/voxel` `mixed`/`offline`/GL1/GL2 build
+  pipeline's actual post-processing (if any) was not reproduced here, so
+  these absolute byte counts should **not** be read as a prediction of
+  the shipped artifact's size contribution — only as a same-tool,
+  same-flags, apples-to-apples split between the two mesher dependency
+  trees.
+- Both binaries retain a `std`-linked, `println!`-capable runtime (same
+  as `compare`); a `#![no_std]` or `panic = "abort"` + size-focused
+  profile was not tried, so this does not represent a size-minimized
+  build of either path.
+- Single host, single run, no repeated builds to check for
+  reproducibility variance (unlike the timing table above, which uses
+  min/max/stddev over repeated *samples* — here each row is one build's
+  output, not a statistical sample).

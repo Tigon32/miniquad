@@ -1,0 +1,33 @@
+# Isolated benchmark-only crate. Not a Miniquad companion and not
+# built by any production or CI path; it exists only to produce the
+# issue #29 pinned-dependency mesher comparison evidence.
+#
+# `[workspace]` (empty) marks this crate as its own workspace root so
+# it never merges into the repository root's implicit workspace or
+# into `companions/voxel`'s workspace.
+[workspace]
+
+[package]
+name = "voxel-comparison"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "MIT OR Apache-2.0"
+description = """
+Benchmark-only comparison between miniquad-voxel's own bounded
+visible-face mesher and block-mesh-rs's `visible_block_faces` on an
+equivalent workload. See docs/performance-evidence/ for results. Not
+a production or core dependency: see docs/adr/0008-optional-voxel-topologies.md.
+"""
+
+[dependencies]
+miniquad-voxel = { path = "../../companions/voxel" }
+# Pinned to an exact published version: this is a benchmark-only
+# dependency approved for `experiments/voxel-comparison/**` alone, per
+# issue #29's acceptance contract. Never add to a production/core
+# Cargo.toml.
+block-mesh = "=0.2.0"
+
+[[bin]]
+name = "compare"
+path = "src/bin/compare.rs"

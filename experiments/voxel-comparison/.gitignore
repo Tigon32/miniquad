@@ -1,0 +1,6 @@
+/target
+
+# Unlike other Cargo.lock files in this repository, this benchmark's
+# lock file is tracked on purpose: issue #29 requires an exact pinned
+# `block-mesh` version for reproducible comparison evidence.
+!Cargo.lock

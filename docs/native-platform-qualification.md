@@ -28,6 +28,28 @@ The Rust Android backend remains in the source tree.
 7. Add the job behind `workflow_dispatch`.
 8. Do not run an unverified container merely to make a test appear green.
 
+## Linux X11 fullscreen regression
+
+Use an X server with a 1280 by 1024 screen and an EWMH window manager.
+Install `xdotool`, `xprop`, `xwininfo`, and `wmctrl` in the test environment.
+Run:
+
+```sh
+cargo build --example fullscreen_probe
+bash tests/native/x11-fullscreen.sh
+```
+
+The test starts a 640 by 480 window, enters fullscreen, and returns to
+640 by 480. It checks `_NET_WM_STATE` and preserves `_NET_WM_STATE_ABOVE`
+on exit. It closes only its own probe window.
+
+The test passed on Ubuntu 24.04.5 Linux arm64 with Xvfb 21.1.12 and
+Openbox 3.6.1. The same test with `linux_x11.rs` from
+`7593d86b6e0699d6c905058c0008799c3cce39e5` failed: window geometry
+returned to 640 by 480, but `_NET_WM_STATE_ABOVE` was lost.
+Other window managers, Linux x64, GPU rendering, and native Wayland
+are **not tested** by this regression.
+
 The same source and runtime evidence rules apply to other native targets.
 See [security issue #16](https://github.com/Tigon32/miniquad/issues/16) and [release issue #19](https://github.com/Tigon32/miniquad/issues/19).
 

@@ -1303,27 +1303,27 @@ mod tests {
         for ratio in [f64::NAN, f64::INFINITY, -1.0, 0.0, f64::MAX] {
             assert!(backing_size(256, 256, ratio).is_err());
         }
+    }
 
-        #[test]
-        fn surface_sizes_respect_texture_buffer_and_address_limits() {
-            let limits = wgpu::Limits::default();
-            assert!(validate_surface_size((320, 200), &limits).is_ok());
-            assert!(
-                validate_surface_size((limits.max_texture_dimension_2d + 1, 200), &limits).is_err()
-            );
-            assert!(validate_surface_size((0, 200), &limits).is_err());
-            let limits = wgpu::Limits {
-                max_buffer_size: 1024,
-                ..limits
-            };
-            assert!(validate_surface_size((320, 200), &limits).is_err());
-            let limits = wgpu::Limits {
-                max_texture_dimension_2d: u32::MAX,
-                max_buffer_size: u64::MAX,
-                ..limits
-            };
-            assert!(validate_surface_size((u32::MAX, 1), &limits).is_err());
-            assert!(validate_surface_size((1, u32::MAX), &limits).is_err());
-        }
+    #[test]
+    fn surface_sizes_respect_texture_buffer_and_address_limits() {
+        let limits = wgpu::Limits::default();
+        assert!(validate_surface_size((320, 200), &limits).is_ok());
+        assert!(
+            validate_surface_size((limits.max_texture_dimension_2d + 1, 200), &limits).is_err()
+        );
+        assert!(validate_surface_size((0, 200), &limits).is_err());
+        let limits = wgpu::Limits {
+            max_buffer_size: 1024,
+            ..limits
+        };
+        assert!(validate_surface_size((320, 200), &limits).is_err());
+        let limits = wgpu::Limits {
+            max_texture_dimension_2d: u32::MAX,
+            max_buffer_size: u64::MAX,
+            ..limits
+        };
+        assert!(validate_surface_size((u32::MAX, 1), &limits).is_err());
+        assert!(validate_surface_size((1, u32::MAX), &limits).is_err());
     }
 }

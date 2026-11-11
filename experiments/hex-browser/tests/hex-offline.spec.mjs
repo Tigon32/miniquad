@@ -690,7 +690,7 @@ test.describe("offline hex-voxel scene: honest measurements", () => {
             cubicComparison: {
                 available: true,
                 reason:
-                    "a real, paired cubic-vs-hex comparison is recorded by cubic-vs-hex-measurement.spec.mjs in this same private port-4290 tree, which builds and serves the UNCHANGED companions/voxel/examples/offline.rs cubic example on its own route (see build-fixtures.mjs's buildCubicMeasurementFixture and cubic-measurement.html) instead of navigating to the parent-owned port 4173/4174 server. See that spec's JSON artifact for the actual numbers and stated differences (e.g. ChunkDims).",
+                    "an alternating measurement of the actual cubic and hex examples is recorded by cubic-vs-hex-measurement.spec.mjs in this same private port-4290 tree. The cell counts differ; the receipt reports the exact dimensions and does not claim an equal-workload performance comparison.",
                 seeArtifact: "cubic-vs-hex-<project>.json"
             },
             gpuMetricsUnavailable: {

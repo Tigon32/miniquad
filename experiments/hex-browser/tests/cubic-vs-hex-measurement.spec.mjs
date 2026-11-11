@@ -107,8 +107,8 @@ function rangeStats(values) {
     };
 }
 
-test.describe("cubic vs hex: paired/alternating measurement", () => {
-    test("records real paired frame-interval p95/p99 for both scenes, plus exact native mesh/build stats", async ({
+test.describe("cubic vs hex: alternating measurement", () => {
+    test("records frame-interval p95/p99 for both examples and native mesh/build stats", async ({
         page,
         browser
     }, testInfo) => {

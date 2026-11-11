@@ -1,4 +1,5 @@
 import { defineConfig, devices } from "@playwright/test";
+import { shouldIncludeHardwareGpuProject } from "./scripts/playwright-projects.mjs";
 
 const browser = process.env.MINIQUAD_BROWSER;
 const known = ["chromium","firefox","webkit"];
@@ -8,10 +9,11 @@ if (browser && !known.includes(browser)) {
 
 // Issue #145's acceptance test needs a real hardware graphics adapter, not
 // the SwiftShader software rasterizer every other Chromium project forces
-// below. This project is the only one that runs
-// `gpu-timer-query.spec.mjs`; the three software-rasterizer projects
-// explicitly skip it with `testIgnore` so they never claim a GPU result
-// they cannot give. See MADR 0023.
+// below. Opt in with MINIQUAD_HARDWARE_GPU=1 so ordinary CI does not select
+// this project or require its hardware-only WASM examples. This project is
+// the only one that runs `gpu-timer-query.spec.mjs`; the three
+// software-rasterizer projects explicitly skip it with `testIgnore`. See
+// MADR 0023.
 const gpuTimerQuerySpec = "gpu-timer-query.spec.mjs";
 
 export default defineConfig({
@@ -43,7 +45,7 @@ export default defineConfig({
         }:{}
       }
     })),
-    ...((!browser || browser==="chromium") ? [{
+    ...(shouldIncludeHardwareGpuProject(browser, process.env.MINIQUAD_HARDWARE_GPU) ? [{
       name: "chromium-hardware-gpu",
       testMatch: gpuTimerQuerySpec,
       use: {

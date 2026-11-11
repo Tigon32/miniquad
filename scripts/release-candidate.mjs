@@ -821,12 +821,38 @@ export function evaluateGate(record) {
     blocked = true;
     reasons.push("A waiver is recorded; a waiver keeps the result BLOCKED");
   }
-  if (typeof record?.sizes?.brotliTotalDelta !== "number" || !Number.isFinite(record.sizes.brotliTotalDelta)) {
+  // Section 7.6/9.2: the complete baseline/candidate per-compression totals
+  // and their signed deltas must be present and mutually consistent, not
+  // only a bare `brotliTotalDelta` number. A missing/NaN/negative byte
+  // count, or a delta that does not equal candidate minus baseline, must
+  // block instead of silently qualifying. A positive accepted Brotli
+  // increase also needs a non-empty documented reason (section 9.4); an
+  // acceptance flag alone is not sufficient evidence.
+  const SIZE_KEYS = ["rawBytes", "gzipBytes", "brotliBytes"];
+  const sizeTotalsValid = (totals) =>
+    totals !== null && typeof totals === "object" &&
+    SIZE_KEYS.every((key) => Number.isSafeInteger(totals[key]) && totals[key] >= 0);
+  const baselineSizes = record?.sizes?.baseline;
+  const candidateSizes = record?.sizes?.candidate;
+  const deltaSizes = record?.sizes?.deltas;
+  if (!sizeTotalsValid(baselineSizes) || !sizeTotalsValid(candidateSizes)) {
     blocked = true;
-    reasons.push("sizes.brotliTotalDelta is missing or is not a finite number");
-  } else if (record.sizes.brotliTotalDelta > 0 && review.sizeIncreaseAccepted !== true) {
+    reasons.push("sizes.baseline or sizes.candidate is missing a finite non-negative byte count for raw, gzip, or Brotli");
+  } else if (
+    deltaSizes === null || typeof deltaSizes !== "object" ||
+    !SIZE_KEYS.every((key) => Number.isSafeInteger(deltaSizes[key]) && deltaSizes[key] === candidateSizes[key] - baselineSizes[key])
+  ) {
     blocked = true;
-    reasons.push("Size increased without review.sizeIncreaseAccepted");
+    reasons.push("sizes.deltas is missing or is not consistent with candidate minus baseline for raw, gzip, or Brotli bytes");
+  } else if (deltaSizes.brotliBytes > 0) {
+    if (review.sizeIncreaseAccepted !== true) {
+      blocked = true;
+      reasons.push("Size increased without review.sizeIncreaseAccepted");
+    }
+    if (typeof review.sizeIncreaseReason !== "string" || !review.sizeIncreaseReason.trim()) {
+      blocked = true;
+      reasons.push("Size increased without a documented, non-empty review.sizeIncreaseReason");
+    }
   }
 
   const hasReleaseTag = Boolean(record?.existingReleaseTag);
@@ -1308,58 +1334,132 @@ const REQUIRED_WORKFLOWS = [
   { workflow: "Miniquad release candidate", job: "reference" },
 ];
 
+// Fetches every page of a paginated `gh api` list endpoint and merges the
+// pages into one array. Uses `--paginate --slurp` so each page arrives as
+// its own JSON object in an outer array; a later page is never dropped
+// (a failed security job on page 2 of 2 must still be visible). Fails
+// closed (throws) on a transport error, invalid JSON, a page missing the
+// expected array, disagreeing `total_count` values, or a merged item count
+// that does not match the reported `total_count` -- any of these means the
+// evidence is incomplete or untrustworthy, and absent/invalid evidence must
+// never be accepted as a passing required job.
+function fetchPaginatedList(execFileSyncImpl, path, arrayKey) {
+  let raw;
+  try {
+    raw = execFileSyncImpl("gh", [
+      "api", "--hostname", "github.com", "--paginate", "--slurp", path,
+    ]).toString("utf8");
+  } catch (error) {
+    throw new Error(`gh api failed for ${path}: ${error.message}`);
+  }
+  let pages;
+  try {
+    pages = JSON.parse(raw);
+  } catch (error) {
+    throw new Error(`gh api returned invalid JSON for ${path}: ${error.message}`);
+  }
+  if (!Array.isArray(pages)) {
+    throw new Error(`gh api --slurp did not return a page array for ${path}`);
+  }
+  const items = [];
+  let expectedTotal = null;
+  for (const page of pages) {
+    if (!page || typeof page !== "object" || !Array.isArray(page[arrayKey])) {
+      throw new Error(`gh api page for ${path} is missing a "${arrayKey}" array`);
+    }
+    if (typeof page.total_count === "number") {
+      if (expectedTotal === null) expectedTotal = page.total_count;
+      else if (expectedTotal !== page.total_count) {
+        throw new Error(`gh api pages for ${path} disagree on total_count (${expectedTotal} vs ${page.total_count})`);
+      }
+    }
+    items.push(...page[arrayKey]);
+  }
+  if (expectedTotal !== null && items.length !== expectedTotal) {
+    throw new Error(`gh api pagination incomplete for ${path}: expected ${expectedTotal} "${arrayKey}" entries, got ${items.length}`);
+  }
+  return items;
+}
+
 export function collectCi(options, { execFileSyncImpl = execFileSync } = {}) {
   const sha = options.sha;
   if (!isCommitSha(sha)) fail("--sha must be a 40-character lowercase hex commit SHA");
   const results = [];
-  let runsRaw;
+
+  let runs;
   try {
-    runsRaw = execFileSyncImpl("gh", [
-      "api",
-      "--hostname", "github.com",
+    runs = fetchPaginatedList(
+      execFileSyncImpl,
       `repos/Tigon32/miniquad/actions/runs?head_sha=${sha}&per_page=100`,
-    ]).toString("utf8");
+      "workflow_runs",
+    );
   } catch (error) {
     for (const required of REQUIRED_WORKFLOWS) {
-      results.push({ ...required, conclusion: "absent", sha, reason: `gh api failed: ${error.message}` });
+      results.push({ ...required, conclusion: "absent", sha: null, runId: null, jobId: null, url: null, reason: error.message });
     }
     writeOut(options.out, results);
     return results;
   }
-  const runs = JSON.parse(runsRaw).workflow_runs ?? [];
+
   for (const required of REQUIRED_WORKFLOWS) {
     const matching = runs
-      .filter((run) => run.name === required.workflow && run.head_sha === sha &&
-        run.status === "completed" && run.event === "workflow_dispatch" && run.head_branch === "master")
+      .filter((run) => run && run.name === required.workflow && run.head_sha === sha &&
+        run.status === "completed" && run.event === "workflow_dispatch" && run.head_branch === "master" &&
+        isPositiveId(run.id))
       .sort((x, y) => new Date(y.created_at) - new Date(x.created_at));
     const newest = matching[0];
     if (!newest) {
       results.push({ ...required, conclusion: "absent", sha: null, runId: null, jobId: null, url: null });
       continue;
     }
-    let jobsRaw;
+
+    let jobs;
     try {
-      jobsRaw = execFileSyncImpl("gh", ["api", "--hostname", "github.com", `repos/Tigon32/miniquad/actions/runs/${newest.id}/jobs`]).toString("utf8");
+      jobs = fetchPaginatedList(
+        execFileSyncImpl,
+        `repos/Tigon32/miniquad/actions/runs/${newest.id}/jobs?per_page=100`,
+        "jobs",
+      );
     } catch (error) {
       results.push({ ...required, conclusion: "absent", sha: newest.head_sha, runId: newest.id, jobId: null, url: newest.html_url, reason: error.message });
       continue;
     }
-    const jobs = JSON.parse(jobsRaw).jobs ?? [];
-    if (required.job === "all") {
-      const allSuccess = jobs.length > 0 && jobs.every((job) => job.conclusion === "success");
+
+    // Identity binding: a job that is not attached to the run we just
+    // selected (a stale/wrong `run_id`, or a malformed job record with no
+    // `run_id` at all) must never count as evidence for this run.
+    const misattributed = jobs.find((job) => !job || typeof job.run_id !== "number" || job.run_id !== newest.id);
+    if (misattributed) {
       results.push({
         ...required,
-        conclusion: allSuccess ? "success" : (jobs.some((j) => j.conclusion === "failure") ? "failure" : (newest.status === "completed" ? "incomplete" : newest.status)),
+        conclusion: "absent",
+        sha: newest.head_sha,
+        runId: newest.id,
+        jobId: null,
+        url: newest.html_url,
+        reason: misattributed && typeof misattributed === "object" && "id" in misattributed
+          ? `job ${misattributed.id} is attached to run ${misattributed.run_id}, not the collected run ${newest.id}`
+          : `a job record for run ${newest.id} is malformed or missing its run_id`,
+      });
+      continue;
+    }
+
+    const conclusionOf = (job) => (job && job.status === "completed" ? job.conclusion : null);
+    if (required.job === "all") {
+      const allSuccess = jobs.length > 0 && jobs.every((job) => conclusionOf(job) === "success");
+      results.push({
+        ...required,
+        conclusion: allSuccess ? "success" : (jobs.some((j) => conclusionOf(j) === "failure") ? "failure" : (newest.status === "completed" ? "incomplete" : newest.status)),
         sha: newest.head_sha,
         runId: newest.id,
         jobId: jobs.map((j) => j.id),
         url: newest.html_url,
       });
     } else {
-      const job = jobs.find((entry) => entry.name === required.job);
+      const job = jobs.find((entry) => entry?.name === required.job);
       results.push({
         ...required,
-        conclusion: job?.conclusion ?? (newest.status === "completed" ? "incomplete" : newest.status),
+        conclusion: conclusionOf(job) ?? (newest.status === "completed" ? "incomplete" : newest.status),
         sha: newest.head_sha,
         runId: newest.id,
         jobId: job?.id ?? null,

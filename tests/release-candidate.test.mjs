@@ -559,21 +559,21 @@ test("collectCi uses only the newest completed master dispatch for the exact SHA
     const result = collectCi({ sha, out: join(dir, "ci.json") }, {
       execFileSyncImpl(command, args) {
         assert.equal(command, "gh");
-        assert.deepEqual(args.slice(0, 3), ["api", "--hostname", "github.com"]);
-        const path = args[3];
+        assert.deepEqual(args.slice(0, 5), ["api", "--hostname", "github.com", "--paginate", "--slurp"]);
+        const path = args[5];
         calls.push(path);
         if (path.includes("head_sha=")) {
-          return Buffer.from(JSON.stringify({ workflow_runs: [
+          return Buffer.from(JSON.stringify([{ workflow_runs: [
             { ...run, id: 1, created_at: "2026-11-11T00:00:00Z" },
             { ...run, id: 2, created_at: "2026-11-11T01:00:00Z" },
             { ...run, id: 3, created_at: "2026-11-11T02:00:00Z", status: "in_progress" },
             { ...run, id: 4, created_at: "2026-11-11T03:00:00Z", event: "pull_request" },
             { ...run, id: 5, created_at: "2026-11-11T04:00:00Z", head_branch: "other" },
             { ...run, id: 6, created_at: "2026-11-11T05:00:00Z", head_sha: "a".repeat(40) },
-          ] }));
+          ] }]));
         }
-        assert.equal(path, "repos/Tigon32/miniquad/actions/runs/2/jobs");
-        return Buffer.from(JSON.stringify({ jobs: [{ name: "rust-wasm", conclusion: "success", id: 20 }] }));
+        assert.equal(path, "repos/Tigon32/miniquad/actions/runs/2/jobs?per_page=100");
+        return Buffer.from(JSON.stringify([{ jobs: [{ name: "rust-wasm", conclusion: "success", status: "completed", id: 20, run_id: 2 }] }]));
       },
     });
     assert.equal(result[0].runId, 2);
@@ -581,6 +581,126 @@ test("collectCi uses only the newest completed master dispatch for the exact SHA
     assert.equal(result[0].conclusion, "success");
     assert.equal(calls.length, 2);
     assert.ok(result.slice(1).every((entry) => entry.conclusion === "absent"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("collectCi never drops a failed job that is returned only on a later page", () => {
+  const dir = mkdtempSync(join(tmpdir(), "release-ci-test-"));
+  const sha = "c".repeat(40);
+  const run = {
+    name: "Security advisory review", head_sha: sha, status: "completed",
+    event: "workflow_dispatch", head_branch: "master", id: 7, created_at: "2026-11-11T00:00:00Z",
+    html_url: "https://github.com/Tigon32/miniquad/actions/runs/7",
+  };
+  try {
+    const result = collectCi({ sha, out: join(dir, "ci.json") }, {
+      execFileSyncImpl(command, args) {
+        const path = args[5];
+        if (path.includes("head_sha=")) {
+          return Buffer.from(JSON.stringify([{ workflow_runs: [run] }]));
+        }
+        // Two pages of jobs, as gh would return when the job count exceeds
+        // one page: the failing job is only on the second page.
+        return Buffer.from(JSON.stringify([
+          { total_count: 2, jobs: [{ name: "cargo-audit", conclusion: "success", status: "completed", id: 70, run_id: 7 }] },
+          { total_count: 2, jobs: [{ name: "cargo-deny", conclusion: "failure", status: "completed", id: 71, run_id: 7 }] },
+        ]));
+      },
+    });
+    const security = result.find((entry) => entry.workflow === "Security advisory review");
+    assert.equal(security.conclusion, "failure", JSON.stringify(security));
+    assert.deepEqual(security.jobId.sort((a, b) => a - b), [70, 71]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("collectCi fails closed when a job on the collected run belongs to a different run", () => {
+  const dir = mkdtempSync(join(tmpdir(), "release-ci-test-"));
+  const sha = "c".repeat(40);
+  const run = {
+    name: "Miniquad integration CI", head_sha: sha, status: "completed",
+    event: "workflow_dispatch", head_branch: "master", id: 7, created_at: "2026-11-11T00:00:00Z",
+    html_url: "https://github.com/Tigon32/miniquad/actions/runs/7",
+  };
+  try {
+    const result = collectCi({ sha, out: join(dir, "ci.json") }, {
+      execFileSyncImpl(command, args) {
+        const path = args[5];
+        if (path.includes("head_sha=")) {
+          return Buffer.from(JSON.stringify([{ workflow_runs: [run] }]));
+        }
+        // The job claims to belong to a different run (e.g. a cached or
+        // misrouted response); this must never be accepted as evidence.
+        return Buffer.from(JSON.stringify([
+          { jobs: [{ name: "rust-wasm", conclusion: "success", status: "completed", id: 70, run_id: 9 }] },
+        ]));
+      },
+    });
+    const entry = result.find((e) => e.workflow === "Miniquad integration CI");
+    assert.equal(entry.conclusion, "absent");
+    assert.ok(entry.reason && entry.reason.includes("run 9"), JSON.stringify(entry));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("collectCi fails closed on a malformed or incomplete jobs response", () => {
+  const dir = mkdtempSync(join(tmpdir(), "release-ci-test-"));
+  const sha = "c".repeat(40);
+  const run = {
+    name: "Miniquad integration CI", head_sha: sha, status: "completed",
+    event: "workflow_dispatch", head_branch: "master", id: 7, created_at: "2026-11-11T00:00:00Z",
+    html_url: "https://github.com/Tigon32/miniquad/actions/runs/7",
+  };
+  for (const jobsResponse of [
+    [{ total_count: 2, jobs: [{ name: "rust-wasm", conclusion: "success", status: "completed", id: 70, run_id: 7 }] }], // total_count disagrees with actual count
+    [{ notJobs: [] }], // missing the "jobs" array entirely
+    "not json",
+  ]) {
+    try {
+      const result = collectCi({ sha, out: join(dir, "ci.json") }, {
+        execFileSyncImpl(command, args) {
+          const path = args[5];
+          if (path.includes("head_sha=")) {
+            return Buffer.from(JSON.stringify([{ workflow_runs: [run] }]));
+          }
+          return Buffer.from(typeof jobsResponse === "string" ? jobsResponse : JSON.stringify(jobsResponse));
+        },
+      });
+      const entry = result.find((e) => e.workflow === "Miniquad integration CI");
+      assert.equal(entry.conclusion, "absent", JSON.stringify(entry));
+      assert.ok(entry.reason, "a malformed/incomplete jobs response must record an explicit reason");
+    } finally {
+      // no cleanup needed between iterations; directory removed below
+    }
+  }
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("collectCi merges the newest run across multiple pages of the runs list", () => {
+  const dir = mkdtempSync(join(tmpdir(), "release-ci-test-"));
+  const sha = "c".repeat(40);
+  const base = { name: "Miniquad integration CI", head_sha: sha, status: "completed", event: "workflow_dispatch", head_branch: "master" };
+  try {
+    const result = collectCi({ sha, out: join(dir, "ci.json") }, {
+      execFileSyncImpl(command, args) {
+        const path = args[5];
+        if (path.includes("head_sha=")) {
+          // The newest run (by created_at) is returned only on the second page.
+          return Buffer.from(JSON.stringify([
+            { total_count: 2, workflow_runs: [{ ...base, id: 1, created_at: "2026-11-11T00:00:00Z" }] },
+            { total_count: 2, workflow_runs: [{ ...base, id: 2, created_at: "2026-11-11T05:00:00Z", html_url: "https://github.com/Tigon32/miniquad/actions/runs/2" }] },
+          ]));
+        }
+        return Buffer.from(JSON.stringify([{ jobs: [{ name: "rust-wasm", conclusion: "success", status: "completed", id: 20, run_id: 2 }] }]));
+      },
+    });
+    const entry = result.find((e) => e.workflow === "Miniquad integration CI");
+    assert.equal(entry.runId, 2);
+    assert.equal(entry.conclusion, "success");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -680,7 +800,11 @@ function buildValidGateRecord() {
         })])),
       }])),
     },
-    sizes: { brotliTotalDelta: 0 },
+    sizes: {
+      baseline: { rawBytes: 500000, gzipBytes: 180000, brotliBytes: 150000 },
+      candidate: { rawBytes: 500000, gzipBytes: 180000, brotliBytes: 150000 },
+      deltas: { rawBytes: 0, gzipBytes: 0, brotliBytes: 0 },
+    },
     security: { workflowRun: "https://github.com/Tigon32/miniquad/actions/runs/3", openFindings: [], waivers: [] },
     changelog: { hasHeading: true },
     native: { windows: "unqualified", linux: "unqualified", macos: "unqualified", android: "unqualified", ios: "unqualified" },
@@ -937,11 +1061,66 @@ test("evaluateGate gives BLOCKED when more than three regression runs are retain
   assert.equal(result, "BLOCKED");
 });
 
-test("evaluateGate gives BLOCKED when sizes.brotliTotalDelta is missing or not a number", () => {
+test("evaluateGate gives BLOCKED when sizes totals are missing, NaN, negative, or non-integer", () => {
+  for (const change of [
+    (record) => { delete record.sizes.baseline; },
+    (record) => { delete record.sizes.candidate; },
+    (record) => { delete record.sizes.deltas; },
+    (record) => { record.sizes.candidate.brotliBytes = Number.NaN; },
+    (record) => { record.sizes.baseline.gzipBytes = -1; },
+    (record) => { record.sizes.candidate.rawBytes = 500000.5; },
+  ]) {
+    const record = buildValidGateRecord();
+    change(record);
+    const { result, reasons } = evaluateGate(record);
+    assert.equal(result, "BLOCKED", reasons.join("; "));
+  }
+});
+
+test("evaluateGate gives BLOCKED when a size delta is inconsistent with candidate minus baseline", () => {
   const record = buildValidGateRecord();
-  delete record.sizes.brotliTotalDelta;
+  record.sizes.candidate.brotliBytes = 150500;
+  record.sizes.deltas.brotliBytes = 0; // should be +500
   const { result, reasons } = evaluateGate(record);
   assert.equal(result, "BLOCKED", reasons.join("; "));
+});
+
+test("evaluateGate gives QUALIFIED-CANDIDATE when the Brotli total decreased without any acceptance", () => {
+  const record = buildValidGateRecord();
+  record.sizes.candidate.brotliBytes = 149000;
+  record.sizes.deltas.brotliBytes = -1000;
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "QUALIFIED-CANDIDATE", reasons.join("; "));
+});
+
+test("evaluateGate gives BLOCKED when the Brotli total increased and review.sizeIncreaseAccepted is false", () => {
+  const record = buildValidGateRecord();
+  record.sizes.candidate.brotliBytes = 151000;
+  record.sizes.deltas.brotliBytes = 1000;
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "BLOCKED", reasons.join("; "));
+});
+
+test("evaluateGate gives BLOCKED when an accepted Brotli increase has no non-empty rationale", () => {
+  for (const reason of [null, "", "   ", undefined]) {
+    const record = buildValidGateRecord();
+    record.sizes.candidate.brotliBytes = 151000;
+    record.sizes.deltas.brotliBytes = 1000;
+    record.review.sizeIncreaseAccepted = true;
+    record.review.sizeIncreaseReason = reason;
+    const { result, reasons } = evaluateGate(record);
+    assert.equal(result, "BLOCKED", reasons.join("; "));
+  }
+});
+
+test("evaluateGate gives QUALIFIED-CANDIDATE for an accepted Brotli increase with a documented, non-empty rationale", () => {
+  const record = buildValidGateRecord();
+  record.sizes.candidate.brotliBytes = 151000;
+  record.sizes.deltas.brotliBytes = 1000;
+  record.review.sizeIncreaseAccepted = true;
+  record.review.sizeIncreaseReason = "Added a required WebGL fallback shader; accepted by the reviewer.";
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "QUALIFIED-CANDIDATE", reasons.join("; "));
 });
 
 test("gate CLI reports a failing exit code for a BLOCKED record and does not report success", () => {

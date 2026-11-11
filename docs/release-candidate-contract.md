@@ -459,7 +459,12 @@ It is not an absolute objective. It does not describe user devices or mobile bro
 
 Size is deterministic. It has no statistical rule.
 Report per-file and total deltas of raw, gzip, and Brotli bytes.
-If the candidate Brotli total of all payload files is larger than the baseline total, the gate needs `review.sizeIncreaseAccepted: true` and a reason.
+The gate record's `sizes` field holds `baseline` and `candidate` total
+byte counts (`rawBytes`, `gzipBytes`, `brotliBytes`, each a non-negative
+integer) and a `deltas` object with the signed difference
+(`candidate - baseline`) for each of the three counts. A delta that does
+not equal `candidate - baseline` is invalid evidence, not a pass.
+If the candidate Brotli total of all payload files is larger than the baseline total (`deltas.brotliBytes > 0`), the gate needs `review.sizeIncreaseAccepted: true` and a non-empty `review.sizeIncreaseReason` string. An acceptance flag with no documented reason does not qualify.
 The 500 KiB value stays a hypothesis. It is not a gate.
 
 ## 8. Manual workflow
@@ -486,9 +491,11 @@ Run this workflow only for a candidate. Do not run it for each pull request.
 node scripts/release-candidate.mjs collect-ci --sha <candidate sha> --out <absolute new file>
 ```
 
-Use `gh api repos/Tigon32/miniquad/actions/runs?head_sha=<sha>&per_page=100` and the jobs API.
+Use `gh api repos/Tigon32/miniquad/actions/runs?head_sha=<sha>&per_page=100` and the jobs API, with `--paginate --slurp` on both calls so a later page is never dropped (for example, a failed job returned only on page two of a run with many jobs).
+Merge all pages into one list; if a page's `total_count` disagrees with another page's, or the merged item count does not match a reported `total_count`, or a page is missing its array, the evidence is incomplete and the collector must fail closed with an explicit reason, not substitute a partial result.
 For each required job, select the newest completed `workflow_dispatch` run on
 `master` with `head_sha` equal to the candidate SHA.
+Before accepting a job as evidence, confirm its `run_id` equals the selected run's ID; a job attached to a different run, or a job record missing `run_id`, must not be accepted and must fail closed with an explicit reason.
 Record that SHA, the run ID, the job ID, the conclusion, and the URL.
 
 | Workflow name | Job | Required conclusion |
@@ -519,7 +526,7 @@ A skipped, cancelled, pending, or absent job is not a pass.
 | `ci` | Output of `collect-ci`. Each required entry has positive safe-integer `runId` and `jobId` values. An `all` entry has a non-empty list of distinct job IDs. Its URL is `https://github.com/Tigon32/miniquad/actions/runs/<runId>` |
 | `drill` | `{reference, local}`. Each has the result, the profile, and the SHA-256 of `drill.json` |
 | `regression` | `{profileId, runs: [{runId, result, profile}], result, metrics}`. The profile is `gha-ubuntu-24.04-x64-pw1.56.1`. Each run records that profile. Run IDs are distinct positive safe integers written as decimal strings. All runs for the label are listed. The newest run ID equals the collected `Miniquad release candidate` run ID. `metrics` is the `engines` object from the newest `regression.json`, including results, counts, resolution, and all four metric evaluations for each engine |
-| `sizes` | Totals and deltas from section 7.6 |
+| `sizes` | `{baseline, candidate, deltas}` per section 7.6. `baseline` and `candidate` each give non-negative integer `rawBytes`, `gzipBytes`, `brotliBytes` totals. `deltas` gives the signed `candidate - baseline` difference for each of the three counts; an inconsistent delta is invalid evidence |
 | `security` | Workflow run, open applicable findings, and approved risk decisions. `workflowRun` equals the collected `Security advisory review` run URL |
 | `changelog` | `CHANGELOG.md` at `candidateSha` has the heading `## <label>` |
 | `native` | Windows, Linux, macOS, Android, iOS, and other native targets: each `unqualified`, or a link to a separate evidence record |

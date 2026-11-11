@@ -327,12 +327,21 @@ The worker documents each import and export, with its arguments, in `README.md`.
 | Lane | Browser and flags | Rule |
 | --- | --- | --- |
 | `software` | Repository-pinned Playwright Chromium, `--enable-unsafe-webgpu --enable-unsafe-swiftshader --use-angle=swiftshader` | Run all cases. Require `isFallbackAdapter: true`. Label the result **software adapter** |
-| `chromium-default` | Same Chromium, no flags | Record the adapter. If the adapter is null, run only the natural `adapter-unavailable` rejection. If an adapter exists, run T1 to T7 and label the result with the adapter facts. This is not hardware qualification |
-| `firefox-default`, `webkit-default` | Repository-pinned Playwright Firefox and WebKit | If `navigator.gpu` is missing, run only the natural `api-unavailable` rejection. Otherwise record the facts and run T1 to T7 |
-| hardware | Real GPU browsers | **NOT TESTED** in this proof |
+| `chromium-default` | Same Chromium, no flags | Record the adapter. If the API or adapter is unavailable, run only its natural rejection. If an adapter exists, run T1 to T7 and N1 to N5. Label the result with the adapter facts. This is not hardware qualification |
+| `firefox-default`, `webkit-default` | Repository-pinned Playwright Firefox and WebKit | If the API or adapter is unavailable, run only its natural rejection. Otherwise record the facts and run T1 to T7 and N1 to N5 |
+| hardware qualification | Real GPU browsers | The #156 platform policy defines this separate gate |
 
 The first proof uses current tools on macOS with a software adapter.
-Native and hardware results are **NOT TESTED**.
+The runner uses headless mode unless `--headful` is set.
+Use `--lane chromium-default --headful` to observe the default adapter in a browser window.
+Both modes use the same test cases and pixel checks.
+The display scale is emulated at 1. Physical Retina scaling is **NOT TESTED**.
+Headful receipts have a `-headful` suffix. They do not replace headless receipts.
+Record a non-fallback adapter as **OBSERVED, NOT QUALIFIED** when all cases pass,
+or **OBSERVED, FAILED** when a case fails.
+If no non-fallback adapter was observed, record hardware as **NOT TESTED**.
+Do not report a headful focus failure as a pass or weaken its test.
+Native results and unrecorded hardware targets are **NOT TESTED**.
 The hardware and production lanes come from the #156 platform policy, not from this contract.
 
 The lanes use the Playwright version pinned in the root `package.json`.
@@ -357,10 +366,11 @@ The harness writes one JSON receipt for each candidate and lane in `target/webgp
 The receipt does not go into Git. It records:
 
 * contract version, candidate, source SHA, and dirty state;
-* OS, Node, Playwright, browser name and version, and flags;
+* OS, Node, Playwright, browser name and version, flags, and headless mode;
+* emulated display scale and whether a non-fallback adapter was observed;
 * `isSecureContext` and the adapter facts from the instrumentation;
 * the result of each case: `pass`, `rejection-pass`, `fail`, or `not-run`, with the last status;
-* raw, gzip, and Brotli bytes of the built WASM and JavaScript;
+* SHA-256 hashes and raw, gzip, and Brotli bytes of the built WASM and JavaScript;
 * the generated files, the build command, and the tool versions;
 * startup samples to `running`, with their spread, as data only.
 

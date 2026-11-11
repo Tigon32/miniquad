@@ -68,8 +68,6 @@ export function instrument(options) {
         return {
             vendor: String(info.vendor || ""),
             architecture: String(info.architecture || ""),
-            device: String(info.device || ""),
-            description: String(info.description || ""),
             isFallbackAdapter: fallback,
         };
     };

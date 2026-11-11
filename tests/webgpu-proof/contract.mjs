@@ -225,7 +225,7 @@ export function planLane(laneName, observation) {
     if (!observation.adapter) return {cases: [], natural: "adapter-unavailable", problems: [], label: lane.label};
     const label = observation.adapter.isFallbackAdapter === true ? "software adapter (observed)"
         : "adapter observed, not hardware qualification";
-    return {cases: [...RENDER_CASES], natural: null, problems: [], label};
+    return {cases: [...RENDER_CASES, ...INJECTED_CASES], natural: null, problems: [], label};
 }
 
 export function summarize(results) {

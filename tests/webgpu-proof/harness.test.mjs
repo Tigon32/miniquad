@@ -7,7 +7,7 @@ import {
     pixelPositions, planLane, summarize, validateStatus,
 } from "./contract.mjs";
 import { INJECTIONS, instrument } from "./instrumentation.mjs";
-import { comparePlaywright, parseArgs } from "./run-proof.mjs";
+import { comparePlaywright, hardwareObservation, parseArgs, receiptPath } from "./run-proof.mjs";
 import { checkPort, createProofServer, listen, resolveAsset } from "../../scripts/webgpu-proof-serve.mjs";
 
 function status(overrides = {}) {
@@ -115,7 +115,7 @@ test("observation lanes do not require a missing GPU", () => {
     const found = planLane("chromium-default", {api: true, adapter: {isFallbackAdapter: false}});
     assert.equal(found.natural, null);
     assert.deepEqual(found.problems, []);
-    assert.deepEqual(found.cases, ["T1", "T2", "T3", "T4", "T5", "T6", "T7"]);
+    assert.deepEqual(found.cases, ["T1", "T2", "T3", "T4", "T5", "T6", "T7", "N1", "N2", "N3", "N4", "N5"]);
     assert.match(found.label, /not hardware qualification/);
     assert.throws(() => planLane("hardware", {api: true, adapter: null}), /Unknown lane/);
 });
@@ -124,7 +124,8 @@ function fakeBrowser() {
     const listeners = [];
     const device = {destroyed: false, addEventListener: (type, fn) => listeners.push({type, fn}),
         destroy() { this.destroyed = true; }};
-    const adapterInfo = {vendor: "google", architecture: "swiftshader", isFallbackAdapter: true};
+    const adapterInfo = {vendor: "google", architecture: "swiftshader", isFallbackAdapter: true,
+        device: "private device", description: "private description"};
     class GPUAdapter { constructor() { this.info = adapterInfo; } requestDevice() { return Promise.resolve(device); } }
     const adapter = new GPUAdapter();
     class GPU { requestAdapter() { return Promise.resolve(adapter); } }
@@ -152,6 +153,7 @@ test("instrumentation records contexts, adapters, devices, and validation errors
     assert.equal(record.adapterRequests, 1);
     assert.equal(record.adapters[0].isFallbackAdapter, true);
     assert.equal(record.adapters[0].architecture, "swiftshader");
+    assert.deepEqual(Object.keys(record.adapters[0]).sort(), ["architecture", "isFallbackAdapter", "vendor"]);
     assert.equal(context.__mqProofDevices[0], device);
     listeners.find(item => item.type === "uncapturederror").fn({error: {message: "bad bind group"}});
     assert.equal(record.validationErrors[0].message, "bad bind group");
@@ -180,9 +182,25 @@ test("injections are controlled by the harness, not the candidate", async () => 
 
 test("runner arguments select a candidate and a known lane", () => {
     assert.equal(parseArgs(["--candidate", "manual"]).port, 4294);
+    assert.equal(parseArgs(["--candidate", "manual"]).headful, false);
+    assert.equal(parseArgs(["--candidate", "manual", "--headful"]).headful, true);
     assert.equal(parseArgs(["--candidate", "wgpu", "--lane", "webkit-default"]).port, 4295);
     assert.throws(() => parseArgs(["--candidate", "webgl"]), /manual or wgpu/);
     assert.throws(() => parseArgs(["--candidate", "manual", "--lane", "fallback"]), /--lane/);
+});
+
+test("headful receipts do not overwrite headless receipts", () => {
+    const options = parseArgs(["--candidate", "wgpu", "--lane", "chromium-default"]);
+    assert.equal(receiptPath(options, "chromium"), resolve(options.out, "wgpu-chromium-default-chromium.json"));
+    assert.equal(receiptPath({...options, headful: true}, "chromium"),
+        resolve(options.out, "wgpu-chromium-default-chromium-headful.json"));
+});
+
+test("hardware observations distinguish failed runs from unqualified passing runs", () => {
+    assert.equal(hardwareObservation(false, true), "NOT TESTED");
+    assert.equal(hardwareObservation(false, false), "NOT TESTED");
+    assert.equal(hardwareObservation(true, false), "OBSERVED, FAILED");
+    assert.equal(hardwareObservation(true, true), "OBSERVED, NOT QUALIFIED");
 });
 
 test("server maps candidates to their dist folders and rejects other paths", () => {

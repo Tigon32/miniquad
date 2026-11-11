@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Shared browser runner for docs/webgpu-proof-contract.md, version 1.
-// Usage: node tests/webgpu-proof/run-proof.mjs --candidate manual|wgpu --lane <lane> [--port N]
+// Usage: node tests/webgpu-proof/run-proof.mjs --candidate manual|wgpu --lane <lane> [--port N] [--headful]
 // It needs the built candidate in experiments/webgpu-<candidate>/dist/ and @playwright/test.
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -19,19 +20,31 @@ const root = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 const STEP_TIMEOUT = Number(process.env.WEBGPU_PROOF_STEP_TIMEOUT_MS ?? 20000);
 
 export function parseArgs(argv) {
-    const options = {candidate: null, lane: "software", port: null, out: join(root, "target", "webgpu-proof")};
+    const options = {candidate: null, lane: "software", port: null, headful: false,
+        out: join(root, "target", "webgpu-proof")};
     for (let i = 0; i < argv.length; i += 1) {
         const value = argv[i + 1];
         if (argv[i] === "--candidate") { options.candidate = value; i += 1; }
         else if (argv[i] === "--lane") { options.lane = value; i += 1; }
         else if (argv[i] === "--port") { options.port = Number(value); i += 1; }
         else if (argv[i] === "--out") { options.out = resolve(value); i += 1; }
+        else if (argv[i] === "--headful") options.headful = true;
         else throw new Error("Unknown argument: " + argv[i]);
     }
     if (!CANDIDATES.includes(options.candidate)) throw new Error("--candidate must be manual or wgpu");
     if (!LANES[options.lane]) throw new Error("--lane must be one of " + Object.keys(LANES).join(", "));
     options.port ??= DEFAULT_PORTS[options.candidate];
     return options;
+}
+
+export function receiptPath(options, browserName) {
+    return join(options.out, options.candidate + "-" + options.lane + "-" + browserName +
+        (options.headful ? "-headful" : "") + ".json");
+}
+
+export function hardwareObservation(observed, ok) {
+    if (!observed) return "NOT TESTED";
+    return ok ? "OBSERVED, NOT QUALIFIED" : "OBSERVED, FAILED";
 }
 
 class CaseFailure extends Error {
@@ -306,7 +319,8 @@ function artifactSizes(candidate) {
             if (statSync(path).isDirectory()) walk(path);
             else if (/\.(?:wasm|m?js)$/u.test(name)) {
                 const data = readFileSync(path);
-                files.push({file: relative(root, path), raw: data.byteLength,
+                files.push({file: relative(root, path), sha256: createHash("sha256").update(data).digest("hex"),
+                    raw: data.byteLength,
                     gzip: gzipSync(data, {level: 9}).byteLength, brotli: brotliCompressSync(data).byteLength});
             }
         }
@@ -352,11 +366,17 @@ export async function runLane(options) {
     const playwright = await import("@playwright/test");
     const server = createProofServer();
     await listen(server, options.port);
-    const browser = await playwright[lane.browser].launch({headless: true, args: [...lane.flags]});
+    const browser = await playwright[lane.browser].launch({headless: !options.headful, args: [...lane.flags]})
+        .catch(async error => {
+            await new Promise(done => server.close(done));
+            throw error;
+        });
     const receipt = {
         contract: CONTRACT, candidate: options.candidate, lane: options.lane, checkedAt: new Date().toISOString(),
         source: sourceState(), os: {platform: platform(), release: release(), arch: arch()},
-        node: process.version, browser: {name: lane.browser, version: browser.version(), flags: [...lane.flags]},
+        node: process.version, browser: {name: lane.browser, version: browser.version(), flags: [...lane.flags],
+            headless: !options.headful},
+        display: {deviceScaleFactor: 1, emulated: true}, adapterInfo: null, nonFallbackAdapterObserved: false,
         playwright: playwrightState(), hardware: "NOT TESTED", results: [], startupMs: [],
     };
     if (!receipt.playwright.matchesPin) {
@@ -372,6 +392,8 @@ export async function runLane(options) {
         const record = await probe.proof.record();
         await probe.page.close();
         const adapter = record.adapters.find(item => item) ?? null;
+        receipt.adapterInfo = adapter;
+        receipt.nonFallbackAdapterObserved = adapter?.isFallbackAdapter === false;
         receipt.secureContext = probe.host.secure;
         receipt.observation = {api: probe.host.api, adapter, firstPhase: first?.phase ?? null,
             firstError: first?.error ?? null};
@@ -397,12 +419,13 @@ export async function runLane(options) {
         }
         await context.close();
     } finally {
-        await browser.close();
-        await new Promise(done => server.close(done));
+        try { await browser.close(); }
+        finally { await new Promise(done => server.close(done)); }
     }
     try { receipt.artifacts = artifactSizes(options.candidate); }
     catch (error) { receipt.artifacts = {error: error.message}; }
     receipt.summary = summarize(receipt.results);
+    receipt.hardware = hardwareObservation(receipt.nonFallbackAdapterObserved, receipt.summary.ok);
     return receipt;
 }
 
@@ -410,11 +433,11 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
     const options = parseArgs(process.argv.slice(2));
     const receipt = await runLane(options);
     mkdirSync(options.out, {recursive: true});
-    const file = join(options.out, options.candidate + "-" + options.lane + "-" + receipt.browser.name + ".json");
+    const file = receiptPath(options, receipt.browser.name);
     writeFileSync(file, JSON.stringify(receipt, null, 2) + "\n");
     for (const result of receipt.results) {
         console.log(result.id.padEnd(22) + result.result.padEnd(16) + (result.problems[0] ?? ""));
     }
-    console.log("Label: " + receipt.label + "; hardware: NOT TESTED; receipt: " + relative(root, file));
+    console.log("Label: " + receipt.label + "; hardware: " + receipt.hardware + "; receipt: " + relative(root, file));
     if (!receipt.summary.ok) process.exitCode = 1;
 }

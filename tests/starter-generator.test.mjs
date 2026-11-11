@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
 import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -49,6 +50,42 @@ function fakeExecFileSync({ hasCargo = true, hasRustup = true, hasWasmTarget = t
     }
     if (command === "git") {
       throw new Error("not a git checkout in this fake");
+    }
+    throw new Error(`unexpected command in fake: ${command}`);
+  };
+}
+
+// The reviewed, immutable, publicly available commit that
+// DEFAULT_BASELINE_REV in scripts/create-browser-project.mjs must
+// resolve to when a caller runs `--source git` without `--rev`. It is
+// the first revision on Tigon32/miniquad with all five required
+// browser files present (merged #125, browser-tested in #126/#127).
+const EXPECTED_DEFAULT_REV = "f837a98d415262320a8c66ef9f8024d8f2faeab1";
+// The old reviewed baseline, pre-adoption-layer. It predates the
+// browser adoption layer and has only `js/gl.js`; a default
+// `--source git` generation pinned to it always failed. Kept here as
+// a named regression fixture, not as a current default.
+const PRE_ADOPTION_REV = "454792c46febefc476e1df153a5efed8bbb2ef79";
+
+// Runs `git` for real (against this checkout's own object store, which
+// this test relies on already containing both fixture revisions
+// above), while still faking `cargo`/`rustup` so the test does not
+// depend on a Rust toolchain being installed.
+function realGitFakeToolchain({ hasWasmTarget = true } = {}) {
+  return (command, args, options) => {
+    if (command === "git") {
+      return execFileSync(command, args, options);
+    }
+    if (command === "cargo") {
+      return "cargo 1.99.0";
+    }
+    if (command === "rustup") {
+      if (args[0] === "target" && args[1] === "list") {
+        return hasWasmTarget
+          ? "wasm32-unknown-unknown (installed)\n"
+          : "x86_64-apple-darwin (installed)\n";
+      }
+      return "";
     }
     throw new Error(`unexpected command in fake: ${command}`);
   };
@@ -325,6 +362,94 @@ test("resolveMiniquadSource in git mode rejects a resolved revision that is not 
         ),
       /not a full 40-character commit SHA/
     );
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+// Regression test for a default `--source git` generation that always
+// failed: DEFAULT_BASELINE_REV used to be the pre-adoption-layer
+// commit, which is missing four of the five required browser files.
+// This test proves the default now resolves to a commit that has all
+// five, against this checkout's real object store (no network fetch,
+// no fixture stand-ins), and would still fail against the old default.
+test("resolveMiniquadSource + readRequiredWebAssets: the old pre-adoption default revision is missing required browser assets", () => {
+  assert.throws(
+    () => {
+      const source = resolveMiniquadSource(
+        { source: "git", rev: PRE_ADOPTION_REV, gitRepo: REPO_ROOT },
+        { execFileSyncImpl: realGitFakeToolchain() }
+      );
+      readRequiredWebAssets(source);
+    },
+    (error) => {
+      assert.ok(error instanceof GeneratorError);
+      assert.match(error.message, /miniquad\.mjs/);
+      assert.match(error.message, /runtime\.html/);
+      assert.match(error.message, /runtime\.mjs/);
+      assert.match(error.message, /host-preferences\.mjs/);
+      assert.doesNotMatch(error.message, /gl\.js/);
+      return true;
+    }
+  );
+});
+
+test("generateProject with --source git and no --rev resolves the new default revision, which has every required browser asset", () => {
+  const scratch = makeScratchDir("default-git-");
+  const destinationDir = join(scratch, "project");
+  try {
+    const result = generateProject(
+      destinationDir,
+      { source: "git", gitRepo: REPO_ROOT, name: "default-git-demo" },
+      { execFileSyncImpl: realGitFakeToolchain() }
+    );
+
+    // The resolved dependency must be the named, reviewed default, not
+    // a floating "master"/"HEAD" and not the old pre-adoption baseline
+    // that caused the regression this test guards against.
+    assert.match(result.source, new RegExp(EXPECTED_DEFAULT_REV));
+    const cargoToml = readFileSync(join(destinationDir, "Cargo.toml"), "utf8");
+    assert.match(
+      cargoToml,
+      new RegExp(
+        `git = "https://github\\.com/Tigon32/miniquad\\.git", rev = "${EXPECTED_DEFAULT_REV}"`
+      )
+    );
+
+    const manifest = JSON.parse(
+      readFileSync(join(destinationDir, "web", "MANIFEST.json"), "utf8")
+    );
+    assert.equal(manifest.source.mode, "git");
+    assert.equal(manifest.source.sha, EXPECTED_DEFAULT_REV);
+    assert.equal(manifest.source.dirty, false);
+    assert.equal(manifest.files.length, 5);
+
+    // Compare every copied asset byte-for-byte against `git show` at the
+    // pinned revision (not only a recorded hash constant), so a
+    // generator defect that substituted, truncated, or re-encoded a
+    // same-named file would still fail this test.
+    const expectedAssetPaths = {
+      "gl.js": "js/gl.js",
+      "miniquad.mjs": "js/miniquad.mjs",
+      "runtime.html": "js/runtime.html",
+      "runtime.mjs": "js/runtime.mjs",
+      "host-preferences.mjs": "js/host-preferences.mjs",
+    };
+    for (const [outName, sourcePath] of Object.entries(expectedAssetPaths)) {
+      const expectedBytes = execFileSync(
+        "git",
+        ["-C", REPO_ROOT, "show", `${EXPECTED_DEFAULT_REV}:${sourcePath}`],
+        { stdio: "pipe" }
+      );
+      const actualBytes = readFileSync(join(destinationDir, "web", outName));
+      assert.ok(
+        actualBytes.equals(expectedBytes),
+        `${outName} bytes must match git show ${EXPECTED_DEFAULT_REV}:${sourcePath}`
+      );
+      const manifestEntry = manifest.files.find((entry) => entry.file === outName);
+      assert.ok(manifestEntry, `manifest is missing ${outName}`);
+      assert.equal(manifestEntry.bytes, expectedBytes.length);
+    }
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }

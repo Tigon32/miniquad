@@ -9,7 +9,7 @@
 //
 //   node scripts/create-browser-project.mjs <destination> \
 //     --source git --git-url https://github.com/Tigon32/miniquad.git \
-//     --rev 454792c46febefc476e1df153a5efed8bbb2ef79 \
+//     --rev f837a98d415262320a8c66ef9f8024d8f2faeab1 \
 //     --git-repo /abs/path/to/local/clone
 //
 // The destination directory must not already exist. The generator
@@ -32,14 +32,25 @@ const THIS_FILE = fileURLToPath(import.meta.url);
 const REPO_ROOT = dirname(dirname(THIS_FILE));
 const TEMPLATES_ROOT = join(REPO_ROOT, "templates", "browser");
 const WASM_TARGET = "wasm32-unknown-unknown";
-const DEFAULT_BASELINE_REV = "454792c46febefc476e1df153a5efed8bbb2ef79";
+// `454792c46febefc476e1df153a5efed8bbb2ef79` was the reviewed baseline
+// before the browser adoption layer landed; it has only `js/gl.js` and
+// is missing the other four files in REQUIRED_WEB_ASSETS below, so a
+// default `--source git` generation with no `--rev` always failed.
+// `f837a98d415262320a8c66ef9f8024d8f2faeab1` is the first reviewed,
+// immutable, publicly available revision on `Tigon32/miniquad` with
+// all five files present (merged #125, browser-tested in #127: 18
+// starter cases across Chromium, Firefox, and desktop WebKit). Keep
+// this pinned to one named, reviewed commit; never default to a
+// floating ref such as `master` or `HEAD`, because that would let the
+// generator silently start reading unreviewed future commits.
+const DEFAULT_BASELINE_REV = "f837a98d415262320a8c66ef9f8024d8f2faeab1";
 const DEFAULT_GIT_URL = "https://github.com/Tigon32/miniquad.git";
 
-// Files the embedding module needs. `js/gl.js` already exists in the
-// source revision. The other four are part of the browser adoption
-// layer proposed in MADR 0009 and land through separate integration
-// work; until they exist, project generation fails with an
-// actionable, itemized error instead of producing a broken output.
+// Files the embedding module needs. All five exist in
+// DEFAULT_BASELINE_REV above and in every later reviewed revision.
+// `readRequiredWebAssets` still fails with an actionable, itemized
+// error if a caller points `--rev`/`--miniquad-path` at an older or
+// unrelated revision that is missing any of them.
 const REQUIRED_WEB_ASSETS = [
   "js/gl.js",
   "js/miniquad.mjs",

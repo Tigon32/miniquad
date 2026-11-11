@@ -347,8 +347,7 @@ pub fn pick_hex(
     let mut steps: u32 = 0;
     let start_point = add3(ray.origin, scale3(ray.dir, t));
     let mut cell_q_r = {
-        let layer = layer_at_y(start_point[1], params.min_layer, params.max_layer);
-        let cell = hex_cell_at_xz(start_point[0], start_point[2], layer)
+        let cell = hex_cell_at_xz(start_point[0], start_point[2], params.min_layer)
             .map_err(|_| HexPickError::InvalidParams)?;
         (cell.q(), cell.r())
     };
@@ -398,13 +397,9 @@ pub fn pick_hex(
         let mut layer_t = t;
         let mut current_entry_face = entry_face;
         let p = add3(ray.origin, scale3(ray.dir, layer_t));
-        let mut layer = layer_at_y(p[1], params.min_layer, params.max_layer);
-        if dy < 0.0
-            && layer > params.min_layer
-            && (p[1] - layer as f64 * LAYER_HEIGHT).abs() <= 1e-9
-        {
-            layer -= 1;
-        }
+        let Some(mut layer) = layer_at_y(p[1], dy, params.min_layer, params.max_layer) else {
+            return Ok(None);
+        };
         loop {
             if layer_t > column_t_out + 1e-9 || steps >= params.max_steps {
                 break;
@@ -467,11 +462,20 @@ pub fn pick_hex(
     Ok(None)
 }
 
-/// Clamps a world `y` value to the layer index it falls in, within
-/// `[min_layer, max_layer]`.
-fn layer_at_y(y: f64, min_layer: i32, max_layer: i32) -> i32 {
-    let layer = (y / LAYER_HEIGHT).floor() as i64;
-    layer.clamp(min_layer as i64, max_layer as i64) as i32
+/// Selects the layer the ray moves into. Do not clamp an outward ray
+/// to a solid layer it does not enter.
+fn layer_at_y(y: f64, dy: f64, min_layer: i32, max_layer: i32) -> Option<i32> {
+    let fractional = y / LAYER_HEIGHT;
+    let layer = if dy < 0.0 {
+        fractional.ceil() - 1.0
+    } else {
+        fractional.floor()
+    };
+    if layer >= min_layer as f64 && layer <= max_layer as f64 {
+        Some(layer as i32)
+    } else {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -720,6 +724,25 @@ mod tests {
             assert_eq!(hit.cell, HexCell::new(0, 0, 1).unwrap());
             assert_eq!(hit.face, Some(face));
             assert_eq!(hit.distance, distance);
+        }
+    }
+
+    #[test]
+    fn rays_leaving_the_layer_slab_do_not_hit_a_clamped_boundary_cell() {
+        for (layer, origin_y, direction_y) in [(0, 0.0, -1.0), (3, 4.0, 1.0)] {
+            let world = world_with_cell(HexCell::new(0, 0, layer).unwrap());
+            let ray = HexRay {
+                origin: [0.0, origin_y, 0.0],
+                dir: [0.0, direction_y, 0.0],
+            };
+            assert_eq!(pick_hex(&world, &ray, &pick_params()).unwrap(), None);
+            let inward = HexRay {
+                dir: [0.0, -direction_y, 0.0],
+                ..ray
+            };
+            let hit = pick_hex(&world, &inward, &pick_params()).unwrap().unwrap();
+            assert_eq!(hit.cell, HexCell::new(0, 0, layer).unwrap());
+            assert_eq!(hit.distance, 0.0);
         }
     }
 

@@ -109,32 +109,43 @@ mod tests {
 
     #[test]
     fn neighbor_delta_table_matches_3d_side_faces() {
-        use miniquad_voxel::hex::HexFace;
+        use miniquad_voxel::hex::{HexFace, HEX_COORD_MAX, HEX_COORD_MIN};
 
         // Contract section 1.10: the origin, both interior samples
-        // `(-3, 2)` and `(7, -5)`, and both ends of the shared
-        // `HEX_COORD_MIN..=HEX_COORD_MAX` bound.
-        let base_cells = [(0, 0), (-3, 2), (7, -5), (-65_536, 0), (65_535, 0)];
+        // `(-3, 2)` and `(7, -5)`, and both diagonally opposite
+        // corner cells of the shared `HEX_COORD_MIN..=HEX_COORD_MAX`
+        // bound: `(MIN, MAX)` and `(MAX, MIN)`.
+        let base_cells = [
+            (0, 0),
+            (-3, 2),
+            (7, -5),
+            (HEX_COORD_MIN, HEX_COORD_MAX),
+            (HEX_COORD_MAX, HEX_COORD_MIN),
+        ];
 
         for (q, r) in base_cells {
             let origin_2d = HexCoord::new(q, r).expect("base coordinate is in bounds");
             let origin_3d = HexCell::new(q, r, 0).expect("base coordinate is in bounds");
 
             for (k, face) in HexFace::SIDES.iter().enumerate() {
-                let neighbor_2d = match origin_2d.neighbor(k) {
-                    Ok(neighbor) => neighbor,
-                    Err(_) => continue,
-                };
-                let neighbor_3d = match origin_3d.neighbor(*face) {
-                    Ok(neighbor) => neighbor,
-                    Err(_) => continue,
-                };
+                let result_2d = origin_2d.neighbor(k);
+                let result_3d = origin_3d.neighbor(*face);
 
-                assert_eq!(
-                    (neighbor_2d.q(), neighbor_2d.r()),
-                    (neighbor_3d.q(), neighbor_3d.r()),
-                    "2D side {k} neighbor of ({q}, {r}) disagrees with 3D face {face:?}"
-                );
+                // Both crates must agree on whether a side neighbor
+                // overflows the shared bound, not just on the value
+                // when both happen to succeed.
+                match (result_2d, result_3d) {
+                    (Err(_), Err(_)) => {}
+                    (Ok(neighbor_2d), Ok(neighbor_3d)) => assert_eq!(
+                        (neighbor_2d.q(), neighbor_2d.r()),
+                        (neighbor_3d.q(), neighbor_3d.r()),
+                        "2D side {k} neighbor of ({q}, {r}) disagrees with 3D face {face:?}"
+                    ),
+                    (result_2d, result_3d) => panic!(
+                        "2D side {k} neighbor of ({q}, {r}) disagrees on validity with 3D \
+                         face {face:?}: 2D {result_2d:?} vs 3D {result_3d:?}"
+                    ),
+                }
             }
         }
     }

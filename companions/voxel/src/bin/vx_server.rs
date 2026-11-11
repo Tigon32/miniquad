@@ -112,7 +112,8 @@ fn encode_delta_response(state: &ServerState, seq: u32, client_rev: u32) -> Vec<
         .filter(|c| c.rev_after > client_rev)
         .map(|c| c.command)
         .collect();
-    let mut out = vec![0u8; protocol::HEADER_LEN + 6 + commands.len() * protocol::COMMAND_RECORD_LEN];
+    let mut out =
+        vec![0u8; protocol::HEADER_LEN + 6 + commands.len() * protocol::COMMAND_RECORD_LEN];
     let n = protocol::encode_delta(
         &mut out,
         state.world_id,
@@ -386,10 +387,7 @@ fn main() {
     // Report the actual bound port (not the requested one), so a test
     // harness can request port 0 (OS-assigned) and still discover the
     // live port from stdout.
-    let actual_port = listener
-        .local_addr()
-        .map(|a| a.port())
-        .unwrap_or(port);
+    let actual_port = listener.local_addr().map(|a| a.port()).unwrap_or(port);
     println!("vx-server: listening on 127.0.0.1:{actual_port} (world_id={world_id})");
     let mut state = ServerState::new(world_id);
     for incoming in listener.incoming() {
@@ -458,14 +456,7 @@ mod tests {
     fn duplicate_seq_returns_cached_response_without_reapplying() {
         let mut state = ServerState::new(7);
         let mut req = vec![0u8; protocol::HEADER_LEN + 2 + protocol::COMMAND_RECORD_LEN];
-        protocol::encode_inputs(
-            &mut req,
-            7,
-            1,
-            0,
-            &[Command::SetSpeed { milli: 500 }],
-        )
-        .unwrap();
+        protocol::encode_inputs(&mut req, 7, 1, 0, &[Command::SetSpeed { milli: 500 }]).unwrap();
         let first = handle_frame(&mut state, &req);
         let rev_after_first = state.sim.rev();
         let second = handle_frame(&mut state, &req);

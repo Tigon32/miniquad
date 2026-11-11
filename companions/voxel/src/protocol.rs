@@ -44,7 +44,7 @@ impl Kind {
         }
     }
 
-    fn to_byte(self) -> u8 {
+    pub fn to_byte(self) -> u8 {
         match self {
             Kind::Hello => 1,
             Kind::Inputs => 2,
@@ -192,9 +192,7 @@ fn decode_command_record(b: &[u8]) -> Result<Command, CodecError> {
             if id != 0 || y != 0 || z != 0 {
                 return Err(CodecError::UnknownKind);
             }
-            Ok(Command::SetSpeed {
-                milli: x as u16,
-            })
+            Ok(Command::SetSpeed { milli: x as u16 })
         }
         _ => Err(CodecError::UnknownKind),
     }
@@ -240,7 +238,9 @@ pub fn decode_inputs(body: &[u8]) -> Result<Vec<Command>, CodecError> {
     let mut commands = Vec::with_capacity(count);
     for i in 0..count {
         let start = 2 + i * COMMAND_RECORD_LEN;
-        commands.push(decode_command_record(&body[start..start + COMMAND_RECORD_LEN])?);
+        commands.push(decode_command_record(
+            &body[start..start + COMMAND_RECORD_LEN],
+        )?);
     }
     Ok(commands)
 }
@@ -480,7 +480,9 @@ pub fn decode_delta(body: &[u8]) -> Result<(u32, Vec<Command>), CodecError> {
     let mut commands = Vec::with_capacity(count);
     for i in 0..count {
         let start = 6 + i * COMMAND_RECORD_LEN;
-        commands.push(decode_command_record(&body[start..start + COMMAND_RECORD_LEN])?);
+        commands.push(decode_command_record(
+            &body[start..start + COMMAND_RECORD_LEN],
+        )?);
     }
     Ok((base_rev, commands))
 }

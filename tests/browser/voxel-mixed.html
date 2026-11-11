@@ -77,10 +77,32 @@
         const ptr = exports().vx_net_out_ptr();
         return new Uint8Array(memory().buffer, ptr, len).slice();
       }
+      // Wire protocol `Kind` byte values (see
+      // `companions/voxel/src/protocol.rs`'s `Kind::to_byte`/
+      // `ErrorCode`): not re-exported as JS constants, so named here
+      // for the one decision `onFrame` needs to make.
+      const FRAME_KIND_ERROR = 18;
+      const ERROR_CODE_VERSION = 1;
+
       function onFrame(frame) {
         const ptr = exports().vx_net_in_ptr();
         new Uint8Array(memory().buffer, ptr, frame.length).set(frame);
-        exports().vx_net_in_commit(frame.length);
+        const result = exports().vx_net_in_commit(frame.length);
+        if (result === 0) {
+          // A frame was actually decoded and answered by the server:
+          // tell the poller so, or it never reports anything but
+          // "connecting" on the success path (`reportOnline`/
+          // `reportVersionError` are never called from anywhere
+          // else), leaving `NET_STATUS_SET` false forever and
+          // `Stage::update`'s offline branch applying every queued
+          // input locally instead of over the wire.
+          const kind = exports().vx_net_last_frame_kind();
+          if (kind === FRAME_KIND_ERROR && exports().vx_net_last_error_code() === ERROR_CODE_VERSION) {
+            client.reportVersionError();
+          } else {
+            client.reportOnline();
+          }
+        }
         refreshRevisionText();
       }
       function onStatus(status) {

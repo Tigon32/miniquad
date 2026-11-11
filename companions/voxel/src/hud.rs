@@ -255,9 +255,24 @@ pub fn chip_rect(geo: &Geometry, x0: f32, y0: f32) -> (f32, f32, f32, f32) {
 /// Returns `None` for `Status::Offline` ("offline chip not drawn").
 pub fn chip_color(status: Status) -> Option<[f32; 4]> {
     match status {
-        Status::Online => Some([0x5F as f32 / 255.0, 0xD3 as f32 / 255.0, 0x8D as f32 / 255.0, 1.0]),
-        Status::Connecting => Some([0xFF as f32 / 255.0, 0xC2 as f32 / 255.0, 0x4B as f32 / 255.0, 1.0]),
-        Status::VersionError => Some([0xFF as f32 / 255.0, 0x6B as f32 / 255.0, 0x6B as f32 / 255.0, 1.0]),
+        Status::Online => Some([
+            0x5F as f32 / 255.0,
+            0xD3 as f32 / 255.0,
+            0x8D as f32 / 255.0,
+            1.0,
+        ]),
+        Status::Connecting => Some([
+            0xFF as f32 / 255.0,
+            0xC2 as f32 / 255.0,
+            0x4B as f32 / 255.0,
+            1.0,
+        ]),
+        Status::VersionError => Some([
+            0xFF as f32 / 255.0,
+            0x6B as f32 / 255.0,
+            0x6B as f32 / 255.0,
+            1.0,
+        ]),
         Status::Offline => None,
         Status::None => None,
     }
@@ -266,7 +281,12 @@ pub fn chip_color(status: Status) -> Option<[f32; 4]> {
 /// Panel fill color: black, alpha 0.85 (straight alpha).
 pub const PANEL_COLOR: [f32; 4] = [0.0, 0.0, 0.0, 0.85];
 /// Glyph fill color: opaque near-white.
-pub const GLYPH_COLOR: [f32; 4] = [0xF2 as f32 / 255.0, 0xF2 as f32 / 255.0, 0xF2 as f32 / 255.0, 1.0];
+pub const GLYPH_COLOR: [f32; 4] = [
+    0xF2 as f32 / 255.0,
+    0xF2 as f32 / 255.0,
+    0xF2 as f32 / 255.0,
+    1.0,
+];
 
 #[cfg(test)]
 mod tests {
@@ -393,9 +413,15 @@ mod tests {
         // A narrow viewport should still fit by shrinking H, not by
         // disappearing immediately.
         let geo = compute_geometry(1.0, 180.0, 60.0);
-        assert!(geo.is_some(), "a narrow-but-plausible viewport should shrink, not hide");
+        assert!(
+            geo.is_some(),
+            "a narrow-but-plausible viewport should shrink, not hide"
+        );
         let geo = geo.unwrap();
-        assert!(geo.h < 16.0, "glyph height must have shrunk from the default");
+        assert!(
+            geo.h < 16.0,
+            "glyph height must have shrunk from the default"
+        );
         assert!(geo.h >= MIN_GLYPH_HEIGHT_DEVICE_PX);
     }
 
@@ -423,6 +449,9 @@ mod tests {
         let panel_alpha = PANEL_COLOR[3];
         let composited = backdrop * (1.0 - panel_alpha); // panel is black
         let glyph = GLYPH_COLOR[0];
-        assert!(glyph > composited * 7.0, "glyph must clear a 7:1-like contrast floor");
+        assert!(
+            glyph > composited * 7.0,
+            "glyph must clear a 7:1-like contrast floor"
+        );
     }
 }

@@ -153,8 +153,7 @@ impl Sim {
             if !SCENE_CHUNK_COORDS.contains(&coord) {
                 return Err(SimError::OutOfScene);
             }
-            let mut chunk =
-                Chunk::new(SCENE_CHUNK_DIMS).map_err(|_| SimError::OutOfScene)?;
+            let mut chunk = Chunk::new(SCENE_CHUNK_DIMS).map_err(|_| SimError::OutOfScene)?;
             let expected_volume = SCENE_CHUNK_DIMS
                 .volume()
                 .expect("fixed scene dims are valid") as usize;
@@ -175,7 +174,9 @@ impl Sim {
                     }
                 }
             }
-            world.insert(coord, chunk).map_err(|_| SimError::OutOfScene)?;
+            world
+                .insert(coord, chunk)
+                .map_err(|_| SimError::OutOfScene)?;
         }
         if speed_milli > MAX_SPEED_MILLI {
             return Err(SimError::SpeedOutOfRange);
@@ -208,16 +209,11 @@ impl Sim {
                 {
                     return Err(SimError::UnknownMaterial);
                 }
-                let (coord, local) =
-                    resolve_scene_voxel(x, y, z).ok_or(SimError::OutOfScene)?;
+                let (coord, local) = resolve_scene_voxel(x, y, z).ok_or(SimError::OutOfScene)?;
                 // Clone-then-commit keeps `apply` from ever leaving the
                 // world in a partially written state if a later check
                 // were added above this line.
-                let mut chunk = self
-                    .world
-                    .get(coord)
-                    .cloned()
-                    .ok_or(SimError::OutOfScene)?;
+                let mut chunk = self.world.get(coord).cloned().ok_or(SimError::OutOfScene)?;
                 chunk
                     .set(local.0, local.1, local.2, id)
                     .map_err(|_| SimError::OutOfScene)?;
@@ -331,7 +327,12 @@ mod tests {
     fn load_snapshot_round_trips_a_sibling_sims_world_exactly() {
         let mut source = Sim::new_scene();
         source
-            .apply(Command::SetVoxel { x: 0, y: 0, z: 0, id: 0 })
+            .apply(Command::SetVoxel {
+                x: 0,
+                y: 0,
+                z: 0,
+                id: 0,
+            })
             .unwrap();
         source.apply(Command::SetSpeed { milli: 1500 }).unwrap();
 
@@ -391,7 +392,12 @@ mod tests {
         let mut sim = Sim::new_scene();
         let bytes = vec![0u8; 4];
         let err = sim
-            .load_snapshot(SCENE_SEED, 1000, 1, &[(SCENE_CHUNK_COORDS[0], 1, 1, 4, &bytes)])
+            .load_snapshot(
+                SCENE_SEED,
+                1000,
+                1,
+                &[(SCENE_CHUNK_COORDS[0], 1, 1, 4, &bytes)],
+            )
             .unwrap_err();
         assert_eq!(err, SimError::OutOfScene);
     }
@@ -550,7 +556,11 @@ mod tests {
     #[test]
     fn apply_rejects_at_u32_max_rev_even_for_an_otherwise_valid_set_voxel() {
         let mut sim = sim_at_rev(u32::MAX);
-        let before = sim.world().get(ChunkCoord::new(0, 0, 0)).unwrap().get(0, 0, 0);
+        let before = sim
+            .world()
+            .get(ChunkCoord::new(0, 0, 0))
+            .unwrap()
+            .get(0, 0, 0);
         // Picks a material guaranteed to differ from whatever
         // `terrain::generate_chunk` placed at (0,0,0), so a real
         // write (if one incorrectly happened) would be observable.

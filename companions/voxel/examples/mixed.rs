@@ -49,7 +49,7 @@ use miniquad_voxel::mesh::{build_chunk_mesh, MeshBuffers, Vertex as VoxelVertex}
 use miniquad_voxel::protocol;
 use miniquad_voxel::sim::{Command, Sim, SCENE_CHUNK_COORDS, SCENE_CHUNK_DIMS};
 use miniquad_voxel::terrain::PALETTE;
-use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU8, Ordering};
 use std::sync::Mutex;
 
 // ---------------------------------------------------------------------
@@ -67,8 +67,15 @@ static NET_OUT_BUF: Mutex<[u8; NET_BUF_LEN]> = Mutex::new([0; NET_BUF_LEN]);
 
 /// One decoded inbound frame, applied by `Stage::update`.
 enum Inbound {
-    Snapshot { rev: u32, snapshot: protocol::Snapshot },
-    Delta { base_rev: u32, rev: u32, commands: Vec<Command> },
+    Snapshot {
+        rev: u32,
+        snapshot: protocol::Snapshot,
+    },
+    Delta {
+        base_rev: u32,
+        rev: u32,
+        commands: Vec<Command>,
+    },
     Error(protocol::ErrorCode),
 }
 
@@ -93,6 +100,20 @@ static PENDING_INPUTS: Mutex<Vec<Command>> = Mutex::new(Vec::new());
 /// HUD mode until that happens (see `Stage::hud_state`).
 static NET_STATUS: AtomicU8 = AtomicU8::new(0);
 static NET_STATUS_SET: AtomicBool = AtomicBool::new(false);
+
+/// The `Kind` byte (wire value: `16` Snapshot, `17` Delta, `18`
+/// Error) of the most recently *successfully decoded* inbound frame,
+/// and (for `Error` frames only) its `ErrorCode` value, else `0`. The
+/// host reads these right after a `vx_net_in_commit` call that
+/// returned `0`, to decide which `voxel-host.mjs` status transition
+/// (`reportOnline`/`reportVersionError`) applies: there is no other
+/// signal that an exchange actually reached and was answered by the
+/// server, so without this, `voxel-host.mjs`'s `onStatus` (and thus
+/// `NET_STATUS_SET`) would never fire on the success path and
+/// `Stage::update`'s offline branch would keep applying every input
+/// locally even while fully connected.
+static LAST_FRAME_KIND: AtomicU8 = AtomicU8::new(0);
+static LAST_ERROR_CODE: AtomicU16 = AtomicU16::new(0);
 
 /// Client request sequence and last-applied revision, per the
 /// protocol's "sequence and revision rules".
@@ -231,11 +252,33 @@ pub extern "C" fn vx_net_in_commit(len: u32) -> i32 {
     };
     let decoded = match header.kind {
         protocol::Kind::Snapshot => match protocol::decode_snapshot(body) {
-            Ok(snapshot) => Inbound::Snapshot { rev: header.rev, snapshot },
+            Ok(snapshot) => {
+                // Adopt the server-assigned `world_id` from its first
+                // real reply: `Hello` requests are sent with world_id
+                // 0 (the client has no world yet), but every
+                // subsequent `Inputs` request must carry the value the
+                // server actually assigned, or the server's
+                // `header.world_id != state.world_id` check rejects
+                // every one of them with `ErrorCode::World` forever
+                // (a `Hello`/`World`-reject loop that never applies a
+                // single command).
+                CLIENT_WORLD_ID.store(header.world_id, Ordering::Relaxed);
+                Inbound::Snapshot {
+                    rev: header.rev,
+                    snapshot,
+                }
+            }
             Err(_) => return 1,
         },
         protocol::Kind::Delta => match protocol::decode_delta(body) {
-            Ok((base_rev, commands)) => Inbound::Delta { base_rev, rev: header.rev, commands },
+            Ok((base_rev, commands)) => {
+                CLIENT_WORLD_ID.store(header.world_id, Ordering::Relaxed);
+                Inbound::Delta {
+                    base_rev,
+                    rev: header.rev,
+                    commands,
+                }
+            }
             Err(_) => return 1,
         },
         protocol::Kind::Error => match protocol::decode_error(body) {
@@ -244,9 +287,35 @@ pub extern "C" fn vx_net_in_commit(len: u32) -> i32 {
         },
         _ => return 1,
     };
+    LAST_FRAME_KIND.store(header.kind.to_byte(), Ordering::Relaxed);
+    LAST_ERROR_CODE.store(
+        if let Inbound::Error(code) = &decoded {
+            *code as u16
+        } else {
+            0
+        },
+        Ordering::Relaxed,
+    );
     *mailbox = Some(decoded);
     INBOUND_APPLIED.store(false, Ordering::Relaxed);
     0
+}
+
+/// The `Kind` byte of the most recently successfully decoded inbound
+/// frame (`16` Snapshot, `17` Delta, `18` Error), or `0` if none has
+/// been decoded yet this session. See `LAST_FRAME_KIND`'s doc comment
+/// for why the host needs this.
+#[no_mangle]
+pub extern "C" fn vx_net_last_frame_kind() -> u32 {
+    LAST_FRAME_KIND.load(Ordering::Relaxed) as u32
+}
+
+/// The `ErrorCode` value of the most recently decoded `Error` frame
+/// (see `protocol::ErrorCode`), or `0` if the most recently decoded
+/// frame was not an `Error`.
+#[no_mangle]
+pub extern "C" fn vx_net_last_error_code() -> u32 {
+    LAST_ERROR_CODE.load(Ordering::Relaxed) as u32
 }
 
 /// Writes the next request (`Hello` or `Inputs`) into the outbound
@@ -260,7 +329,9 @@ pub extern "C" fn vx_net_build_request() -> u32 {
     let mut out = NET_OUT_BUF.lock().unwrap();
     let world_id = CLIENT_WORLD_ID.load(Ordering::Relaxed);
     if !HAVE_SNAPSHOT.load(Ordering::Relaxed) {
-        return protocol::encode_hello(&mut out[..], 0).map(|n| n as u32).unwrap_or(0);
+        return protocol::encode_hello(&mut out[..], 0)
+            .map(|n| n as u32)
+            .unwrap_or(0);
     }
     let seq = CLIENT_SEQ.load(Ordering::Relaxed) + 1;
     let rev = SIM.lock().unwrap().as_ref().map(|s| s.rev()).unwrap_or(0);
@@ -342,13 +413,23 @@ pub extern "C" fn vx_column_height(x: i32, z: i32) -> i32 {
 
 #[no_mangle]
 pub extern "C" fn vx_state_hash_lo() -> u32 {
-    let hash = SIM.lock().unwrap().as_ref().map(|s| s.state_hash()).unwrap_or(0);
+    let hash = SIM
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|s| s.state_hash())
+        .unwrap_or(0);
     (hash & 0xFFFF_FFFF) as u32
 }
 
 #[no_mangle]
 pub extern "C" fn vx_state_hash_hi() -> u32 {
-    let hash = SIM.lock().unwrap().as_ref().map(|s| s.state_hash()).unwrap_or(0);
+    let hash = SIM
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|s| s.state_hash())
+        .unwrap_or(0);
     (hash >> 32) as u32
 }
 
@@ -697,7 +778,11 @@ impl Stage {
             hud_vertex_capacity: HUD_MAX_QUADS * HUD_VERTICES_PER_QUAD,
             hud_last_string: String::new(),
             camera: OrbitCamera::new(
-                Vec3::new(world_center_x, (SCENE_CHUNK_DIMS.y as f32) * 0.4, world_center_z),
+                Vec3::new(
+                    world_center_x,
+                    (SCENE_CHUNK_DIMS.y as f32) * 0.4,
+                    world_center_z,
+                ),
                 22.0,
                 0.6,
                 0.5,
@@ -725,7 +810,8 @@ impl Stage {
             self.ctx.delete_buffer(mesh.vertex_buffer);
             self.ctx.delete_buffer(mesh.index_buffer);
         }
-        self.ctx.delete_buffer(self.sprite_bindings.vertex_buffers[0]);
+        self.ctx
+            .delete_buffer(self.sprite_bindings.vertex_buffers[0]);
         self.ctx.delete_buffer(self.sprite_bindings.index_buffer);
         self.ctx.delete_buffer(self.hud_bindings.vertex_buffers[0]);
         self.ctx.delete_buffer(self.hud_bindings.index_buffer);
@@ -747,7 +833,11 @@ impl Stage {
                     HAVE_SNAPSHOT.store(true, Ordering::Relaxed);
                     self.dirty = true;
                 }
-                Inbound::Delta { base_rev, rev, commands } => {
+                Inbound::Delta {
+                    base_rev,
+                    rev,
+                    commands,
+                } => {
                     if let Some(sim) = sim_guard.as_mut() {
                         if base_rev == sim.rev() {
                             for command in commands {
@@ -910,7 +1000,8 @@ impl EventHandler for Stage {
         if self.dragging {
             let (last_x, last_y) = self.last_mouse;
             let (dx, dy) = (x - last_x, y - last_y);
-            self.camera.rotate(dx * DRAG_SENSITIVITY, -dy * DRAG_SENSITIVITY);
+            self.camera
+                .rotate(dx * DRAG_SENSITIVITY, -dy * DRAG_SENSITIVITY);
             self.last_mouse = (x, y);
         }
     }
@@ -960,10 +1051,22 @@ impl EventHandler for Stage {
             world_center_z + (t as f32).sin() * radius,
         );
         let model = Mat4([
-            1.0, 0.0, 0.0, 0.0, //
-            0.0, 1.0, 0.0, 0.0, //
-            0.0, 0.0, 1.0, 0.0, //
-            sprite_pos.x, sprite_pos.y, sprite_pos.z, 1.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0, //
+            0.0,
+            1.0,
+            0.0,
+            0.0, //
+            0.0,
+            0.0,
+            1.0,
+            0.0, //
+            sprite_pos.x,
+            sprite_pos.y,
+            sprite_pos.z,
+            1.0,
         ]);
         let mvp = view_projection.mul(&model);
         self.ctx.apply_pipeline(&self.sprite_pipeline);
@@ -981,8 +1084,12 @@ impl EventHandler for Stage {
         let clip = view_projection.transform_point(sprite_pos);
         let ndc_x = clip.0 / clip.3;
         let ndc_y = clip.1 / clip.3;
-        let px = ((ndc_x * 0.5 + 0.5) * self.screen_size.0).round().clamp(0.0, 65535.0) as u32;
-        let py = ((1.0 - (ndc_y * 0.5 + 0.5)) * self.screen_size.1).round().clamp(0.0, 65535.0) as u32;
+        let px = ((ndc_x * 0.5 + 0.5) * self.screen_size.0)
+            .round()
+            .clamp(0.0, 65535.0) as u32;
+        let py = ((1.0 - (ndc_y * 0.5 + 0.5)) * self.screen_size.1)
+            .round()
+            .clamp(0.0, 65535.0) as u32;
         SPRITE_PIXEL.store((px << 16) | py, Ordering::Relaxed);
 
         // HUD drawn last.
@@ -1010,7 +1117,10 @@ impl Stage {
         };
         let hud_text = self.hud_string();
         let (_, status) = hud_mode_and_status();
-        let rebuild_key = format!("{}|{:?}|{}x{}", hud_text, status, self.screen_size.0, self.screen_size.1);
+        let rebuild_key = format!(
+            "{}|{:?}|{}x{}",
+            hud_text, status, self.screen_size.0, self.screen_size.1
+        );
         if rebuild_key == self.hud_last_string {
             // Still draw with the existing buffer contents; only the
             // upload is skipped when nothing changed.
@@ -1018,24 +1128,42 @@ impl Stage {
             self.hud_last_string = rebuild_key;
             let verts = build_hud_vertices(&geo, geo.m, geo.m, &hud_text, status);
             if verts.len() <= self.hud_vertex_capacity {
-                self.ctx.buffer_update(self.hud_bindings.vertex_buffers[0], BufferSource::slice(&verts));
+                self.ctx.buffer_update(
+                    self.hud_bindings.vertex_buffers[0],
+                    BufferSource::slice(&verts),
+                );
             }
         }
 
         let (w, h) = self.screen_size;
         // Orthographic, physical pixels, origin top-left.
         let ortho = Mat4([
-            2.0 / w, 0.0, 0.0, 0.0, //
-            0.0, -2.0 / h, 0.0, 0.0, //
-            0.0, 0.0, 1.0, 0.0, //
-            -1.0, 1.0, 0.0, 1.0,
+            2.0 / w,
+            0.0,
+            0.0,
+            0.0, //
+            0.0,
+            -2.0 / h,
+            0.0,
+            0.0, //
+            0.0,
+            0.0,
+            1.0,
+            0.0, //
+            -1.0,
+            1.0,
+            0.0,
+            1.0,
         ]);
         self.ctx.apply_pipeline(&self.hud_pipeline);
         self.ctx.apply_bindings(&self.hud_bindings);
         self.ctx
-            .apply_uniforms(UniformsSource::table(&shader::HudUniforms { projection: ortho.0 }));
+            .apply_uniforms(UniformsSource::table(&shader::HudUniforms {
+                projection: ortho.0,
+            }));
         let quad_count = hud_quad_count(&hud_text, status);
-        self.ctx.draw(0, (quad_count * HUD_INDICES_PER_QUAD) as i32, 1);
+        self.ctx
+            .draw(0, (quad_count * HUD_INDICES_PER_QUAD) as i32, 1);
     }
 }
 
@@ -1054,15 +1182,30 @@ fn hud_quad_count(text: &str, status: Status) -> usize {
 
 /// Builds the panel + chip + glyph-segment quads for the HUD, in
 /// device pixels, with `x0`/`y0` as the panel's top-left corner.
-fn build_hud_vertices(geo: &Geometry, x0: f32, y0: f32, text: &str, status: Status) -> Vec<HudVertex> {
+fn build_hud_vertices(
+    geo: &Geometry,
+    x0: f32,
+    y0: f32,
+    text: &str,
+    status: Status,
+) -> Vec<HudVertex> {
     let mut verts = Vec::new();
-    push_quad(&mut verts, x0, y0, geo.panel_width, geo.panel_height, hud::PANEL_COLOR);
+    push_quad(
+        &mut verts,
+        x0,
+        y0,
+        geo.panel_width,
+        geo.panel_height,
+        hud::PANEL_COLOR,
+    );
     if let Some(color) = hud::chip_color(status) {
         let (cx, cy, cw, ch) = hud::chip_rect(geo, x0, y0);
         push_quad(&mut verts, cx, cy, cw, ch, color);
     }
     for (i, ch) in text.chars().enumerate() {
-        let Some(mask) = hud::glyph_mask(ch) else { continue };
+        let Some(mask) = hud::glyph_mask(ch) else {
+            continue;
+        };
         let (gx, gy, gw, gh) = hud::glyph_rect(geo, x0, y0, i);
         push_glyph_segments(&mut verts, gx, gy, gw, gh, geo.t, mask);
     }
@@ -1071,14 +1214,31 @@ fn build_hud_vertices(geo: &Geometry, x0: f32, y0: f32, text: &str, status: Stat
 
 fn push_quad(verts: &mut Vec<HudVertex>, x: f32, y: f32, w: f32, h: f32, color: [f32; 4]) {
     verts.push(HudVertex { pos: [x, y], color });
-    verts.push(HudVertex { pos: [x + w, y], color });
-    verts.push(HudVertex { pos: [x + w, y + h], color });
-    verts.push(HudVertex { pos: [x, y + h], color });
+    verts.push(HudVertex {
+        pos: [x + w, y],
+        color,
+    });
+    verts.push(HudVertex {
+        pos: [x + w, y + h],
+        color,
+    });
+    verts.push(HudVertex {
+        pos: [x, y + h],
+        color,
+    });
 }
 
 /// Draws the subset of the seven segments set in `mask` as thin
 /// quads, each `t` device pixels thick, within a `w x h` glyph cell.
-fn push_glyph_segments(verts: &mut Vec<HudVertex>, x: f32, y: f32, w: f32, h: f32, t: f32, mask: hud::GlyphMask) {
+fn push_glyph_segments(
+    verts: &mut Vec<HudVertex>,
+    x: f32,
+    y: f32,
+    w: f32,
+    h: f32,
+    t: f32,
+    mask: hud::GlyphMask,
+) {
     let color = hud::GLYPH_COLOR;
     let half = h / 2.0;
     // a: top horizontal
@@ -1114,6 +1274,12 @@ fn push_glyph_segments(verts: &mut Vec<HudVertex>, x: f32, y: f32, w: f32, h: f3
 fn main() {
     let conf = conf::Conf {
         window_title: "miniquad-voxel mixed".to_owned(),
+        // `Conf::default()`'s `high_dpi` is `false` (CSS-pixel-sized
+        // framebuffer, stretched by the browser on a Retina/high-DPR
+        // display): the HUD spec's "draw in physical pixels" and this
+        // slice's DPR1/DPR2 acceptance both need a real physical
+        // backing store, so this must opt in explicitly.
+        high_dpi: true,
         #[cfg(feature = "webgl2")]
         platform: conf::Platform {
             webgl_version: conf::WebGLVersion::WebGL2,
@@ -1265,7 +1431,10 @@ mod column_height_tests {
         };
         let reported = vx_column_height(8, 4);
         assert_eq!(reported, expected);
-        assert!(reported >= 0, "the real scene must have terrain under x=8,z=4");
+        assert!(
+            reported >= 0,
+            "the real scene must have terrain under x=8,z=4"
+        );
 
         *SIM.lock().unwrap() = None;
     }

@@ -51,8 +51,7 @@ fn start_server(world_id: u32) -> ServerProcess {
 }
 
 fn send_raw(port: u16, frame: &[u8], extra_headers: &str) -> (String, Vec<u8>) {
-    let mut stream =
-        TcpStream::connect(("127.0.0.1", port)).expect("connect to vx-server");
+    let mut stream = TcpStream::connect(("127.0.0.1", port)).expect("connect to vx-server");
     stream
         .set_read_timeout(Some(Duration::from_secs(3)))
         .unwrap();
@@ -82,7 +81,8 @@ fn hello_frame(seq: u32) -> Vec<u8> {
 }
 
 fn inputs_frame(world_id: u32, seq: u32, rev: u32, commands: &[SimCommand]) -> Vec<u8> {
-    let mut out = vec![0u8; protocol::HEADER_LEN + 2 + commands.len() * protocol::COMMAND_RECORD_LEN];
+    let mut out =
+        vec![0u8; protocol::HEADER_LEN + 2 + commands.len() * protocol::COMMAND_RECORD_LEN];
     let n = protocol::encode_inputs(&mut out, world_id, seq, rev, commands).unwrap();
     out.truncate(n);
     out

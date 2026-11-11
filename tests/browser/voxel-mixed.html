@@ -25,6 +25,7 @@
   -->
   <div id="scene" style="width: 800px; height: 500px"></div>
   <div id="status" role="status" aria-live="polite"></div>
+  <div id="revision" aria-live="polite">no snapshot yet</div>
   <label>
     Sprite speed
     <input id="speed" type="range" min="0" max="2" step="0.1" value="1">
@@ -43,6 +44,7 @@
     // `window.wireVoxelMixedHost` so the owning spec controls exactly
     // when wiring starts (after `app.ready`), rather than racing it.
     import { createVoxelNetClient, VoxelNetStatus } from "/voxel-host.mjs";
+    import { formatHostRevision } from "/voxel-revision.mjs";
 
     const statusText = {
       [VoxelNetStatus.CONNECTING]: "Connecting to the server.",
@@ -56,6 +58,19 @@
       const exports = () => win.miniquadRuntime.exports;
       const memory = () => win.wasm_memory;
 
+      // Full, uncapped host revision text (distinct from the drawn
+      // HUD's six-digit cell, which caps display at `rEEEEEE` for
+      // rev >= 1_000_000): read after every status change and after
+      // every applied frame, since `vx_world_rev()`/`vx_has_snapshot()`
+      // only change as a side effect of `vx_net_in_commit`.
+      function refreshRevisionText() {
+        const el = document.querySelector("#revision");
+        if (!el) return;
+        const hasSnapshot = exports().vx_has_snapshot() !== 0;
+        const rawRev = exports().vx_world_rev();
+        el.textContent = formatHostRevision(hasSnapshot, rawRev);
+      }
+
       function buildRequest() {
         const len = exports().vx_net_build_request();
         if (len === 0) return null;
@@ -66,13 +81,16 @@
         const ptr = exports().vx_net_in_ptr();
         new Uint8Array(memory().buffer, ptr, frame.length).set(frame);
         exports().vx_net_in_commit(frame.length);
+        refreshRevisionText();
       }
       function onStatus(status) {
         const codes = { connecting: 0, online: 1, offline: 2, "version-error": 3 };
         exports().vx_net_set_status(codes[status]);
         const el = document.querySelector("#status");
         if (el) el.textContent = statusText[status] ?? status;
+        refreshRevisionText();
       }
+
 
       const client = createVoxelNetClient({ url: syncUrl, buildRequest, onFrame, onStatus });
 

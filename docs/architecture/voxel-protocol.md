@@ -67,6 +67,7 @@ Protocol errors use HTTP `200` with an `Error` frame. HTTP parser errors use `40
 | `vx_net_set_status(code: u32) -> i32` | Host transport state for the HUD: 0 connecting, 1 online, 2 offline, 3 version error. |
 | `vx_input(op, id, x, y, z) -> i32` | The same trace entry point in both modes. Offline applies the input in the next `update`. Mixed queues it, up to 64 entries. |
 | `vx_state_hash_lo/hi() -> u32`, `vx_world_rev() -> u32` | Semantic parity probes. |
+| `vx_has_snapshot() -> u32` | Whether `vx_world_rev()` reflects an actual applied snapshot yet (`0`/`1`). Mirrors the HUD's own gate on the same flag; the host's full revision text (`voxel-revision.mjs`) uses it to distinguish "no snapshot yet" from a real revision of `0`. |
 | `vx_sprite_pixel() -> u32` | Sprite centre in canvas pixels as `x << 16 \| y`. |
 | `vx_release_gpu()`, `vx_resources_live() -> u32` | Explicit GPU release protocol. |
 
@@ -81,7 +82,7 @@ The host retries after 250 ms × 2^n, at most 4 s. It uses `AbortController` wit
 
 `Sim::apply` checks `rev.checked_add(1)` before any other check or mutation. At `rev == u32::MAX`, every command (even an otherwise valid one) is rejected with `SimError::RevisionOverflow`, mapped to the wire `Error` frame's `ErrorCode::Rejected` (7) exactly like every other rejection. `rev` never wraps back to `0`: it stays monotonically increasing, or the `Sim` stops changing.
 
-The HUD's six-digit revision cell shows `------` before the first snapshot, the zero-padded decimal value for `rev` in `0..=999_999`, and `EEEEEE` for `rev >= 1_000_000` (`hud::classify_revision`). This is a **display** limit only, not a transport error: the host's semantic status text always carries the full, true `u32` revision (read via the WASM export's return value, reinterpreted unsigned with `>>> 0` on the JS side).
+The HUD's six-digit revision cell shows `------` before the first snapshot, the zero-padded decimal value for `rev` in `0..=999_999`, and `EEEEEE` for `rev >= 1_000_000` (`hud::classify_revision`). This is a **display** limit only, not a transport error: the host's semantic status text always carries the full, true `u32` revision (read via the WASM export's return value, reinterpreted unsigned with `>>> 0` on the JS side). `companions/voxel/web/voxel-revision.mjs` implements this host-side formatting (`toUnsignedU32`, `formatHostRevision`); `tests/voxel-revision.test.mjs` covers its boundaries (`None`, `0`, `42`, `999999`, `1000000`, and the `0xFFFFFFFF -> 4294967295` conversion) as pure Node tests, deliberately not as a million-edit browser run.
 
 ## Rendering and GPU resources
 

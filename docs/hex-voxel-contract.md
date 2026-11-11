@@ -279,6 +279,9 @@ pub fn pick_hex(world: &World, ray: &HexRay, params: &HexPickParams)
 `hex_cell_at_xz` returns the cell whose center is nearest to `(x, z)`.
 Hex cells are the nearest-center regions of the center lattice, so this is exact inside a cell.
 Calculate fractional axial values, round to a candidate, then compare the candidate and its 6 neighbors by squared distance.
+Use the analytic lattice in `f64`: center `(1.5·q, (2·r+q)·√3/2)`.
+Do not use the rounded `f32` mesh centers or normals for this calculation or the walk.
+Mesh rounding must not change an analytic edge or vertex tie.
 **Tie rule A:** at equal distance (a point on an edge or a vertex), select the smallest `(q, r)` in lexicographic order.
 A non-finite input or a cell outside the bound gives `CoordinateOutOfRange`.
 

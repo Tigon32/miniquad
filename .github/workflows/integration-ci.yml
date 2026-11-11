@@ -75,6 +75,8 @@ jobs:
           node scripts/create-browser-project.mjs "$RUNNER_TEMP/miniquad-browser-starter" --source path --miniquad-path "$GITHUB_WORKSPACE" --name miniquad-browser-starter
           node "$RUNNER_TEMP/miniquad-browser-starter/scripts/build.mjs"
           echo "MINIQUAD_STARTER_PATH=$RUNNER_TEMP/miniquad-browser-starter" >> "$GITHUB_ENV"
+      - name: Build a Git-pinned generated drawing consumer
+        run: node experiments/draw-starter-consumption/generate-fixture.mjs
       - name: Save Cargo package cache before browser checks
         if: steps.cargo-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -140,6 +142,13 @@ jobs:
             npm run test:browser
           else
             npm run test:browser:chromium
+          fi
+      - name: Test the generated drawing consumer
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            npx playwright test --config experiments/draw-starter-consumption/playwright.config.mjs
+          else
+            MINIQUAD_BROWSER=chromium npx playwright test --config experiments/draw-starter-consumption/playwright.config.mjs
           fi
       - name: Store revision-specific size and timing baseline receipts
         if: always()

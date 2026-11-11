@@ -213,9 +213,8 @@ read it together with the earlier sections. Source branch:
 `chore/toolchain-maintenance-completion` from `master` at
 `7593d86b6e0699d6c905058c0008799c3cce39e5`, reviewed 2026-11-11.
 
-**Evidence status:** source- and registry-observed review, plus one
-isolated-container Nix evaluation (`nix-instantiate`, not a full
-`nix-shell` build) for the pinned `shell.nix` expression only. No
+**Evidence status:** source- and registry-observed review, plus isolated
+Nix evaluation and a successful `nix-shell` entry on Linux arm64. No
 native backend migration, Metal parity fix, or default-backend change
 is made or claimed by this addendum. No runtime or hardware
 qualification is claimed from this review.
@@ -232,13 +231,18 @@ the current Nixpkgs stable release branch on 2026-11-11 (checked
 against the [NixOS/nixpkgs branch list](https://github.com/NixOS/nixpkgs/branches)
 and the [Nix download page](https://nixos.org/download/), which
 reports Nix `2.35.4` as the current package-manager release). The file
-documents the update method so a reviewer can re-pin it to a later
-reviewed revision.
+links to this update method. To update the pin:
+
+1. Select and review a commit from an official Nixpkgs release branch.
+2. Run `nix-prefetch-url --unpack --type sha256 <tarball-url>`.
+3. Convert the result with `nix --extra-experimental-features nix-command hash convert --to sri --hash-algo sha256 <base32-hash>`.
+4. Update both values in `shell.nix`. Record the source and review here.
+5. Run `nix-instantiate shell.nix` and `nix-shell --pure shell.nix --run "cargo --version"`.
 
 The `buildInputs` package set (`rustc`, `cargo`, `libGL`, `xorg.libX11`,
-`xorg.libXi`, `libxkbcommon`) and the `shellHook` are unchanged. No
-package version, derivation output, or shell behavior is asserted to
-have changed; only the input source became explicit and reproducible.
+`xorg.libXi`, `libxkbcommon`) and the `shellHook` are unchanged.
+Resolved package versions now depend on the pinned revision and target
+system, not a local channel. This does not change the core library MSRV.
 
 **Correction (same slice, before delivery):** an earlier version of
 this pin used `sha256 = "29da24390fcc...8259c09bc31"`, a plain
@@ -246,9 +250,7 @@ this pin used `sha256 = "29da24390fcc...8259c09bc31"`, a plain
 `builtins.fetchTarball`'s `sha256` checks the hash of the **unpacked
 NAR** (Nix Archive) of the tree, not the compressed tarball bytes;
 those are two different hashes, and the raw-tarball value fails. That
-wrong value was replaced before any evaluation evidence existed, so no
-prior "passed" claim is being retracted here — this is the first and
-only evaluation result recorded for this pin.
+wrong value was replaced before delivery.
 
 **Test status: verified, with isolated-container evidence.** No
 `nix`/`nix-shell`/`nix-build`/`nix-prefetch-url` executable and no
@@ -294,12 +296,13 @@ from the host is exposed.
   `xorg.libX11`→`libx11` and `xorg.libXi`→`libxi` (old attribute names
   still resolve; `buildInputs` was not changed, since renaming package
   attributes is outside this hash-correction fix).
-* Not run: an actual `nix-shell --pure shell.nix --run "cargo
-  --version"` shell *build* (compiling `rustc`/`cargo` and the X11/GL
-  libraries from this pinned revision) was not attempted in this
-  session; it is a materially longer build than the instantiation
-  check above and was not required to prove the hash fix. Record this
-  as a remaining, undone verification step, not a passed build.
+* **Full shell entry passed:** a second isolated run used the same
+  image digest and the final `shell.nix`, mounted read-only.
+  `nix-shell --pure /work/shell.nix --run 'cargo --version'` fetched
+  the pinned shell inputs from `https://cache.nixos.org`, entered the
+  shell, and returned `cargo 1.95.0 (f2d3ce0bd 2026-03-21)`.
+  This ran on Linux arm64. Other Nix host systems and an application
+  build inside the shell are **not tested**.
 * The isolated container and bind mount were removed (`--rm`); no
   state persists outside this record.
 
@@ -332,12 +335,11 @@ that default or to the `AppleGfxApi` selector.
 [Issue #142](https://github.com/Tigon32/miniquad/issues/142),
 [#143](https://github.com/Tigon32/miniquad/issues/143), and
 [#144](https://github.com/Tigon32/miniquad/issues/144) were re-checked
-on 2026-11-11 with `gh issue view`: all three remain **OPEN**. They
-record source-observed Metal backend gaps (missing texture formats and
-raw-texture support, ignored `base_element`/primitive/index-type/clear
-arguments, and missing object release on delete) with native runtime
-marked **not tested**. Draft MADR 0016 (proposed in [#156](https://github.com/Tigon32/miniquad/issues/156),
-not yet merged to `master` or accepted) already states this same gate:
+on 2026-11-11. Issue #144 is now closed after PR #166 merged as
+`8a96be961ba5f26a55d969c3343e400d77a1d931`. Its eight real-Metal resource
+tests passed on macOS arm64. Issues #142 and #143 remain **OPEN** for
+texture and draw/pass gaps. Draft MADR 0016 (proposed in [#156](https://github.com/Tigon32/miniquad/issues/156),
+not accepted) states this same gate:
 do not make Metal the default before #142, #143, and #144 pass on real
 hardware. This addendum does not accept MADR 0016; it only confirms,
 from the current issue tracker state, that its stated prerequisite

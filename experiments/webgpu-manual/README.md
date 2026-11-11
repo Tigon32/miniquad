@@ -44,7 +44,7 @@ node tests/webgpu-proof/run-proof.mjs --candidate manual --lane software
 The harness serves `experiments/webgpu-manual/dist/` and drives the page
 with Playwright.
 
-## Toolchain and environment actually used
+## Historical software-lane toolchain and environment
 
 - Rust/Cargo: `cargo 1.99.0 (5f94df478 2026-08-27)` / `rustc 1.99.0
   (b940084d7 2026-09-28)`, invoked as `~/.cargo/bin/cargo` (a `rustup`
@@ -93,9 +93,9 @@ rebuild and harness run below:
    this Playwright version was already present in the local Playwright
    browser cache; no browser download was needed.
 
-## Commands run and results
+## Historical software-lane commands and results
 
-Full command sequence for the **final** state (dispose fix +
+Full command sequence for that software-lane checkpoint (dispose fix +
 master merge + Playwright-pin cherry-pick + fresh release rebuild +
 fresh harness run), run in this order:
 
@@ -411,14 +411,17 @@ A second bug of the same kind was caught by the same harness run:
 `mapped.byteLength` after calling `unmap()` always read `0`; the readback
 byte length is now captured before `unmap()`.
 
-## Known limits
+## Current hardware observations and limits
 
-- Software (SwiftShader) adapter path only; real GPU hardware was **not
-  tested**.
+- The software-lane records above describe earlier checkpoints.
+  The later [shared hardware observations](../../tests/webgpu-proof/README.md#recorded-hardware-observations)
+  ran both candidates from clean source `ec68f04c833163f7cd5bffb7dbad5c557a3cf198`.
+  Both headful runs of this candidate passed all 12 cases on a non-fallback Apple adapter.
+  The result is **OBSERVED, NOT QUALIFIED**, not platform qualification.
 - Native (non-browser) platforms were **not tested**; this candidate is
   browser/WASM-only by contract.
 - This is a bounded proof for issue #154, not a `RenderingBackend`
   implementation, and is not wired into Miniquad's production backend
   selection.
-- Verified with a single local run of the real software-lane harness;
-  this does not replace the eventual common CI harness run.
+- Local CI tests the Rust state and host regressions. It does not replace
+  the WebGPU browser runs or qualify an untested OS, browser, or GPU.

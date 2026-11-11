@@ -81,8 +81,13 @@ resize. No WebGL context was requested.
 
 Five host Rust unit tests check UTF-8 limits, terminal disposal,
 request-id exhaustion, pixel-ratio arithmetic, and texture/readback bounds.
-The common harness passed 16 unit tests.
+The common harness passed 18 unit tests.
 
-Hardware, native rendering, Linux, Windows, Firefox, and WebKit are **NOT TESTED**
+The later [shared hardware observations](../../tests/webgpu-proof/README.md#recorded-hardware-observations)
+ran both candidates from clean source `ec68f04c833163f7cd5bffb7dbad5c557a3cf198`.
+Both headful runs of this candidate passed all 12 cases on a non-fallback Apple adapter.
+The result is **OBSERVED, NOT QUALIFIED**.
+
+Native rendering, Linux WebGPU, Windows, Firefox WebGPU, and WebKit WebGPU are **NOT TESTED**
 for this candidate. This proof does not qualify a production backend or release.
 No performance comparison is claimed.

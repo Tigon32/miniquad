@@ -10,7 +10,7 @@ Until a versioned fork release is approved, do not claim full upstream compatibi
 
 - **Rust API:** Treat the exported library API in `src/lib.rs`, `src/event.rs`, and `src/graphics.rs` as the compatibility review surface. Review public item signatures and behavioral changes against the previous qualified tag. Preserve compatibility unless a documented breaking release explicitly approves the change.
 - **Browser interface:** Treat `js/gl.js`, its exported `load()` entry point, and the imports/exports defined by `src/native/wasm.rs` and `src/native/wasm/webgl.rs` as a single version-coupled unit. Build and deploy JS and WASM from the same commit. A matching filename or successful compilation is not sufficient ABI evidence.
-- **Platforms:** Browser/WASM is the qualification target. Windows, Linux, macOS, Android, iOS and other native targets remain **not qualified by this gate** unless each target has its own run and evidence record.
+- **Platforms:** Browser/WASM is the qualification target. Windows, Linux, macOS, Android, iOS and other native targets remain **not qualified by this gate** unless each target has its own run and evidence record. The proposed target matrix is in the [platform support policy](platform-support-policy.md) (**Proposed**).
 - **Upstream:** Review imported fixes independently. Record source revision, license, local diff and test outcome. Do not assume a clean cherry-pick proves compatibility.
 
 ## Versioning and change control

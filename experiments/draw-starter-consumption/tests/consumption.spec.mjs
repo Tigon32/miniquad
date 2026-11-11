@@ -32,10 +32,19 @@ function collectErrors(page) {
 }
 
 test.describe("generated starter: miniquad-draw consumption proof", () => {
-    test("renders the companion's rectangle and circle through a Git-pinned dependency", async ({ page }) => {
+    test("renders the companion's rectangle and circle through a Git-pinned dependency", async ({ page, browser, browserName }) => {
         const errors = collectErrors(page);
         await page.goto("/");
         await page.waitForFunction(() => window.document.getElementById("status")?.dataset.state === "running");
+        const graphics = await page.frameLocator("#host iframe").locator("#glcanvas").evaluate(() => {
+            const gl = window.gl;
+            const debug = gl.getExtension("WEBGL_debug_renderer_info");
+            return {
+                webgl: gl.getParameter(gl.VERSION),
+                renderer: gl.getParameter(debug ? debug.UNMASKED_RENDERER_WEBGL : gl.RENDERER),
+            };
+        });
+        console.log("Drawing starter environment:", JSON.stringify({ browser: browserName, version: browser.version(), ...graphics }));
 
         const image = await screenshotCanvas(page);
         for (const [x, y, expected] of [

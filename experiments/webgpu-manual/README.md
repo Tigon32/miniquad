@@ -50,9 +50,14 @@ with Playwright.
   (b940084d7 2026-09-28)`, invoked as `~/.cargo/bin/cargo` (a `rustup`
   proxy; target `wasm32-unknown-unknown` was already installed).
 - Node: `v26.10.0`.
-- Playwright: `1.56.1`, from the sibling `miniquad` worktree's
-  `node_modules` (see "Playwright access" below).
-- Browser (software lane): Chromium `141.0.7390.37`, flags
+- Playwright: `1.65.0` (repository-pinned; see
+  `docs/webgpu-proof-contract.md`'s harness receipt, cherry-picked from
+  `a0fa506`), installed into this worktree's own `node_modules` with
+  `npm ci --ignore-scripts --no-audit --no-fund` after the `master` merge
+  changed the manifest (see "Toolchain integration" below). The receipt
+  records `playwright: {pinned: "1.65.0", installed: "1.65.0",
+  matchesPin: true}`.
+- Browser (software lane): Chromium `158.0.8127.18`, flags
   `--enable-unsafe-webgpu --enable-unsafe-swiftshader
   --use-angle=swiftshader`.
 - Adapter facts recorded by the harness: `vendor: "google"`,
@@ -60,30 +65,55 @@ with Playwright.
   software (SwiftShader) path, not real GPU hardware.
 - OS: macOS (darwin 25.6.0, arm64). **Hardware/native: NOT TESTED.**
 
-### Playwright access
+## Toolchain integration (master merge + Playwright pin)
 
-This worktree has no `node_modules` of its own. Node's ESM resolver does
-not honor `NODE_PATH` for `import` statements, so a transient, untracked
-symlink `node_modules -> ../../miniquad/node_modules` (the root worktree
-the user approved) was used locally to resolve `@playwright/test` while
-running the harness. This symlink is not part of the candidate and is not
-committed.
+Three integration steps were taken, in this order, before the final
+rebuild and harness run below:
+
+1. Merged `master` commit `646a9ea` ("Modernize browser tools and
+   propose platform support limits (#158)") into this branch as
+   `060e53e`. That commit upgrades the repository's pinned
+   `@playwright/test` to `1.65.0` and adds ADR 0016; it does not touch
+   `experiments/webgpu-manual/**` or the frozen contract/shared shaders.
+   One merge conflict, in `docs/adr/README.md` (the decision index), was
+   resolved by keeping both the ADR 0015 and ADR 0016 entries.
+2. Cherry-picked `a0fa506` (`0abc6a0` on this branch) — the
+   Playwright-pin-receipt change to the shared harness
+   (`docs/webgpu-proof-contract.md`, `tests/webgpu-proof/`): lanes now
+   read the repository-pinned Playwright version instead of a hardcoded
+   `1.56.1`, and a pin/installed mismatch now fails as a `toolchain`
+   case. This is an editorial/harness change explicitly authorized for
+   this integration step; the host contract (v1), error codes,
+   `isFallbackAdapter` rule, WGSL text, and oracle are unchanged.
+3. Ran `npm ci --ignore-scripts --no-audit --no-fund` in this worktree
+   (its `package.json`/`package-lock.json` changed via the merge) to
+   materialize real `1.65.0` `node_modules` locally, rather than reusing
+   the sibling `miniquad` worktree's still-`1.56.1` symlinked
+   `node_modules` from the earlier rounds. The Chromium `158` binary for
+   this Playwright version was already present in the local Playwright
+   browser cache; no browser download was needed.
 
 ## Commands run and results
 
+Full command sequence for the **final** state (dispose fix +
+master merge + Playwright-pin cherry-pick + fresh release rebuild +
+fresh harness run), run in this order:
+
 ```sh
 ~/.cargo/bin/cargo test --lib
-# test result: ok. 44 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+# test result: ok. 47 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
-node --check web/host.js
-# ok
+npm ci --ignore-scripts --no-audit --no-fund   # repo root; manifest changed by the merge
+# added 82 packages
 
-CARGO=~/.cargo/bin/cargo node build.mjs --release
+rm -rf dist && CARGO=~/.cargo/bin/cargo node build.mjs --release
 # Built release into .../experiments/webgpu-manual/dist
-# dist/app.wasm: 61078 bytes (release; the earlier debug artifact was
-# ~2.4 MB and is not a size basis for comparison)
+# dist/app.wasm: 61904 bytes, freshly timestamped at build time
+# (the earlier debug artifact was ~2.4 MB and is not a size basis for
+# comparison; this is also a fresh rebuild, not a reused artifact, of
+# the exact source at the final commit below)
 
-node tests/webgpu-proof/run-proof.mjs --candidate manual --lane software   # (repo root)
+node tests/webgpu-proof/run-proof.mjs --candidate manual --lane software --port 4294   # (repo root)
 # T1  pass
 # T2  pass
 # T3  pass
@@ -97,13 +127,18 @@ node tests/webgpu-proof/run-proof.mjs --candidate manual --lane software   # (re
 # N4  rejection-pass
 # N5  rejection-pass
 # Label: software adapter; hardware: NOT TESTED
+# receipt: target/webgpu-proof/manual-software-chromium.json
+# playwright: {pinned: "1.65.0", installed: "1.65.0", matchesPin: true}
+# browser: chromium 158.0.8127.18
+# summary: {pass: 6, rejection-pass: 6, fail: 0, not-run: 0, ok: true}
 ```
 
 All of T1-T7 (render path) and N1-N5 (rejection path) pass on the real
-software lane (SwiftShader, Chromium, Playwright) against the **release**
-build. This is a single local run, not a substitute for the eventual
-common CI harness run. Hardware (a real, non-fallback GPU adapter) and
-native platforms were **not tested**.
+software lane (SwiftShader, Chromium 158, Playwright 1.65.0, matching the
+repository pin) against a **freshly rebuilt release** build. This is a
+single local run, not a substitute for the eventual common CI harness
+run. Hardware (a real, non-fallback GPU adapter) and native platforms
+were **not tested**.
 
 ## Must-fix round (conditional accept)
 
@@ -132,11 +167,9 @@ fixes before an A/B comparison:
    `reporter: "host"` status after the module has loaded.** Contract
    section 5: only `wasm-load-failed` and `contract-mismatch` may have
    `reporter: "host"`. Both places used to synthesize
-   `{reporter: "host", code: "internal"}` on any post-load failure. The
-   last Rust-reported status is now cached (`lastRustStatus`) and served
-   by `status()` on a read failure instead; `start().catch()` only
-   fabricates `wasm-load-failed` when `wasm` never got assigned, and
-   otherwise only logs (`status()` keeps serving Rust's last report).
+   `{reporter: "host", code: "internal"}` on any post-load failure. See
+   "Fix 4 rework" below for the final, accepted form of this fix; an
+   intermediate cached-status approach was tried first and rejected.
 5. **A pending readback result arriving after `dispose()` no longer
    mutates readback state.** `on_readback_result` (`src/state.rs`) only
    checked the request id and `ReadbackPhase::Pending`, not the overall
@@ -148,9 +181,70 @@ fixes before an A/B comparison:
    no separate free call was needed. Covered by a new unit test,
    `a_pending_readback_result_after_disposal_does_not_mutate_terminal_state`.
 
-Rust unit tests: 44/44 (43 prior plus the new disposal-race test). The
-shared harness and shared shaders were not edited; no oracle was
-weakened.
+Rust unit tests at this round: 44/44 (43 prior plus the new
+disposal-race test). The shared harness and shared shaders were not
+edited; no oracle was weakened.
+
+## Fix 4 rework (rejected cache fallback replaced with real Rust routing)
+
+The first version of fix 4 cached the last Rust-reported status
+(`lastRustStatus`) and served it from `status()`/`start().catch()` on an
+unexpected post-load failure. This was rejected: **a cached status can
+have a running/success shape and silently hide a genuinely new failure**
+— exactly the kind of success-shaped fallback the contract and project
+rules forbid.
+
+The accepted fix instead adds a minimal Rust-owned post-load host-error
+ingress and always re-reads a real status afterward:
+
+- A new Rust export, `mq_proof_host_error(message_ptr, message_len)`
+  (`src/lib.rs`), claims and frees the message buffer (the same ownership
+  pattern as every other `mq_proof_*` export) and calls
+  `state.fail_internal(message)`. `ProofErrorCode::Internal` already
+  existed (`src/error.rs`) but had no caller before this; it is reused
+  here, not a new error code.
+- `web/host.js` no longer caches anything. `status()`'s catch calls
+  `reportHostError(message)` then re-reads the real status once (a
+  second failure propagates instead of being re-caught).
+  `start().catch()` only fabricates `wasm-load-failed` when `wasm` never
+  got assigned; any other post-load startup failure now calls
+  `reportHostError(...)` instead of silently logging.
+- A Rust unit test,
+  `fail_internal_replaces_a_running_status_with_a_real_rust_reported_failure`,
+  proves `running` -> `fail_internal` -> a real `reporter: "rust"`,
+  `phase: "failed"`, `code: "internal"` status.
+- A host/JS-level regression test,
+  `tests/host-status-regression.test.mjs` (Node's built-in test runner,
+  no new dependency), drives `web/host.js` against a stubbed browser
+  environment and a hand-rolled fake WASM module, forces one
+  `TextDecoder.decode()` failure, and asserts the host-error ingress ran
+  exactly once and the next status is a genuinely new failure, not a
+  stale cached one. This test was verified to be a true regression test:
+  a throwaway copy of `host.js` reproducing the old cache-fallback logic
+  was built and run against the same test, and it failed as expected
+  (ingress never called, stale status served), before being deleted.
+
+Rust unit tests after this round: 45/45.
+
+## Dispose preserves an already-terminal phase
+
+A cross-candidate review found that `dispose()` (`src/state.rs`) set
+`self.phase = Phase::Disposed` **unconditionally**. Contract section 5:
+"A terminal phase never changes to another phase." `failed` and `lost`
+are already terminal; disposing after a failed startup or a lost device
+was silently overwriting the real terminal phase and its error with
+`disposed`.
+
+`dispose()` now only moves a still-live phase to `Disposed`; an
+already-terminal phase keeps its phase and error unchanged. GPU handles
+are still released on the first call in every case (`dispose()` still
+returns `true` once, telling JavaScript to tear down), matching contract
+section 7 ("dispose and device loss release all handles"). Two
+regression tests were added: `dispose_after_failed_keeps_the_failed_phase_and_error`
+and `dispose_after_lost_keeps_the_lost_phase_and_error`, each also
+checking that a repeat dispose call stays a no-op.
+
+Rust unit tests after this round: 47/47.
 
 ## Imports and exports (ownership)
 
@@ -211,6 +305,7 @@ follows contract section 7:
 | `mq_proof_tick` | Advances one animation frame while running. |
 | `mq_proof_adapter_result`, `mq_proof_device_result`, `mq_proof_context_result`, `mq_proof_shader_result`, `mq_proof_pipeline_result`, `mq_proof_frame_submitted`, `mq_proof_readback_result` | Async-call completions from the matching import above. |
 | `mq_proof_device_lost` | Reports `GPUDevice.lost` (reason: destroyed vs. unknown). |
+| `mq_proof_host_error` | Routes an unexpected post-load JavaScript/host failure into a real Rust `internal` terminal status (never a cached or host-fabricated one; see "Fix 4 rework"). |
 | `mq_proof_pointer_event`, `mq_proof_key_event`, `mq_proof_focus_event` | Input facts from the canvas. |
 | `mq_proof_resize` | Reports a new canvas backing size. |
 

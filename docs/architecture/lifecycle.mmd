@@ -35,4 +35,10 @@ sequenceDiagram
                 JS->>JS: cancel frames and report reload required
             end
         end
+        opt Proposed WebGPU proof - not implemented in the current runtime
+            Page->>WASM: explicit experimental WebGPU entry
+            WASM->>JS: request adapter and device asynchronously
+            JS-->>WASM: ready or typed startup failure
+            WASM-->>Page: report selected backend or failure
+        end
     end

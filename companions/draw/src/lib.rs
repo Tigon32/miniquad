@@ -38,6 +38,7 @@ pub mod batch;
 pub mod color;
 pub mod geometry;
 pub mod gpu;
+pub mod hex;
 pub mod transform;
 
 pub use batch::Batch;

@@ -160,11 +160,10 @@ pub struct Platform {
     /// Currently supported only on Android.
     pub sleep_interval_ms: Option<u32>,
 
-    /// If `true`, the framebuffer includes an alpha channel.
-    /// Currently supported only on Android.
-    ///
-    /// - TODO: Make it works on web, on web it should make a transparent HTML5 canvas
-    /// - TODO: Document(and check) what does it actually mean on android. Transparent window?
+    /// If `true`, request an EGL config with 8 alpha bits.
+    /// Used only by EGL backends: Android, Linux Wayland, and Linux X11 with EGL.
+    /// Ignored with GLX and on Windows, macOS, iOS, and WASM.
+    /// This setting does not by itself make the window transparent.
     pub framebuffer_alpha: bool,
 
     /// On Wayland, specifies how to draw client-side decoration (CSD) if server-side decoration (SSD) is
@@ -233,8 +232,8 @@ pub struct Conf {
     /// Optional icon data used by the OS where applicable:
     /// - On Windows, taskbar/title bar icon
     /// - On macOS, Dock/title bar icon
-    /// - TODO: Favicon on HTML5
-    /// - TODO: Taskbar/title bar icon on Linux (depends on WM)
+    /// - On Linux X11, `_NET_WM_ICON` (the window manager selects where to show it)
+    /// - Ignored on Linux Wayland and WASM. On WASM, the HTML page sets the favicon.
     /// - Note: on gnome, icon is determined using `WM_CLASS` (can be set under [`Platform`]) and
     ///   an external `.desktop` file
     pub icon: Option<Icon>,

@@ -1,0 +1,15 @@
+[package]
+name = "hex-2d-consumer"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = """
+A fresh downstream crate that depends on `miniquad-draw` by path and
+draws the 37-cell hex board with only its public items
+(`miniquad_draw::hex`, `Batch`, `Renderer`, `Color`, `Transform2D`).
+See `docs/hex-2d-contract.md` section 2 (MADR 0012, issue #134).
+"""
+
+[dependencies]
+miniquad = { path = "../../" }
+miniquad-draw = { path = "../../companions/draw" }

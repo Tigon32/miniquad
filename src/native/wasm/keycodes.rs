@@ -1,6 +1,4 @@
 //! Translation of JS key/mouse codes to miniquads'
-//! TODO: JS can send better, more easy to use data and most of this file should
-//! go away.
 
 use crate::event::{KeyCode, KeyMods, MouseButton, TouchPhase};
 

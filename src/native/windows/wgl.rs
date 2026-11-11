@@ -460,7 +460,8 @@ impl Wgl {
         }
         (display.libopengl32.wglMakeCurrent)(display.dc, gl_ctx);
         if self.ext_swap_control {
-            /* FIXME: DwmIsCompositionEnabled() (see GLFW) */
+            // No DWM-composition check (see GLFW's DwmIsCompositionEnabled/DwmFlush
+            // workaround in wgl_context.c): #153.
             (self.SwapIntervalEXT.unwrap())(swap_interval);
         }
 

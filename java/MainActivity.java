@@ -287,8 +287,7 @@ public class MainActivity extends Activity {
     public void onBackPressed() {
         Log.w("SAPP", "onBackPressed");
 
-        // TODO: here is the place to handle request_quit/order_quit/cancel_quit
-
+        // Back does not call request_quit yet: #151.
         super.onBackPressed();
     }
 

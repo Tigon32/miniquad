@@ -52,7 +52,7 @@ jobs:
         run: |
           rustup toolchain install stable --profile minimal
           rustup default stable
-          cargo install cargo-audit --version 0.22.2 --locked --no-default-features
+          cargo install cargo-audit --version 0.23.0 --locked --no-default-features
       - name: Resolve library dependencies for the audit
         run: cargo generate-lockfile
       - name: Scan root Rust dependencies and reject unmaintained crates

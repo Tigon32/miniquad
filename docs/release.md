@@ -10,7 +10,7 @@ Until a versioned fork release is approved, do not claim full upstream compatibi
 
 - **Rust API:** Treat the exported library API in `src/lib.rs`, `src/event.rs`, and `src/graphics.rs` as the compatibility review surface. Review public item signatures and behavioral changes against the previous qualified tag. Preserve compatibility unless a documented breaking release explicitly approves the change.
 - **Browser interface:** Treat `js/gl.js`, its exported `load()` entry point, and the imports/exports defined by `src/native/wasm.rs` and `src/native/wasm/webgl.rs` as a single version-coupled unit. Build and deploy JS and WASM from the same commit. A matching filename or successful compilation is not sufficient ABI evidence.
-- **Platforms:** Browser/WASM is the qualification target. Windows, Linux, macOS, Android, iOS and other native targets remain **not qualified by this gate** unless each target has its own run and evidence record.
+- **Platforms:** Browser/WASM is the qualification target. Windows, Linux, macOS, Android, iOS and other native targets remain **not qualified by this gate** unless each target has its own run and evidence record. The proposed target matrix is in the [platform support policy](platform-support-policy.md) (**Proposed**).
 - **Upstream:** Review imported fixes independently. Record source revision, license, local diff and test outcome. Do not assume a clean cherry-pick proves compatibility.
 
 ### Manual compatibility matrix
@@ -19,6 +19,9 @@ Keep this matrix for an explicit release request.
 A target changes from **unqualified** only when a separate evidence record exists for that target and that candidate.
 [#156](https://github.com/Tigon32/miniquad/issues/156) owns the approved platform scope.
 Use that scope when it is approved.
+The [platform support policy](platform-support-policy.md) (**Proposed**) gives the support tier of each target.
+This matrix does not give a tier. It gives the candidate state only.
+"Unqualified" means that no passed candidate record exists. It is not a tier.
 
 | Target | State for a candidate | Evidence record that can change the state |
 | --- | --- | --- |

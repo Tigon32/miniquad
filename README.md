@@ -56,6 +56,7 @@ No design-tool runtime or `Tokens.swift` file is required.
 Fork release qualification remains separate under [#19](https://github.com/Tigon32/miniquad/issues/19).
 
 The platform list below comes from the upstream project. It is **not** a record of platform tests on this fork.
+The proposed [platform support policy](docs/platform-support-policy.md) (**Proposed**, [#156](https://github.com/Tigon32/miniquad/issues/156)) will replace this list.
 
 ## Platform targets
 

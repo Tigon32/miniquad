@@ -59,6 +59,11 @@ The GitHub CLI can find the installed extension without loading its personal
 authentication configuration.
 The repository must not contain `.actrc`; the wrapper supplies its flags explicitly.
 
+The wrapper sets `NODE_USE_SYSTEM_CA=1` inside the container.
+Node uses the runner image's system CA certificates for verified HTTPS downloads.
+TLS verification stays enabled. The wrapper does not import personal CA files or
+inherit host TLS overrides.
+
 The job has no mounted Docker socket and uses a separate bridge network.
 It does not bind-mount the source checkout or your home directory.
 It mounts one generated Git bundle read-only. This lets a copied worktree recover

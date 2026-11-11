@@ -55,6 +55,11 @@ impl<T> ResourceManager<T> {
         // Let it crash if the resource is not found
         self.resources.remove(&id).unwrap()
     }
+
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    pub fn values_mut(&mut self) -> impl Iterator<Item = &mut T> {
+        self.resources.values_mut()
+    }
 }
 
 impl<T> Index<usize> for ResourceManager<T> {
@@ -212,7 +217,8 @@ pub mod window {
     /// On desktop this will bound cursor to windows border
     /// NOTICE: on desktop cursor will not be automatically released after window lost focus
     ///         so set_cursor_grab(false) on window's focus lost is recommended.
-    /// TODO: implement window focus events
+    ///         There is no separate focus event. On desktop and WASM,
+    ///         `EventHandler::window_minimized_event` also reports focus loss.
     pub fn set_cursor_grab(grab: bool) {
         let d = native_display().lock().unwrap();
         #[cfg(target_os = "android")]
@@ -324,7 +330,7 @@ pub mod window {
     }
 
     /// Get the position of the window.
-    /// TODO: implement for other platforms
+    /// Available only on Windows and Linux. On Linux Wayland, it always returns `(0, 0)`.
     #[cfg(any(target_os = "windows", target_os = "linux"))]
     pub fn get_window_position() -> (u32, u32) {
         let d = native_display().lock().unwrap();

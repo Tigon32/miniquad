@@ -1,10 +1,7 @@
 // Own, isolated Playwright config for the drawing-companion browser
-// qualification (issue #123). Deliberately separate from the parent's
-// root `playwright.config.mjs` (port 4173, `tests/browser/serve.mjs`):
-// this session owns only `tests/browser/drawing.spec.mjs` and must not
-// run the parent's Playwright config concurrently on the same port. See
-// `experiments/drawing-comparison/serve-drawing.mjs` (own server, port
-// 4280) and `docs/drawing-companion.md` for the exact command.
+// qualification. Separate from the root `playwright.config.mjs` (port
+// 4173, `tests/browser/serve.mjs`). See `serve-drawing.mjs` (own
+// server, port 4280) and `docs/drawing-companion.md` for the command.
 import { defineConfig, devices } from "@playwright/test";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -38,10 +35,6 @@ export default defineConfig({
       .filter((name) => !browser || browser === name)
       .map((name) => ({
         name,
-        // The DPR-specific projects below own the "device pixel ratio"
-        // describe block; every other project runs everything else once
-        // at the engine's default scale factor.
-        grepInvert: /device pixel ratio/,
         use: {
           ...devices[name === "chromium" ? "Desktop Chrome" : name === "firefox" ? "Desktop Firefox" : "Desktop Safari"],
           viewport: { width: 800, height: 500 },
@@ -51,22 +44,6 @@ export default defineConfig({
               : {},
         },
       })),
-    // DPR 1 and DPR 2, Chromium only: `deviceScaleFactor` is a launch-time
-    // context option, so each ratio needs its own project rather than a
-    // runtime toggle. Firefox/WebKit DPR emulation is left to the parent's
-    // own 3-engine qualification pass (see docs/drawing-companion.md).
-    ...(!browser || browser === "chromium"
-      ? [1, 2].map((dpr) => ({
-          name: `chromium-dpr${dpr}`,
-          grep: /device pixel ratio/,
-          use: {
-            ...devices["Desktop Chrome"],
-            viewport: { width: 800, height: 500 },
-            deviceScaleFactor: dpr,
-            launchOptions: { args: ["--enable-webgl", "--enable-unsafe-swiftshader", "--use-gl=angle", "--use-angle=swiftshader"] },
-          },
-        }))
-      : []),
   ],
   webServer: {
     command: "node " + resolve(here, "serve-drawing.mjs"),

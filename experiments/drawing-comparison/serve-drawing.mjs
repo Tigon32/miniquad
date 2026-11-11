@@ -1,19 +1,9 @@
 #!/usr/bin/env node
-// Isolated, session-owned static server for the drawing-companion
-// browser qualification (issue #123). Deliberately not
-// `tests/browser/serve.mjs` (parent-owned, port 4173): this server
-// listens on its own ephemeral-by-convention port (4280) so this
-// session's Playwright run never races the parent's, per the task's
-// "DO NOT run parent Playwright same ports concurrently" instruction.
-//
-// Serves the existing, unmodified root JS bridge (`js/gl.js`,
-// `js/miniquad.mjs`, `js/runtime.mjs`, `js/runtime.html`,
-// `js/host-preferences.mjs`) and the parent's existing
-// `tests/browser/embed.html` fixture read-only, exactly as the parent's
-// own server does, plus this session's own
-// `tests/browser/drawing-qualification.html` and the companion's own
-// built `showcase.wasm`. It copies no file content: every entry below
-// reads straight from the existing repository path.
+// Isolated static server for the drawing-companion browser
+// qualification. Separate from `tests/browser/serve.mjs` (port 4173):
+// listens on its own port (default 4280) to avoid racing a concurrent
+// root Playwright run. Serves the existing root JS bridge and WASM
+// fixtures read-only; copies no file content.
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { resolve, dirname } from "node:path";
@@ -27,7 +17,7 @@ const files = new Map([
   ["/js/runtime.mjs", { file: "js/runtime.mjs", type: "text/javascript; charset=utf-8" }],
   ["/js/host-preferences.mjs", { file: "js/host-preferences.mjs", type: "text/javascript; charset=utf-8" }],
   ["/embed", { file: "tests/browser/embed.html", type: "text/html; charset=utf-8" }],
-  ["/qualification", { file: "tests/browser/drawing-qualification.html", type: "text/html; charset=utf-8" }],
+  ["/drawing-qualification", { file: "tests/browser/drawing-qualification.html", type: "text/html; charset=utf-8" }],
   [
     "/drawing.wasm",
     {

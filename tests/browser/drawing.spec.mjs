@@ -1,50 +1,72 @@
-// Browser qualification for the optional `miniquad-draw` companion
-// (issue #123). Runs against this session's own isolated harness
-// (`experiments/drawing-comparison/serve-drawing.mjs` + its own
-// `playwright.config.mjs`, port 4280) — never the parent's
-// `tests/browser/serve.mjs` / root `playwright.config.mjs` (port 4173).
-//
-// Covers, with real measurements (not simulated):
-//   - DPR 1 and DPR 2 rendering (non-trivial pixel content at both
-//     scales, via the isolated config's per-project deviceScaleFactor).
-//   - Resize.
-//   - An empty batch (zero shapes) drawing without a crash or console
-//     error.
-//   - Clipping, opacity blending, and draw order, each asserted against
-//     a flat *interior* pixel sampled away from any anti-aliased edge
-//     (hard edges are a documented `miniquad-draw` limit, so pixel
-//     parity is never claimed at a boundary).
-//   - Real GPU buffer/shader/program create and delete counts, tied to
-//     the showcase's exported `request_gpu_release` / `resources_live`
-//     (companions/draw/examples/showcase.rs), confirming the companion
-//     actually releases its GL objects once requested.
+// Browser qualification for the optional `miniquad-draw` companion.
+// Uses either the main browser fixture or the isolated comparison fixture.
 import { test, expect } from "@playwright/test";
 import { PNG } from "pngjs";
 
-// Installed once per test via `page.addInitScript`, which Playwright
-// guarantees runs before any other script in every new document,
-// including same-origin iframes — this is what lets the counters see
-// the very first `gl.createBuffer`/`gl.createShader`/`gl.createProgram`
-// calls the runtime makes on startup, not just calls made after the
-// test script got a chance to attach a listener.
-function installGlCounters() {
-    const methods = ["createBuffer", "deleteBuffer", "createShader", "deleteShader", "createProgram", "deleteProgram"];
-    window.__glCounts = Object.fromEntries(methods.map(name => [name, 0]));
+const GL_OBJECT_KINDS = ["Buffer", "Shader", "Program"];
+
+// Tracks live GL object identity (not just call counts), via
+// page.addInitScript so the wrapper is in place before the runtime's
+// first gl.create* call in a fresh document.
+function installGlTracking() {
+    const live = {};
+    const counts = { create: {}, delete: {} };
+    for (const kind of ["Buffer", "Shader", "Program"]) {
+        live[kind] = new Set();
+        counts.create[kind] = 0;
+        counts.delete[kind] = 0;
+    }
+    const duplicateOrUnknownDeletes = [];
+    window.__glTracking = {
+        snapshot() {
+            const liveSizes = {};
+            for (const kind of Object.keys(live)) liveSizes[kind] = live[kind].size;
+            return {
+                live: liveSizes,
+                create: { ...counts.create },
+                delete: { ...counts.delete },
+                duplicateOrUnknownDeletes: duplicateOrUnknownDeletes.length,
+            };
+        },
+    };
     for (const proto of [window.WebGLRenderingContext?.prototype, window.WebGL2RenderingContext?.prototype]) {
         if (!proto) continue;
-        for (const name of methods) {
-            const original = proto[name];
-            if (typeof original !== "function") continue;
-            proto[name] = function (...args) {
-                window.__glCounts[name] += 1;
-                return original.apply(this, args);
-            };
+        for (const kind of ["Buffer", "Shader", "Program"]) {
+            const createName = "create" + kind;
+            const deleteName = "delete" + kind;
+            const originalCreate = proto[createName];
+            if (typeof originalCreate === "function" && !originalCreate.__glTrackingWrapped) {
+                const wrapped = function (...args) {
+                    const obj = originalCreate.apply(this, args);
+                    if (obj) {
+                        live[kind].add(obj);
+                        counts.create[kind] += 1;
+                    }
+                    return obj;
+                };
+                wrapped.__glTrackingWrapped = true;
+                proto[createName] = wrapped;
+            }
+            const originalDelete = proto[deleteName];
+            if (typeof originalDelete === "function" && !originalDelete.__glTrackingWrapped) {
+                const wrapped = function (obj, ...rest) {
+                    if (obj && live[kind].has(obj)) {
+                        live[kind].delete(obj);
+                        counts.delete[kind] += 1;
+                    } else if (obj) {
+                        duplicateOrUnknownDeletes.push(kind);
+                    }
+                    return originalDelete.call(this, obj, ...rest);
+                };
+                wrapped.__glTrackingWrapped = true;
+                proto[deleteName] = wrapped;
+            }
         }
     }
 }
 
 async function mountShowcase(page) {
-    await page.goto("/qualification");
+    await page.goto("/drawing-qualification");
     await page.evaluate(async () => {
         const { mount } = await import("/js/miniquad.mjs");
         window.app = mount({
@@ -57,6 +79,13 @@ async function mountShowcase(page) {
     await page.waitForFunction(() => window.app.frame.contentWindow.miniquadRuntime.frames > 2);
 }
 
+async function callExport(page, name, ...args) {
+    return page.evaluate(
+        ([name, args]) => window.app.frame.contentWindow.miniquadRuntime.exports[name](...args),
+        [name, args],
+    );
+}
+
 function readRGBA(image, x, y) {
     const offset = (y * image.width + x) * 4;
     return [image.data[offset], image.data[offset + 1], image.data[offset + 2], image.data[offset + 3]];
@@ -65,6 +94,14 @@ function readRGBA(image, x, y) {
 async function screenshotCanvas(page) {
     const canvas = page.frameLocator("#scene iframe").locator("#glcanvas");
     return PNG.sync.read(await canvas.screenshot());
+}
+
+function distinctColorCount(image) {
+    const colors = new Set();
+    for (let i = 0; i < image.data.length; i += 4) {
+        colors.add(image.data.subarray(i, i + 4).toString("hex"));
+    }
+    return colors.size;
 }
 
 function collectErrors(page) {
@@ -81,46 +118,49 @@ test.describe("drawing companion qualification", () => {
         const errors = collectErrors(page);
         await mountShowcase(page);
         const image = await screenshotCanvas(page);
-        const colors = new Set();
-        for (let i = 0; i < image.data.length; i += 4) {
-            colors.add(image.data.subarray(i, i + 4).toString("hex"));
-        }
-        expect(colors.size, "The scene must contain more than a clear color").toBeGreaterThan(8);
+        expect(distinctColorCount(image), "The scene must contain more than a clear color").toBeGreaterThan(8);
         expect(errors).toEqual([]);
         await page.evaluate(() => window.app.dispose());
     });
 
-    test("resizes the canvas and keeps drawing without console errors", async ({ page }) => {
+    test("resizes the canvas to its physical (DPR-scaled) pixel dimensions", async ({ page }, testInfo) => {
         const errors = collectErrors(page);
+        const dpr = testInfo.project.use.deviceScaleFactor ?? 1;
         await mountShowcase(page);
         await page.evaluate(() => {
-            document.querySelector("#scene").style.width = "320px";
+            const scene = document.querySelector("#scene");
+            scene.style.width = "320px";
+            scene.style.height = "200px";
         });
         const canvas = page.frameLocator("#scene iframe").locator("#glcanvas");
-        await expect(canvas).toHaveJSProperty("width", 320);
+        await expect(canvas).toHaveJSProperty("width", Math.round(320 * dpr));
+        await expect(canvas).toHaveJSProperty("height", Math.round(200 * dpr));
         const image = await screenshotCanvas(page);
-        const colors = new Set();
-        for (let i = 0; i < image.data.length; i += 4) {
-            colors.add(image.data.subarray(i, i + 4).toString("hex"));
-        }
-        expect(colors.size, "The resized scene must still contain more than a clear color").toBeGreaterThan(8);
+        expect(distinctColorCount(image), "The resized scene must still contain more than a clear color").toBeGreaterThan(8);
         expect(errors).toEqual([]);
         await page.evaluate(() => window.app.dispose());
     });
 
-    test("draws an empty batch without a crash or console error", async ({ page }) => {
+    test("draws a persistent empty batch, verified by a processed-frame counter", async ({ page }) => {
         const errors = collectErrors(page);
         await mountShowcase(page);
-        await page.evaluate(() => {
-            window.app.frame.contentWindow.miniquadRuntime.exports.request_empty_frame();
-        });
-        // Give the runtime a few frames to consume the one-shot empty
-        // request and keep running afterward (not freeze or crash).
-        await page.waitForTimeout(100);
-        const framesBefore = await page.evaluate(() => window.app.frame.contentWindow.miniquadRuntime.frames);
-        await page.waitForTimeout(100);
-        const framesAfter = await page.evaluate(() => window.app.frame.contentWindow.miniquadRuntime.frames);
-        expect(framesAfter, "The runtime must keep rendering frames after an empty batch").toBeGreaterThan(framesBefore);
+        await callExport(page, "request_empty_frame");
+        await expect
+            .poll(() => callExport(page, "empty_frames_processed"), { message: "empty_frames_processed must advance past zero" })
+            .toBeGreaterThan(0);
+        const processedAfterFirstPoll = await callExport(page, "empty_frames_processed");
+        await expect
+            .poll(() => callExport(page, "empty_frames_processed"), { message: "frames must keep advancing while empty" })
+            .toBeGreaterThan(processedAfterFirstPoll);
+
+        const image = await screenshotCanvas(page);
+        // Stable empty mode: no shape is ever drawn, so every pixel must
+        // equal the clear color (0.08, 0.08, 0.1) within rounding.
+        expect(distinctColorCount(image), "An empty-batch frame must be clear-only (one color)").toBe(1);
+        const pixel = readRGBA(image, Math.floor(image.width / 2), Math.floor(image.height / 2));
+        expect(Math.abs(pixel[0] - 20), "clear red channel").toBeLessThanOrEqual(2);
+        expect(Math.abs(pixel[1] - 20), "clear green channel").toBeLessThanOrEqual(2);
+        expect(Math.abs(pixel[2] - 26), "clear blue channel").toBeLessThanOrEqual(2);
         expect(errors).toEqual([]);
         await page.evaluate(() => window.app.dispose());
     });
@@ -133,8 +173,8 @@ test.describe("drawing companion qualification", () => {
         const h = image.height;
         // Panel at x in [0.72, 0.90] * width, y in [0.02, 0.10] * height
         // (companions/draw/examples/showcase.rs: draw_qc_panels). Sample
-        // comfortably inside each half, away from the clip boundary at
-        // x = 0.81 * width and the swatch edges.
+        // comfortably inside each half, away from the clip boundary and
+        // swatch edges.
         const left = readRGBA(image, Math.round(w * 0.74), Math.round(h * 0.06));
         const right = readRGBA(image, Math.round(w * 0.86), Math.round(h * 0.06));
         // Left half: clipped overlay color (orange, ~242,128,13).
@@ -162,10 +202,13 @@ test.describe("drawing companion qualification", () => {
         const expectedR = Math.round(255 * (0.5 * 0.9 + 0.5 * 0.05));
         const expectedG = Math.round(255 * 0.05);
         const expectedB = Math.round(255 * (0.5 * 0.05 + 0.5 * 0.9));
-        const tolerance = 24;
-        expect(Math.abs(pixel[0] - expectedR), "blended red channel").toBeLessThan(tolerance);
-        expect(Math.abs(pixel[1] - expectedG), "blended green channel").toBeLessThan(tolerance);
-        expect(Math.abs(pixel[2] - expectedB), "blended blue channel").toBeLessThan(tolerance);
+        // A flat interior pixel, not an antialiased edge: tolerance covers
+        // only 8-bit rounding/premultiplied-alpha rounding error, not an
+        // edge allowance.
+        const tolerance = 2;
+        expect(Math.abs(pixel[0] - expectedR), "blended red channel").toBeLessThanOrEqual(tolerance);
+        expect(Math.abs(pixel[1] - expectedG), "blended green channel").toBeLessThanOrEqual(tolerance);
+        expect(Math.abs(pixel[2] - expectedB), "blended blue channel").toBeLessThanOrEqual(tolerance);
         expect(errors).toEqual([]);
         await page.evaluate(() => window.app.dispose());
     });
@@ -189,64 +232,82 @@ test.describe("drawing companion qualification", () => {
 
     test("releases its GPU resources exactly once on request", async ({ page }) => {
         const errors = collectErrors(page);
-        await page.addInitScript(installGlCounters);
+        await page.addInitScript(installGlTracking);
         await mountShowcase(page);
-        const liveBefore = await page.evaluate(() => window.app.frame.contentWindow.miniquadRuntime.exports.resources_live());
+
+        const snapshot = () =>
+            page.evaluate(() => document.querySelector("#scene iframe").contentWindow.__glTracking.snapshot());
+
+        const liveBefore = await callExport(page, "resources_live");
         expect(liveBefore, "resources_live must report live before release").toBe(1);
-        const countsBefore = await page.evaluate(() => {
-            const frame = document.querySelector("#scene iframe");
-            return frame.contentWindow.__glCounts;
-        });
-        // The renderer creates exactly one shader (program), one
-        // pipeline (no GL object of its own), and two buffers (vertex +
-        // index) at steady state — see companions/draw/src/gpu.rs. Grow
-        // reallocation can create/delete more buffers before settling,
-        // so assert only the floor that must hold from startup.
-        expect(countsBefore.createProgram, "at least one GL program created on startup").toBeGreaterThanOrEqual(1);
-        expect(countsBefore.createBuffer, "at least two GL buffers created on startup").toBeGreaterThanOrEqual(2);
+        const before = await snapshot();
+        // The renderer owns exactly one program and two buffers (vertex +
+        // index) at steady state (companions/draw/src/gpu.rs); buffer
+        // growth deletes the old buffer before creating a bigger one, so
+        // the *live* count never exceeds this even mid-growth. No shader
+        // object should ever be live: load_shader_internal deletes both
+        // shader objects immediately after a successful link.
+        expect(before.live.Program, "exactly one live GL program before release").toBe(1);
+        expect(before.live.Buffer, "exactly two live GL buffers before release").toBe(2);
+        expect(before.live.Shader, "no live GL shader objects (deleted at link time)").toBe(0);
+        expect(before.duplicateOrUnknownDeletes, "no duplicate or unknown GL deletes yet").toBe(0);
 
-        await page.evaluate(async () => {
-            window.app.frame.contentWindow.miniquadRuntime.exports.request_gpu_release();
-        });
-        await page.waitForTimeout(150);
-        const liveAfter = await page.evaluate(() => window.app.frame.contentWindow.miniquadRuntime.exports.resources_live());
-        expect(liveAfter, "resources_live must report released after request_gpu_release").toBe(0);
+        await callExport(page, "request_gpu_release");
+        await expect
+            .poll(() => callExport(page, "resources_live"), { message: "resources_live must settle to 0 after release" })
+            .toBe(0);
 
-        const countsAfter = await page.evaluate(() => {
-            const frame = document.querySelector("#scene iframe");
-            return frame.contentWindow.__glCounts;
-        });
-        expect(countsAfter.deleteProgram, "the program must be deleted exactly once").toBe(1);
-        expect(countsAfter.deleteBuffer, "every created buffer must be deleted").toBeGreaterThanOrEqual(countsBefore.createBuffer);
-        expect(countsAfter.createProgram, "no new program may be created after release").toBe(countsBefore.createProgram);
+        const after = await snapshot();
+        for (const kind of GL_OBJECT_KINDS) {
+            expect(after.live[kind], `every live ${kind} must be released`).toBe(0);
+            expect(after.create[kind], `every created ${kind} must be deleted`).toBe(after.delete[kind]);
+        }
+        expect(after.create.Program, "no new program may be created by release itself").toBe(before.create.Program);
+        expect(after.duplicateOrUnknownDeletes, "no duplicate or unknown GL deletes").toBe(0);
 
-        // A second request must stay a no-op (idempotent): counts and
-        // the live flag must not change again.
-        await page.evaluate(() => window.app.frame.contentWindow.miniquadRuntime.exports.request_gpu_release());
-        await page.waitForTimeout(150);
-        const countsFinal = await page.evaluate(() => {
-            const frame = document.querySelector("#scene iframe");
-            return frame.contentWindow.__glCounts;
-        });
-        expect(countsFinal.deleteProgram, "a second release request must not delete again").toBe(1);
+        // A second request must stay a no-op (idempotent): frames keep
+        // advancing (not frozen), but nothing in the GL tracking changes.
+        const framesBeforeSecond = await page.evaluate(() => window.app.frame.contentWindow.miniquadRuntime.frames);
+        await callExport(page, "request_gpu_release");
+        await expect
+            .poll(() => page.evaluate(() => window.app.frame.contentWindow.miniquadRuntime.frames), {
+                message: "frames must keep advancing after an idempotent release request",
+            })
+            .toBeGreaterThan(framesBeforeSecond);
+        const final = await snapshot();
+        expect(final, "a second release request must not change any GL tracking state").toEqual(after);
         expect(errors).toEqual([]);
         await page.evaluate(() => window.app.dispose());
     });
 });
 
-test.describe("device pixel ratio", () => {
-    test("renders a non-trivial scene at the configured device pixel ratio", async ({ page }) => {
+for (const expectedRatio of [1, 2]) {
+test.describe(`device pixel ratio ${expectedRatio}`, () => {
+    test.use({ deviceScaleFactor: expectedRatio });
+    test("renders a high-DPI framebuffer at the configured device pixel ratio", async ({ page }) => {
         const errors = collectErrors(page);
         await mountShowcase(page);
+
         const ratio = await page.evaluate(() => window.app.frame.contentWindow.devicePixelRatio);
-        expect(typeof ratio, "devicePixelRatio must be readable").toBe("number");
+        expect(ratio, "devicePixelRatio inside the runtime iframe must match the configured project ratio").toBe(expectedRatio);
+
+        const canvas = page.frameLocator("#scene iframe").locator("#glcanvas");
+        const cssWidth = await canvas.evaluate(element => element.clientWidth);
+        const cssHeight = await canvas.evaluate(element => element.clientHeight);
+        await expect(canvas, "canvas physical width must equal CSS width * DPR").toHaveJSProperty(
+            "width",
+            Math.round(cssWidth * ratio),
+        );
+        await expect(canvas, "canvas physical height must equal CSS height * DPR").toHaveJSProperty(
+            "height",
+            Math.round(cssHeight * ratio),
+        );
+
         const image = await screenshotCanvas(page);
-        const colors = new Set();
-        for (let i = 0; i < image.data.length; i += 4) {
-            colors.add(image.data.subarray(i, i + 4).toString("hex"));
-        }
-        expect(colors.size, `DPR ${ratio} scene must contain more than a clear color`).toBeGreaterThan(8);
+        expect(image.width, "the captured framebuffer must be the physical (scaled) width").toBe(Math.round(cssWidth * ratio));
+        expect(distinctColorCount(image), `DPR ${ratio} scene must contain more than a clear color`).toBeGreaterThan(8);
         expect(errors).toEqual([]);
         await page.evaluate(() => window.app.dispose());
     });
 });
+}

@@ -10,7 +10,7 @@
 // Usage:
 //   node scripts/compare-drawing.mjs [repeats]
 //
-// Expects both backends already built (see docs/drawing-companion.md):
+// Builds both backends from a clean tracked tree before measurement:
 //   cargo build --release --target wasm32-unknown-unknown \
 //     --no-default-features --features internal --lib \
 //     --manifest-path experiments/drawing-comparison/Cargo.toml \
@@ -25,6 +25,7 @@ import { gzipSync, brotliCompressSync, constants } from "node:zlib";
 import { resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { performance } from "node:perf_hooks";
+import { execFileSync } from "node:child_process";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -36,7 +37,15 @@ export function wasmPath(backend) {
 }
 
 export function measureArtifact(backend, path) {
-  const bytes = readFileSync(path);
+  let bytes;
+  try {
+    bytes = readFileSync(path);
+  } catch (err) {
+    throw new Error(
+      `missing ${backend} WASM artifact at ${path}; build it first (see docs/drawing-companion.md)`,
+      { cause: err },
+    );
+  }
   return {
     backend,
     path,
@@ -47,6 +56,70 @@ export function measureArtifact(backend, path) {
       params: { [constants.BROTLI_PARAM_QUALITY]: 11 },
     }).byteLength,
   };
+}
+
+/**
+ * Per-shape area tolerance, as a fraction of the internal backend's
+ * area (not an antialias/edge allowance: this bounds real tessellation
+ * differences documented in docs/drawing-companion.md). Rects and
+ * filled triangles have no curved edges, so both backends must agree
+ * exactly.
+ */
+export const AREA_TOLERANCE = {
+  rects: 0,
+  triangles: 0,
+  circles: 0.03,
+  curve_strokes: 0.01,
+};
+
+/** Run a backend's native driver binary and parse its one-line JSON report. */
+export function runNative(backend, repeats) {
+  const bin = backend === "internal" ? "run_internal" : "run_lyon";
+  const stdout = execFileSync(
+    "cargo",
+    [
+      "run",
+      "--release",
+      "--locked",
+      "--quiet",
+      "--no-default-features",
+      "--features",
+      backend,
+      "--manifest-path",
+      resolve(root, "experiments/drawing-comparison/Cargo.toml"),
+      "--bin",
+      bin,
+      "--",
+      String(repeats),
+    ],
+    { encoding: "utf8" },
+  );
+  return JSON.parse(stdout.trim().split("\n").pop());
+}
+
+/**
+ * Compares the two backends' per-shape total_area against
+ * `AREA_TOLERANCE`. Returns one entry per shape kind with the actual
+ * relative difference and whether it is within the recorded tolerance,
+ * so a receipt cannot claim a tolerance was respected without this
+ * function having checked the real numbers.
+ */
+export function checkAreaTolerances(internalReport, lyonReport) {
+  const results = {};
+  for (const shape of Object.keys(AREA_TOLERANCE)) {
+    const a = internalReport.shapes.find((s) => s.shape === shape).total_area;
+    const b = lyonReport.shapes.find((s) => s.shape === shape).total_area;
+    const relativeDiff = a === 0 ? (b === 0 ? 0 : Infinity) : Math.abs(a - b) / Math.abs(a);
+    const tolerance = AREA_TOLERANCE[shape];
+    results[shape] = {
+      internalArea: a,
+      lyonArea: b,
+      relativeDiff,
+      tolerance,
+      withinTolerance: relativeDiff <= tolerance,
+    };
+  }
+  return results;
 }
 
 /** Median of a non-empty array of numbers. Exported for direct testing. */
@@ -84,15 +157,14 @@ async function loadModule(path) {
   // `miniquad-draw` path dependency, so the wasm32 target emits its
   // usual windowing-bridge imports (`sapp_set_cursor`, `fs_get_buffer_size`,
   // ...) even though this benchmark never opens a window or calls them.
-  // Stub every declared "env" import with a no-op so the module
-  // instantiates without a real `js/gl.js` host; this benchmark only
-  // calls the exported `run()` (pure CPU geometry), never anything that
-  // would actually invoke a windowing import.
+  // The pure CPU workload must not call any browser import.
   const imports = { env: {} };
   for (const imp of WebAssembly.Module.imports(mod)) {
     if (imp.kind === "function") {
       imports[imp.module] ??= {};
-      imports[imp.module][imp.name] = () => {};
+      imports[imp.module][imp.name] = () => {
+        throw new Error(`Unexpected benchmark import: ${imp.module}.${imp.name}`);
+      };
     }
   }
   const instance = await WebAssembly.instantiate(mod, imports);
@@ -115,11 +187,29 @@ async function main() {
   if (!Number.isInteger(repeats) || repeats < 1) {
     throw new Error("repeats must be a positive integer");
   }
+  const git = (...args) => execFileSync("git", ["-C", root, ...args], { encoding: "utf8" }).trim();
+  if (git("status", "--porcelain", "--untracked-files=no")) {
+    throw new Error("Commit tracked changes before recording a drawing comparison");
+  }
+  const sourceHead = git("rev-parse", "HEAD");
+  for (const backend of ["internal", "lyon"]) {
+    execFileSync("cargo", [
+      "build", "--release", "--locked", "--target", "wasm32-unknown-unknown",
+      "--no-default-features", "--features", backend, "--lib",
+      "--manifest-path", resolve(root, "experiments/drawing-comparison/Cargo.toml"),
+      "--target-dir", resolve(root, `experiments/drawing-comparison/target-${backend}`),
+    ], { stdio: "inherit" });
+  }
 
   const internalPath = wasmPath("internal");
   const lyonPath = wasmPath("lyon");
   const internalArtifact = measureArtifact("internal", internalPath);
   const lyonArtifact = measureArtifact("lyon", lyonPath);
+
+  const internalNative = runNative("internal", repeats);
+  const lyonNative = runNative("lyon", repeats);
+  const areaTolerances = checkAreaTolerances(internalNative, lyonNative);
+  const areaViolations = Object.entries(areaTolerances).filter(([, v]) => !v.withinTolerance);
 
   const runInternal = await loadModule(internalPath);
   const runLyon = await loadModule(lyonPath);
@@ -140,9 +230,14 @@ async function main() {
     lyonTimingsMs.push(b.timingsMs[0]);
     lyonChecksum = b.lastChecksum;
   }
+  if (internalChecksum !== internalNative.total_vertices || lyonChecksum !== lyonNative.total_vertices) {
+    throw new Error("WASM and native workload vertex counts differ");
+  }
 
   const report = {
-    sourceHead: process.env.GITHUB_HEAD_SHA || process.env.GITHUB_SHA || "local",
+    sourceHead,
+    rustVersion: execFileSync("rustc", ["--version"], { encoding: "utf8" }).trim(),
+    cargoVersion: execFileSync("cargo", ["--version"], { encoding: "utf8" }).trim(),
     issue: 123,
     workload:
       "experiments/drawing-comparison/src/workload.rs: 50 rectangles, 50 triangles, " +
@@ -168,6 +263,8 @@ async function main() {
       internal: internalChecksum,
       lyon: lyonChecksum,
     },
+    areaTolerances,
+    areaTolerancesRespected: areaViolations.length === 0,
     limitations: [
       "Compares CPU-side geometry/tessellation cost and WASM artifact size, not a GPU frame time: neither backend uploads to a GPU in this comparison (see docs/drawing-companion.md).",
       "Runtime is measured in Node's WebAssembly runtime, not a browser WASM runtime; it is not a browser frame-time measurement.",
@@ -180,6 +277,12 @@ async function main() {
   mkdirSync(dirname(file), { recursive: true });
   writeFileSync(file, JSON.stringify(report, null, 2) + "\n");
   console.log("Drawing comparison (issue #123)", JSON.stringify(report));
+
+  if (areaViolations.length > 0) {
+    throw new Error(
+      `area tolerance exceeded for: ${areaViolations.map(([k, v]) => `${k} (${(v.relativeDiff * 100).toFixed(2)}% > ${(v.tolerance * 100).toFixed(2)}%)`).join(", ")}`,
+    );
+  }
 }
 
 const isMain = process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url);

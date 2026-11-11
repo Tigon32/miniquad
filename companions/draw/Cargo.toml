@@ -17,3 +17,7 @@ miniquad = { path = "../../" }
 [[example]]
 name = "showcase"
 path = "examples/showcase.rs"
+
+[[example]]
+name = "hex_board"
+path = "examples/hex_board.rs"

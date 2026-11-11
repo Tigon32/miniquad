@@ -537,12 +537,32 @@ impl NSRange {
 unsafe impl Encode for NSRange {
     fn encode() -> Encoding {
         let encoding = format!(
-            // The SDK tag is `_NSRange`: Tigon32/miniquad#146.
-            "{{NSRange={}{}}}",
+            "{{_NSRange={}{}}}",
             u64::encode().as_str(),
             u64::encode().as_str(),
         );
         unsafe { Encoding::from_str(&encoding) }
+    }
+}
+
+#[cfg(test)]
+mod nsrange_encode_tests {
+    use super::NSRange;
+    use objc::Encode;
+    use std::mem::{align_of, size_of};
+
+    // The Apple SDK `Foundation/NSRange.h` declares `typedef struct _NSRange`,
+    // so `@encode(NSRange)` on macOS arm64 (Apple clang 21.0.0) is
+    // `{_NSRange=QQ}`, not `{NSRange=QQ}`. See Tigon32/miniquad#146.
+    #[test]
+    fn nsrange_encode_matches_sdk_tag() {
+        assert_eq!(NSRange::encode().as_str(), "{_NSRange=QQ}");
+    }
+
+    #[test]
+    fn nsrange_layout_matches_sdk_abi() {
+        assert_eq!(size_of::<NSRange>(), 16);
+        assert_eq!(align_of::<NSRange>(), 8);
     }
 }
 

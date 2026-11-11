@@ -183,9 +183,12 @@ pub mod window {
     /// Window might not be actually closed right away (exit(0) might not
     /// happen in the order_quit implmentation) and execution might continue for some time after
     /// But the window is going to be inevitably closed at some point.
+    /// On Android this calls Activity.finish().
     pub fn order_quit() {
         let mut d = native_display().lock().unwrap();
         d.quit_ordered = true;
+        #[cfg(target_os = "android")]
+        (d.native_requests)(native::Request::ScheduleUpdate);
     }
 
     /// Shortcut for `order_quit`. Will add a legacy attribute at some point.
@@ -198,9 +201,13 @@ pub mod window {
     /// (for instance to show a 'Really Quit?' dialog box).
     /// If the event handler callback does nothing, the application will be quit as usual.
     /// To prevent this, call the function "cancel_quit()"" from inside the event handler.
+    /// On Android, pressing Back calls this function too, so a Back
+    /// action can be cancelled the same way.
     pub fn request_quit() {
         let mut d = native_display().lock().unwrap();
         d.quit_requested = true;
+        #[cfg(target_os = "android")]
+        (d.native_requests)(native::Request::ScheduleUpdate);
     }
 
     /// Cancels a pending quit request, either initiated
@@ -208,6 +215,8 @@ pub mod window {
     /// by calling "request_quit()". The only place where calling this
     /// function makes sense is from inside the event handler callback when
     /// the "quit_requested_event" event has been received
+    /// On Android this has no effect once the activity's real
+    /// `onDestroy` callback has already started.
     pub fn cancel_quit() {
         let mut d = native_display().lock().unwrap();
         d.quit_requested = false;

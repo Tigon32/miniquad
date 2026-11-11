@@ -126,3 +126,102 @@ pub mod gl;
 pub use wasm::webgl as gl;
 
 pub mod query_stab;
+
+/// Run the quit callback without the display lock. Return whether to finish.
+#[cfg(any(target_os = "android", test))]
+pub(crate) fn drive_android_quit_state(
+    display: &std::sync::Mutex<NativeDisplayData>,
+    confirm_quit: impl FnOnce(),
+) -> bool {
+    let needs_confirmation = {
+        let d = display.lock().unwrap();
+        d.quit_requested && !d.quit_ordered
+    };
+
+    if needs_confirmation {
+        confirm_quit();
+
+        let mut d = display.lock().unwrap();
+        d.quit_ordered = d.quit_ordered || d.quit_requested;
+    }
+
+    display.lock().unwrap().quit_ordered
+}
+
+#[cfg(test)]
+mod android_quit_state_tests {
+    use super::{drive_android_quit_state, Clipboard, NativeDisplayData};
+    use std::sync::Mutex;
+
+    struct NoopClipboard;
+    impl Clipboard for NoopClipboard {
+        fn get(&mut self) -> Option<String> {
+            None
+        }
+        fn set(&mut self, _string: &str) {}
+    }
+
+    fn display_with(quit_requested: bool, quit_ordered: bool) -> Mutex<NativeDisplayData> {
+        #[cfg(not(target_os = "android"))]
+        let (tx, _rx) = std::sync::mpsc::channel();
+        #[cfg(target_os = "android")]
+        let tx = Box::new(|_| {});
+        let mut data = NativeDisplayData::new(0, 0, tx, Box::new(NoopClipboard));
+        data.quit_requested = quit_requested;
+        data.quit_ordered = quit_ordered;
+        Mutex::new(data)
+    }
+
+    #[test]
+    fn confirmed_quit_is_ordered_without_deadlocking() {
+        let display = display_with(true, false);
+
+        let quit_ordered = drive_android_quit_state(&display, || {
+            let _ = display.try_lock().unwrap().quit_requested;
+        });
+
+        assert!(quit_ordered);
+        assert!(display.lock().unwrap().quit_ordered);
+    }
+
+    #[test]
+    fn cancel_quit_inside_confirm_keeps_activity_open() {
+        let display = display_with(true, false);
+
+        let quit_ordered = drive_android_quit_state(&display, || {
+            display.try_lock().unwrap().quit_requested = false;
+        });
+
+        assert!(!quit_ordered);
+        assert!(!display.lock().unwrap().quit_ordered);
+    }
+
+    #[test]
+    fn already_ordered_quit_skips_reconfirmation() {
+        let display = display_with(true, true);
+
+        let quit_ordered = drive_android_quit_state(&display, || {
+            panic!("confirm_quit must not run once quit_ordered is already true");
+        });
+
+        assert!(quit_ordered);
+    }
+
+    #[test]
+    fn idle_frame_keeps_running_without_confirmation() {
+        let display = display_with(false, false);
+        assert!(!drive_android_quit_state(&display, || {
+            panic!("an idle frame must not request quit confirmation");
+        }));
+    }
+
+    #[test]
+    fn order_quit_inside_confirmation_overrides_cancel() {
+        let display = display_with(true, false);
+        assert!(drive_android_quit_state(&display, || {
+            let mut d = display.try_lock().unwrap();
+            d.quit_ordered = true;
+            d.quit_requested = false;
+        }));
+    }
+}

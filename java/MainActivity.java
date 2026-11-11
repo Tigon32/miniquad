@@ -287,8 +287,7 @@ public class MainActivity extends Activity {
     public void onBackPressed() {
         Log.w("SAPP", "onBackPressed");
 
-        // Back does not call request_quit yet: #151.
-        super.onBackPressed();
+        QuadNative.activityOnBackPressed();
     }
 
     @Override

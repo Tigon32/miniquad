@@ -17,6 +17,7 @@ The documents are **STE-aligned drafts**. We have not completed a full ASD-STE10
 * [0008 — Keep optional voxel simulation outside Miniquad core](0008-optional-voxel-topologies.md) — **Proposed**
 * [0009 — Keep browser adoption tools outside the core library](0009-optional-browser-adoption-layer.md) — **Proposed**
 * [0011 — Add optional hexagonal-prism voxels beside cubic voxels](0011-optional-hexagonal-prism-topology.md) — **Proposed**
+* [0015 — Prove the WebGPU integration before selecting its implementation](0015-proof-gated-webgpu-migration.md) — **Proposed**
 
 ## Write a new decision
 

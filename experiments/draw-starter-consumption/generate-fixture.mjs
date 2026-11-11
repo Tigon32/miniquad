@@ -18,7 +18,6 @@ import { execFileSync } from "node:child_process";
 import {
   existsSync,
   readFileSync,
-  rmSync,
   writeFileSync,
 } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -33,19 +32,11 @@ export const FIXTURE_DEST = join(
   FIXTURE_NAME
 );
 const GIT_URL = "https://github.com/Tigon32/miniquad.git";
+export const FIXTURE_SOURCE_SHA = "de6bff785d1ec71bad1b47ef032d19405c6fd7e2";
+const APPLICATION_PATH = "experiments/drawing-comparison/external-consumer/examples/consume.rs";
 
 function fail(message) {
-  console.error(`error: ${message}`);
-  process.exit(1);
-}
-
-/** Resolves the exact commit this checkout is at, so the fixture always
- * targets a revision this repository can itself verify (never a
- * hard-coded SHA that could silently drift from the checkout). */
-export function resolveHeadSha({ execFileSyncImpl = execFileSync } = {}) {
-  return execFileSyncImpl("git", ["-C", REPO_ROOT, "rev-parse", "HEAD"], {
-    encoding: "utf8",
-  }).trim();
+  throw new Error(message);
 }
 
 /** Adds `miniquad-draw` to the generated project's [dependencies],
@@ -58,9 +49,9 @@ export function addMiniquadDrawDependency(destination, rev) {
   const cargoTomlPath = join(destination, "Cargo.toml");
   const original = readFileSync(cargoTomlPath, "utf8");
   const expectedMiniquadLine = `miniquad = { git = "${GIT_URL}", rev = "${rev}" }`;
-  if (!original.includes(expectedMiniquadLine)) {
+  if (!original.includes(`${expectedMiniquadLine}\n`) || original.includes("miniquad-draw =")) {
     fail(
-      `Expected to find this exact miniquad dependency line in ` +
+      `Expected this exact miniquad dependency and no miniquad-draw entry in ` +
         `${cargoTomlPath}:\n  ${expectedMiniquadLine}\n` +
         "Refusing to add miniquad-draw at a possibly different " +
         "revision. See docs/browser-starter-drawing.md."
@@ -75,84 +66,15 @@ export function addMiniquadDrawDependency(destination, rev) {
   return { cargoTomlPath, drawLine: drawLine.trim() };
 }
 
-/** The generated starter's src/main.rs, replaced with application code
- * that calls only `miniquad-draw`'s public API (Batch, Color, Rect,
- * Renderer, Transform2D), in the same shape as the path-dependency
- * reference fixture at
- * experiments/drawing-comparison/external-consumer/examples/consume.rs.
- * No file from companions/draw/ is copied here.
- *
- * The starter's `mq_params_*` exports (speed / foreground / background)
- * are intentionally dropped: see "Which optional host controls remain
- * available" in docs/browser-starter-drawing.md. Pause/Resume/Focus are
- * unaffected -- they do not depend on these exports. */
-export const DRAWING_MAIN_RS = `//! Issue #123 generated-starter consumption proof.
-//!
-//! This file replaces the default starter's animated-quad application
-//! with one that only calls \`miniquad-draw\`'s public API. See
-//! \`docs/browser-starter-drawing.md\` for the recipe and for exactly
-//! which optional host controls (the "Parameters" fieldset) are
-//! unavailable as a result -- Pause, Resume, and Focus keep working.
-use miniquad::*;
-use miniquad_draw::{Batch, Color, Rect, Renderer, Transform2D};
-
-struct Stage {
-    ctx: Box<dyn RenderingBackend>,
-    renderer: Renderer,
-}
-
-impl Stage {
-    pub fn new() -> Stage {
-        let mut ctx: Box<dyn RenderingBackend> = window::new_rendering_backend();
-        let renderer = Renderer::new(ctx.as_mut());
-        Stage { ctx, renderer }
-    }
-}
-
-impl EventHandler for Stage {
-    fn update(&mut self) {}
-
-    fn draw(&mut self) {
-        let (width, height) = window::screen_size();
-
-        let mut batch = Batch::new();
-        batch
-            .rectangle(
-                Rect::new(width * 0.2, height * 0.2, width * 0.3, height * 0.3),
-                Color::new(0.85, 0.2, 0.2, 1.0),
-                Transform2D::IDENTITY,
-            )
-            .expect("fixture rectangle stays in bounds");
-        batch
-            .circle(
-                (width * 0.65, height * 0.6),
-                (width.min(height) * 0.15).max(1.0),
-                24,
-                Color::new(0.2, 0.5, 0.9, 1.0),
-                Transform2D::IDENTITY,
-            )
-            .expect("fixture circle radius and segment count stay in bounds");
-
-        self.ctx
-            .begin_default_pass(PassAction::clear_color(0.1, 0.1, 0.12, 1.0));
-        self.renderer.draw(self.ctx.as_mut(), &batch, (width, height));
-        self.ctx.end_render_pass();
-        self.ctx.commit_frame();
-    }
-}
-
-fn main() {
-    let conf = conf::Conf::default();
-    miniquad::start(conf, move || Box::new(Stage::new()));
-}
-`;
-
 export function generateFixture({ execFileSyncImpl = execFileSync } = {}) {
   if (existsSync(FIXTURE_DEST)) {
-    rmSync(FIXTURE_DEST, { recursive: true, force: true });
+    fail(`Fixture destination already exists: ${FIXTURE_DEST}. Refusing to overwrite it.`);
   }
 
-  const rev = resolveHeadSha({ execFileSyncImpl });
+  const rev = FIXTURE_SOURCE_SHA;
+  console.log(`Fetching the public fixture source at ${rev} ...`);
+  execFileSyncImpl("git", ["-C", REPO_ROOT, "fetch", "--no-tags", GIT_URL, rev], { stdio: "inherit" });
+  const application = execFileSyncImpl("git", ["-C", REPO_ROOT, "show", `${rev}:${APPLICATION_PATH}`], { encoding: "utf8" });
 
   console.log(`Generating starter at revision ${rev} ...`);
   execFileSyncImpl(
@@ -179,7 +101,7 @@ export function generateFixture({ execFileSyncImpl = execFileSync } = {}) {
   const { drawLine } = addMiniquadDrawDependency(FIXTURE_DEST, rev);
   console.log(`Added dependency: ${drawLine}`);
 
-  writeFileSync(join(FIXTURE_DEST, "src", "main.rs"), DRAWING_MAIN_RS);
+  writeFileSync(join(FIXTURE_DEST, "src", "main.rs"), application);
   console.log("Replaced src/main.rs with a miniquad-draw-only application.");
 
   console.log("Building for wasm32-unknown-unknown (this fetches the pinned git revision) ...");
@@ -197,7 +119,8 @@ function main() {
   try {
     generateFixture();
   } catch (error) {
-    fail(error.message);
+    console.error(`error: ${error.message}`);
+    process.exitCode = 1;
   }
 }
 

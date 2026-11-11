@@ -7,6 +7,8 @@ on:
       - 'js/**'
       - 'companions/draw/**'
       - 'experiments/drawing-comparison/external-consumer/**'
+      - 'experiments/draw-starter-consumption/**'
+      - 'tests/starter-generator.test.mjs'
       - 'companions/voxel/**'
       - 'templates/browser/**'
       - 'scripts/create-browser-project.mjs'
@@ -53,12 +55,21 @@ jobs:
           echo "MINIQUAD_STARTER_PATH=$RUNNER_TEMP/miniquad-browser-starter" >> "$GITHUB_ENV"
       - name: Install pinned Playwright browser engines and host dependencies
         run: npx playwright install --with-deps chromium firefox webkit
+      - name: Build a Git-pinned generated drawing consumer
+        run: node experiments/draw-starter-consumption/generate-fixture.mjs
       - name: Run Chromium headless and Firefox/WebKit with virtual display
         run: |
           status=0
           MINIQUAD_BROWSER=chromium npm run test:browser || status=1
           xvfb-run -a env MINIQUAD_HEADFUL=1 MINIQUAD_BROWSER=firefox npm run test:browser || status=1
           xvfb-run -a env MINIQUAD_HEADFUL=1 MINIQUAD_BROWSER=webkit npm run test:browser || status=1
+          exit "$status"
+      - name: Test the generated drawing consumer in three engines
+        run: |
+          status=0
+          MINIQUAD_BROWSER=chromium npx playwright test --config experiments/draw-starter-consumption/playwright.config.mjs || status=1
+          xvfb-run -a env MINIQUAD_HEADFUL=1 MINIQUAD_BROWSER=firefox npx playwright test --config experiments/draw-starter-consumption/playwright.config.mjs || status=1
+          xvfb-run -a env MINIQUAD_HEADFUL=1 MINIQUAD_BROWSER=webkit npx playwright test --config experiments/draw-starter-consumption/playwright.config.mjs || status=1
           exit "$status"
       - name: Store traces when an engine fails
         if: failure()

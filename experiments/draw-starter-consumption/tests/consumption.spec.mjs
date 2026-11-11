@@ -52,6 +52,7 @@ test.describe("generated starter: miniquad-draw consumption proof", () => {
     });
 
     test("drops the Parameters controls but keeps Pause/Resume/Focus", async ({ page }) => {
+        const errors = collectErrors(page);
         await page.goto("/");
         await page.waitForFunction(() => window.document.getElementById("status")?.dataset.state === "running");
 
@@ -75,5 +76,7 @@ test.describe("generated starter: miniquad-draw consumption proof", () => {
         await page.waitForFunction(() => window.document.getElementById("status")?.dataset.state === "running");
         await expect(page.locator("#focus-app")).toBeEnabled();
         await page.locator("#focus-app").click();
+        await expect(page.frameLocator("#host iframe").locator("#glcanvas")).toBeFocused();
+        expect(errors).toEqual([]);
     });
 });

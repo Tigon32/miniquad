@@ -11,7 +11,6 @@ import { fileURLToPath } from "node:url";
 import { FIXTURE_DEST } from "./generate-fixture.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const repoRoot = resolve(here, "..", "..");
 
 const browser = process.env.MINIQUAD_BROWSER;
 const known = ["chromium", "firefox", "webkit"];
@@ -19,10 +18,11 @@ if (browser && !known.includes(browser)) {
   throw new Error("Invalid MINIQUAD_BROWSER: " + browser);
 }
 const port = Number(process.env.DRAW_STARTER_CONSUMPTION_PORT || 4282);
+if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Invalid DRAW_STARTER_CONSUMPTION_PORT");
 
 export default defineConfig({
-  testDir: resolve(repoRoot, "tests/browser"),
-  testMatch: "draw-starter-consumption.spec.mjs",
+  testDir: resolve(here, "tests"),
+  testMatch: "consumption.spec.mjs",
   timeout: 45000,
   expect: { timeout: 20000 },
   retries: 0,
@@ -50,7 +50,8 @@ export default defineConfig({
       })),
   ],
   webServer: {
-    command: "node " + resolve(FIXTURE_DEST, "scripts", "serve.mjs") + " --port " + port,
+    command: "node scripts/serve.mjs --port " + port,
+    cwd: FIXTURE_DEST,
     url: "http://127.0.0.1:" + port + "/",
     reuseExistingServer: false,
     timeout: 20000,

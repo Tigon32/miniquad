@@ -17,6 +17,7 @@ import {
   sha256 as buildSha256,
   updateManifestWithBuildOutputs,
 } from "../templates/browser/project-scripts/build.mjs";
+import { addMiniquadDrawDependency } from "../experiments/draw-starter-consumption/generate-fixture.mjs";
 
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -28,6 +29,39 @@ function makeScratchDir(prefix) {
   mkdirSync(scratchRoot, { recursive: true });
   return mkdtempSync(join(scratchRoot, prefix));
 }
+
+test("drawing dependency preserves the starter's Git source identity", () => {
+  const destination = makeScratchDir("draw-dependency-");
+  const revision = "d".repeat(40);
+  const core = `miniquad = { git = "https://github.com/Tigon32/miniquad.git", rev = "${revision}" }`;
+  try {
+    writeFileSync(join(destination, "Cargo.toml"), `[dependencies]\n${core}\n`);
+    addMiniquadDrawDependency(destination, revision);
+    assert.equal(readFileSync(join(destination, "Cargo.toml"), "utf8"),
+      `[dependencies]\n${core}\n${core.replace("miniquad =", "miniquad-draw =")}\n`);
+  } finally {
+    rmSync(destination, { recursive: true, force: true });
+  }
+});
+
+test("drawing dependency rejects mismatched, duplicate, or unterminated entries without changing the manifest", () => {
+  const destination = makeScratchDir("draw-dependency-invalid-");
+  const revision = "d".repeat(40);
+  const core = `miniquad = { git = "https://github.com/Tigon32/miniquad.git", rev = "${revision}" }`;
+  try {
+    for (const original of [
+      `[dependencies]\n${core.replace(revision, "e".repeat(40))}\n`,
+      `[dependencies]\n${core}\nminiquad-draw = "0.1"\n`,
+      `[dependencies]\n${core}`,
+    ]) {
+      writeFileSync(join(destination, "Cargo.toml"), original);
+      assert.throws(() => addMiniquadDrawDependency(destination, revision), /Refusing/);
+      assert.equal(readFileSync(join(destination, "Cargo.toml"), "utf8"), original);
+    }
+  } finally {
+    rmSync(destination, { recursive: true, force: true });
+  }
+});
 
 function fakeExecFileSync({ hasCargo = true, hasRustup = true, hasWasmTarget = true } = {}) {
   return (command, args) => {

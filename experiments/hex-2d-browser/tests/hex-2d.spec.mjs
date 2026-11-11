@@ -521,30 +521,37 @@ test.describe("keyboard and accessibility (section 4.5)", () => {
   // Parent-approved expansion of the shared js/host-preferences.mjs
   // adapter: a `prefers-contrast` change must be able to go back to
   // "no-preference", not only ever forward to "more"/"less"/"custom".
+  test("prefers-contrast more selects the high-contrast theme", async ({ page }) => {
+    await page.emulateMedia({ contrast: "more" });
+    await page.setViewportSize({ width: 900, height: 700 });
+    await gotoBoard(page);
+    const png = PNG.sync.read(await canvasLocator(page).screenshot());
+    assertClose(pixelAt(png, 240, 240), THEME_COLORS[2].cell, TOLERANCE, "high-contrast cell");
+  });
+
   test("prefers-contrast more reverts to the scheme theme when it stops matching", async ({ page, browserName }) => {
     await page.emulateMedia({ contrast: "more" });
     await page.setViewportSize({ width: 900, height: 700 });
     await gotoBoard(page);
-    let png = PNG.sync.read(await canvasLocator(page).screenshot());
+    const png = PNG.sync.read(await canvasLocator(page).screenshot());
     assertClose(pixelAt(png, 240, 240), THEME_COLORS[2].cell, TOLERANCE, "high-contrast cell");
 
+    await page.evaluate(() => {
+      const media = window.matchMedia("(prefers-contrast: more)");
+      window.__hexContrastChangeEvents = 0;
+      media.addEventListener("change", () => window.__hexContrastChangeEvents++);
+    });
     await page.emulateMedia({ contrast: "no-preference" });
-    // Playwright 1.56.1's Firefox emulation does not dispatch
-    // MediaQueryList `change` events for `prefers-contrast`: a raw
-    // `matchMedia("(prefers-contrast: more)")` listener never fires in
-    // either direction in Firefox, even though `.matches` itself is
-    // correct (verified directly: it does flip back to `false`, and
-    // `(prefers-contrast: no-preference)` correctly reports `true`,
-    // after `emulateMedia({ contrast: "no-preference" })`). Without a
-    // `change` event, this adapter's listener-driven `recomputeContrast`
-    // is never invoked, so the board theme never updates, independent of
-    // this adapter or the hex board. `forced-colors` and `color-scheme`
-    // changes do dispatch events correctly in the same harness (see the
-    // next test), so this is a tool gap, not a contract or
-    // implementation gap; the bidirectional fix itself is still
-    // exercised on chromium and webkit below. Report as blocked, not
-    // passed, on firefox.
-    test.skip(browserName === "firefox", "Playwright 1.56.1 Firefox emulation does not dispatch MediaQueryList change events for prefers-contrast");
+    await page.waitForTimeout(100);
+    const mediaState = await page.evaluate(() => ({
+      matches: window.matchMedia("(prefers-contrast: more)").matches,
+      changeEvents: window.__hexContrastChangeEvents
+    }));
+    expect(mediaState.matches).toBe(false);
+    test.skip(
+      browserName === "firefox" && mediaState.changeEvents === 0,
+      "Firefox media emulation changes .matches but does not dispatch prefers-contrast change events"
+    );
     await expect.poll(async () => {
       const shot = PNG.sync.read(await canvasLocator(page).screenshot());
       return pixelAt(shot, 240, 240);

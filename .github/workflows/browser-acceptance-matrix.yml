@@ -6,6 +6,7 @@ on:
       - 'tests/browser/**'
       - 'js/**'
       - 'companions/draw/**'
+      - 'experiments/drawing-comparison/external-consumer/**'
       - 'companions/voxel/**'
       - 'templates/browser/**'
       - 'scripts/create-browser-project.mjs'

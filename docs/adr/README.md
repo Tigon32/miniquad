@@ -22,6 +22,7 @@ The documents are **STE-aligned drafts**. We have not completed a full ASD-STE10
 * [0015 — Prove the WebGPU integration before selecting its implementation](0015-proof-gated-webgpu-migration.md) — **Proposed**
 * [0016 — Support a bounded set of modern, security-maintained platforms](0016-modern-platform-support-policy.md) — **Proposed**
 * [0017 — Manage worktree ownership and post-merge cleanup](0017-manage-worktree-lifecycles.md) — **Accepted**
+* [0020 — Clear the active Metal render target in place, not the default framebuffer](0020-metal-clear-reopens-the-active-encoder.md) — **Accepted**
 
 ## Write a new decision
 

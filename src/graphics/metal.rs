@@ -221,7 +221,9 @@ pub struct Buffer {
     size: usize,
     /// Cached `MTLResourceOptions` for grow-on-demand allocations.
     options: u64,
-    //index_type: Option<IndexType>,
+    /// Set for index buffers from the source element size; `draw`
+    /// uses it to pick `MTLIndexType` and the index byte offset.
+    index_type: Option<MTLIndexType>,
     value: usize,
     next_value: usize,
 }
@@ -248,7 +250,7 @@ struct PipelineInternal {
     //layout: Vec<BufferLayout>,
     //attributes: Vec<VertexAttributeInternal>,
     _shader: ShaderId,
-    //params: PipelineParams,
+    primitive_type: MTLPrimitiveType,
 }
 
 #[derive(Clone, Copy)]
@@ -341,6 +343,8 @@ pub struct MetalContext {
     uniform_buffers: [ObjcId; 3],
     // cached index_buffer from apply_bindings
     index_buffer: Option<ObjcId>,
+    // cached index element type from apply_bindings, for `draw`
+    index_type: MTLIndexType,
     // cached pipeline from apply_pipeline
     current_pipeline: Option<Pipeline>,
     current_ub_offset: u64,
@@ -438,6 +442,7 @@ impl MetalContext {
                 textures: Textures(Vec::new()),
                 passes: ResourceManager::default(),
                 index_buffer: None,
+                index_type: MTLIndexType::UInt16,
                 current_pipeline: None,
                 uniform_buffers,
                 current_frame_index: 1,
@@ -499,6 +504,16 @@ mod tests {
         _queue: RcObjcId,
         _view: RcObjcId,
         _device: RcObjcId,
+    }
+
+    // A panicking test can leave a real `MTLRenderCommandEncoder`
+    // without `endEncoding`; Metal validates that at the encoder's
+    // dealloc and aborts the whole process, not just the test. End
+    // it here so a caught panic reports as a normal test failure.
+    impl Drop for Harness {
+        fn drop(&mut self) {
+            self.context.really_end_encoder();
+        }
     }
 
     extern "C" fn color_format(_: &Object, _: Sel) -> u64 {
@@ -576,6 +591,7 @@ mod tests {
                     current_frame_index: 1,
                     uniform_buffers: [nil; 3],
                     index_buffer: None,
+                    index_type: MTLIndexType::UInt16,
                     current_pipeline: None,
                     current_ub_offset: 0,
                 },
@@ -768,6 +784,58 @@ mod tests {
 
     #[test]
     #[ignore = "requires a real macOS arm64 Metal device"]
+    fn draw_rejects_negative_base_element_num_elements_and_num_instances() {
+        // Negative values are cast to `u64`; reject them before that
+        // wraps into a huge offset/count. Needs `render_harness` (a
+        // real encoder), since `apply_pipeline` calls
+        // `setRenderPipelineState:`, which the stub view can't answer.
+        autoreleasepool(|| unsafe {
+            let mut harness = render_harness();
+            let context = &mut harness.context;
+            let color = context.new_texture(
+                TextureAccess::RenderTarget,
+                TextureSource::Empty,
+                TextureParams {
+                    width: 1,
+                    height: 1,
+                    format: TextureFormat::RGBA8,
+                    ..TextureParams::default()
+                },
+            );
+            let pass = context.new_render_pass_mrt(&[color], None, None);
+            let shader = context
+                .new_shader(ShaderSource::Msl { program: PROGRAM }, shader_meta())
+                .unwrap();
+            let pipeline = context.new_pipeline(&[], &[], shader, PipelineParams::default());
+            let buffer = context.new_buffer(
+                BufferType::IndexBuffer,
+                BufferUsage::Immutable,
+                BufferSource::slice(&[0_u16, 1, 2]),
+            );
+            context.begin_pass(Some(pass), PassAction::clear_color(0., 0., 0., 1.));
+            context.apply_pipeline(&pipeline);
+            context.apply_bindings_from_slice(&[], buffer, &[]);
+            assert!(catch_unwind(AssertUnwindSafe(|| context.draw(-1, 3, 1))).is_err());
+            assert!(catch_unwind(AssertUnwindSafe(|| context.draw(0, -3, 1))).is_err());
+            assert!(catch_unwind(AssertUnwindSafe(|| context.draw(0, 3, -1))).is_err());
+            // A valid call on the same (still-open) encoder must still run.
+            context.draw(0, 3, 1);
+            context.end_render_pass();
+            context.really_end_encoder();
+            let command_buffer = context.command_buffer.take().unwrap();
+            msg_send_![command_buffer, commit];
+            msg_send_![command_buffer, waitUntilCompleted];
+
+            context.delete_buffer(buffer);
+            context.delete_pipeline(pipeline);
+            context.delete_shader(shader);
+            context.delete_render_pass(pass);
+            context.delete_texture(color);
+        });
+    }
+
+    #[test]
+    #[ignore = "requires a real macOS arm64 Metal device"]
     fn invalid_shaders_return_errors_instead_of_panicking() {
         autoreleasepool(|| {
             let mut harness = harness();
@@ -891,6 +959,779 @@ mod tests {
             );
         });
     }
+
+    const LINE_PROGRAM: &str = r#"
+            #include <metal_stdlib>
+            using namespace metal;
+            struct VertexIn { float2 position [[attribute(0)]]; };
+            vertex float4 vertexShader(VertexIn in [[stage_in]]) {
+                return float4(in.position, 0.0, 1.0);
+            }
+            fragment float4 fragmentShader() { return float4(1.0, 1.0, 1.0, 1.0); }
+        "#;
+
+    // Carries a per-vertex clip-space z so a test can place a
+    // full-screen probe triangle at a known depth and read, from the
+    // red fragment it writes (or doesn't), whether the depth test
+    // passed.
+    const DEPTH_PROBE_PROGRAM: &str = r#"
+            #include <metal_stdlib>
+            using namespace metal;
+            struct VertexIn { float3 position [[attribute(0)]]; };
+            vertex float4 vertexShader(VertexIn in [[stage_in]]) {
+                return float4(in.position, 1.0);
+            }
+            fragment float4 fragmentShader() { return float4(1.0, 0.0, 0.0, 1.0); }
+        "#;
+
+    extern "C" fn render_color_format(_: &Object, _: Sel) -> u64 {
+        MTLPixelFormat::RGBA8Unorm as u64
+    }
+
+    extern "C" fn render_depth_format(_: &Object, _: Sel) -> u64 {
+        MTLPixelFormat::Depth32Float_Stencil8 as u64
+    }
+
+    extern "C" fn sample_count_4(_: &Object, _: Sel) -> u64 {
+        4
+    }
+
+    // A real-rendering view stub: unlike `harness()`'s opaque
+    // BGRA8Unorm, this reports a pixel format the test can decode
+    // byte-for-byte, and a real depth/stencil format so pipelines
+    // match an attached depth texture.
+    fn render_harness() -> Harness {
+        static VIEW_CLASS: OnceLock<&'static Class> = OnceLock::new();
+        let view_class = VIEW_CLASS.get_or_init(|| {
+            let mut declaration =
+                ClassDecl::new("MQMetalRenderTestView", class!(NSObject)).unwrap();
+            unsafe {
+                declaration.add_method(
+                    sel!(colorPixelFormat),
+                    render_color_format as extern "C" fn(&Object, Sel) -> u64,
+                );
+                declaration.add_method(
+                    sel!(depthStencilPixelFormat),
+                    render_depth_format as extern "C" fn(&Object, Sel) -> u64,
+                );
+                declaration.add_method(
+                    sel!(sampleCount),
+                    sample_count as extern "C" fn(&Object, Sel) -> u64,
+                );
+            }
+            declaration.register()
+        });
+        unsafe {
+            let device = owned(MTLCreateSystemDefaultDevice());
+            let view = owned(msg_send![*view_class, new]);
+            let queue = owned(msg_send![device.as_id(), newCommandQueue]);
+            Harness {
+                context: MetalContext {
+                    buffers: Default::default(),
+                    shaders: Default::default(),
+                    pipelines: Default::default(),
+                    textures: Textures(Vec::new()),
+                    passes: Default::default(),
+                    command_queue: queue.as_id(),
+                    command_buffer: None,
+                    render_encoder: None,
+                    current_pass_width: 0,
+                    current_pass_height: 0,
+                    current_pass_target: None,
+                    pending_end_encoder: false,
+                    view: view.as_id(),
+                    device: device.as_id(),
+                    current_frame_index: 1,
+                    uniform_buffers: [nil; 3],
+                    index_buffer: None,
+                    index_type: MTLIndexType::UInt16,
+                    current_pipeline: None,
+                    current_ub_offset: 0,
+                },
+                _queue: queue,
+                _view: view,
+                _device: device,
+            }
+        }
+    }
+
+    // `new_pipeline` requires every pipeline's sample count to match
+    // `self.view.sampleCount()`, so an MSAA offscreen pass needs a
+    // view reporting that same count, not `render_harness`'s 1.
+    fn render_harness_msaa() -> Harness {
+        static VIEW_CLASS: OnceLock<&'static Class> = OnceLock::new();
+        let view_class = VIEW_CLASS.get_or_init(|| {
+            let mut declaration =
+                ClassDecl::new("MQMetalRenderTestViewMsaa", class!(NSObject)).unwrap();
+            unsafe {
+                declaration.add_method(
+                    sel!(colorPixelFormat),
+                    render_color_format as extern "C" fn(&Object, Sel) -> u64,
+                );
+                declaration.add_method(
+                    sel!(depthStencilPixelFormat),
+                    render_depth_format as extern "C" fn(&Object, Sel) -> u64,
+                );
+                declaration.add_method(
+                    sel!(sampleCount),
+                    sample_count_4 as extern "C" fn(&Object, Sel) -> u64,
+                );
+            }
+            declaration.register()
+        });
+        unsafe {
+            let device = owned(MTLCreateSystemDefaultDevice());
+            let view = owned(msg_send![*view_class, new]);
+            let queue = owned(msg_send![device.as_id(), newCommandQueue]);
+            Harness {
+                context: MetalContext {
+                    buffers: Default::default(),
+                    shaders: Default::default(),
+                    pipelines: Default::default(),
+                    textures: Textures(Vec::new()),
+                    passes: Default::default(),
+                    command_queue: queue.as_id(),
+                    command_buffer: None,
+                    render_encoder: None,
+                    current_pass_width: 0,
+                    current_pass_height: 0,
+                    current_pass_target: None,
+                    pending_end_encoder: false,
+                    view: view.as_id(),
+                    device: device.as_id(),
+                    current_frame_index: 1,
+                    uniform_buffers: [nil; 3],
+                    index_buffer: None,
+                    index_type: MTLIndexType::UInt16,
+                    current_pipeline: None,
+                    current_ub_offset: 0,
+                },
+                _queue: queue,
+                _view: view,
+                _device: device,
+            }
+        }
+    }
+
+    // Read an `RGBA8Unorm` `RenderTarget` texture's pixels through a
+    // blit to a CPU-visible buffer. Production `new_texture`
+    // allocates render targets with `StorageModePrivate`, so
+    // `getBytes` on the texture itself is unavailable; this mirrors
+    // the standard Metal readback path instead.
+    fn read_rgba8_texture(
+        context: &MetalContext,
+        texture: ObjcId,
+        width: u64,
+        height: u64,
+    ) -> Vec<u8> {
+        unsafe {
+            let bytes_per_row = width * 4;
+            let total_bytes = bytes_per_row * height;
+            let readback: ObjcId = msg_send![context.device,
+                newBufferWithLength: total_bytes
+                options: MTLResourceOptions::StorageModeShared];
+            assert!(
+                !readback.is_null(),
+                "Metal: readback buffer creation failed"
+            );
+            let blit_cmd: ObjcId = msg_send![context.command_queue, commandBuffer];
+            let blit_encoder = msg_send_![blit_cmd, blitCommandEncoder];
+            msg_send_![blit_encoder, copyFromTexture: texture
+                       sourceSlice: 0u64
+                       sourceLevel: 0u64
+                       sourceOrigin: MTLOrigin { x: 0, y: 0, z: 0 }
+                       sourceSize: MTLSize { width, height, depth: 1 }
+                       toBuffer: readback
+                       destinationOffset: 0u64
+                       destinationBytesPerRow: bytes_per_row
+                       destinationBytesPerImage: total_bytes];
+            msg_send_![blit_encoder, endEncoding];
+            msg_send_![blit_cmd, commit];
+            msg_send_![blit_cmd, waitUntilCompleted];
+            let ptr: *const u8 = msg_send![readback, contents];
+            let bytes = std::slice::from_raw_parts(ptr, total_bytes as usize).to_vec();
+            msg_send_![readback, release];
+            bytes
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a real macOS arm64 Metal device"]
+    fn draw_honors_base_element_offset_lines_primitive_and_u32_indices() {
+        autoreleasepool(|| unsafe {
+            let mut harness = render_harness();
+            let context = &mut harness.context;
+
+            let color = context.new_texture(
+                TextureAccess::RenderTarget,
+                TextureSource::Empty,
+                TextureParams {
+                    width: 4,
+                    height: 1,
+                    format: TextureFormat::RGBA8,
+                    ..TextureParams::default()
+                },
+            );
+            let depth = context.new_texture(
+                TextureAccess::RenderTarget,
+                TextureSource::Empty,
+                TextureParams {
+                    width: 4,
+                    height: 1,
+                    format: TextureFormat::Depth,
+                    ..TextureParams::default()
+                },
+            );
+            let pass = context.new_render_pass_mrt(&[color], None, Some(depth));
+
+            let shader = context
+                .new_shader(
+                    ShaderSource::Msl {
+                        program: LINE_PROGRAM,
+                    },
+                    shader_meta(),
+                )
+                .unwrap();
+            let pipeline = context.new_pipeline(
+                &[BufferLayout::default()],
+                &[VertexAttribute::new("position", VertexFormat::Float2)],
+                shader,
+                PipelineParams {
+                    primitive_type: PrimitiveType::Lines,
+                    ..Default::default()
+                },
+            );
+
+            // Vertices 0,1 are an off-screen, zero-length sentinel
+            // line. Vertices 2,3 are a full-width horizontal line
+            // through the texture's single row. A correct
+            // `base_element` of 2 draws indices [2, 3]; an
+            // implementation that ignores `base_element` draws
+            // indices [0, 1] instead and leaves the texture cleared.
+            let vertex_buffer = context.new_buffer(
+                BufferType::VertexBuffer,
+                BufferUsage::Immutable,
+                BufferSource::slice(&[10.0_f32, 10.0, 10.0, 10.0, -1.0, 0.0, 1.0, 0.0]),
+            );
+            let index_buffer = context.new_buffer(
+                BufferType::IndexBuffer,
+                BufferUsage::Immutable,
+                BufferSource::slice(&[0_u32, 1, 2, 3]),
+            );
+
+            context.begin_pass(
+                Some(pass),
+                PassAction::Clear {
+                    color: Some((0., 0., 0., 1.)),
+                    depth: Some(1.),
+                    stencil: None,
+                },
+            );
+            context.apply_pipeline(&pipeline);
+            context.apply_bindings_from_slice(&[vertex_buffer], index_buffer, &[]);
+            context.draw(2, 2, 1);
+            context.end_render_pass();
+            context.really_end_encoder();
+            let command_buffer = context.command_buffer.take().unwrap();
+            msg_send_![command_buffer, commit];
+            msg_send_![command_buffer, waitUntilCompleted];
+
+            let color_texture = context.textures.get(color).texture;
+            let pixels = read_rgba8_texture(context, color_texture, 4, 1);
+            assert_eq!(
+                pixels,
+                vec![255_u8; 16],
+                "a correct base_element draws the real line across every column: {:?}",
+                pixels
+            );
+
+            context.delete_buffer(vertex_buffer);
+            context.delete_buffer(index_buffer);
+            context.delete_pipeline(pipeline);
+            context.delete_shader(shader);
+            context.delete_render_pass(pass);
+            context.delete_texture(depth);
+            context.delete_texture(color);
+        });
+    }
+
+    #[test]
+    #[ignore = "requires a real macOS arm64 Metal device"]
+    fn clear_during_an_active_pass_targets_the_current_pass_and_requires_rebind() {
+        // Covers Tigon32/miniquad#143 and MADR 0020: the public
+        // `clear()` must clear the pass already being recorded, not
+        // switch to the default framebuffer, even though Metal can
+        // only honor it by ending and reopening the encoder.
+        autoreleasepool(|| unsafe {
+            let mut harness = render_harness();
+            let context = &mut harness.context;
+            let color = context.new_texture(
+                TextureAccess::RenderTarget,
+                TextureSource::Empty,
+                TextureParams {
+                    width: 2,
+                    height: 1,
+                    format: TextureFormat::RGBA8,
+                    ..TextureParams::default()
+                },
+            );
+            let pass = context.new_render_pass_mrt(&[color], None, None);
+            let shader = context
+                .new_shader(
+                    ShaderSource::Msl {
+                        program: LINE_PROGRAM,
+                    },
+                    shader_meta(),
+                )
+                .unwrap();
+            let pipeline = context.new_pipeline(
+                &[BufferLayout::default()],
+                &[VertexAttribute::new("position", VertexFormat::Float2)],
+                shader,
+                PipelineParams::default(),
+            );
+            // A quad covering only the left texel (x in [-1, -0.1]);
+            // the right texel is left untouched so the readback can
+            // tell `clear`'s color from a draw's color.
+            let vertex_buffer = context.new_buffer(
+                BufferType::VertexBuffer,
+                BufferUsage::Immutable,
+                BufferSource::slice(&[-1.0_f32, -1.0, -0.1, -1.0, -0.1, 1.0, -1.0, 1.0]),
+            );
+            let index_buffer = context.new_buffer(
+                BufferType::IndexBuffer,
+                BufferUsage::Immutable,
+                BufferSource::slice(&[0_u16, 1, 2, 0, 2, 3]),
+            );
+
+            context.begin_pass(Some(pass), PassAction::clear_color(0., 0., 0., 1.));
+            let first_encoder = context.render_encoder.unwrap();
+
+            // The pass above is still open (no `end_render_pass`):
+            // this is the real public API, not a `begin_pass` proxy.
+            context.clear(Some((0., 1., 0., 1.)), None, None);
+            assert_eq!(
+                context.current_pass_target,
+                Some(Some(pass)),
+                "clear() mid-pass must keep targeting the active offscreen pass"
+            );
+            assert_ne!(
+                context.render_encoder.unwrap(),
+                first_encoder,
+                "Metal has no mid-encoder clear; clear() must open a fresh encoder on the same target"
+            );
+
+            // Per MADR 0020, the fresh encoder has no pipeline or
+            // bindings bound; reapply both before the next draw.
+            context.apply_pipeline(&pipeline);
+            context.apply_bindings_from_slice(&[vertex_buffer], index_buffer, &[]);
+            context.draw(0, 6, 1);
+            context.end_render_pass();
+            context.really_end_encoder();
+            let command_buffer = context.command_buffer.take().unwrap();
+            msg_send_![command_buffer, commit];
+            msg_send_![command_buffer, waitUntilCompleted];
+
+            let color_texture = context.textures.get(color).texture;
+            let pixels = read_rgba8_texture(context, color_texture, 2, 1);
+            assert_eq!(
+                pixels,
+                vec![255, 255, 255, 255, 0, 255, 0, 255],
+                "left texel: the rebound draw; right texel: clear()'s green reached the real target: {:?}",
+                pixels
+            );
+
+            context.delete_buffer(vertex_buffer);
+            context.delete_buffer(index_buffer);
+            context.delete_pipeline(pipeline);
+            context.delete_shader(shader);
+            context.delete_render_pass(pass);
+            context.delete_texture(color);
+        });
+    }
+
+    #[test]
+    #[ignore = "requires a real macOS arm64 Metal device"]
+    fn clear_preserves_color_and_depth_when_requested_components_are_none() {
+        // Covers Tigon32/miniquad#143: `PassAction::Clear { depth:
+        // None, .. }` (and `color: None`) must preserve the existing
+        // attachment contents (`Load`), matching the GL backend, not
+        // clear it to a hardcoded default. Proven by real rendering
+        // behavior (a depth-test probe draw), not descriptor
+        // inspection: a stale GL-only inspection could pass while
+        // still clearing to the wrong value.
+        autoreleasepool(|| unsafe {
+            let mut harness = render_harness();
+            let context = &mut harness.context;
+            let color = context.new_texture(
+                TextureAccess::RenderTarget,
+                TextureSource::Empty,
+                TextureParams {
+                    width: 1,
+                    height: 1,
+                    format: TextureFormat::RGBA8,
+                    ..TextureParams::default()
+                },
+            );
+            let depth = context.new_texture(
+                TextureAccess::RenderTarget,
+                TextureSource::Empty,
+                TextureParams {
+                    width: 1,
+                    height: 1,
+                    format: TextureFormat::Depth,
+                    ..TextureParams::default()
+                },
+            );
+            let pass = context.new_render_pass_mrt(&[color], None, Some(depth));
+            let shader = context
+                .new_shader(
+                    ShaderSource::Msl {
+                        program: DEPTH_PROBE_PROGRAM,
+                    },
+                    shader_meta(),
+                )
+                .unwrap();
+            // depth_write: false keeps every probe draw from
+            // disturbing the depth value the test is inspecting.
+            let probe = context.new_pipeline(
+                &[BufferLayout::default()],
+                &[VertexAttribute::new("position", VertexFormat::Float3)],
+                shader,
+                PipelineParams {
+                    depth_test: Comparison::Less,
+                    depth_write: false,
+                    ..Default::default()
+                },
+            );
+            // A full-screen triangle at clip-space z = 0.5.
+            let vertex_buffer = context.new_buffer(
+                BufferType::VertexBuffer,
+                BufferUsage::Immutable,
+                BufferSource::slice(&[-1.0_f32, -1.0, 0.5, 3.0, -1.0, 0.5, -1.0, 3.0, 0.5]),
+            );
+            let index_buffer = context.new_buffer(
+                BufferType::IndexBuffer,
+                BufferUsage::Immutable,
+                BufferSource::slice(&[0_u16, 1, 2]),
+            );
+            let run_pass = |context: &mut MetalContext, action, draw: bool| {
+                context.begin_pass(Some(pass), action);
+                if draw {
+                    context.apply_pipeline(&probe);
+                    context.apply_bindings_from_slice(&[vertex_buffer], index_buffer, &[]);
+                    context.draw(0, 3, 1);
+                }
+                context.end_render_pass();
+                context.really_end_encoder();
+                let command_buffer = context.command_buffer.take().unwrap();
+                msg_send_![command_buffer, commit];
+                msg_send_![command_buffer, waitUntilCompleted];
+            };
+            let color_texture = context.textures.get(color).texture;
+
+            // Baseline: depth = 0.0, color = black.
+            run_pass(
+                context,
+                PassAction::Clear {
+                    color: Some((0., 0., 0., 1.)),
+                    depth: Some(0.),
+                    stencil: None,
+                },
+                false,
+            );
+
+            // depth: None must preserve 0.0: the probe (z = 0.5)
+            // fails `Less` against it and is culled, so the fresh
+            // white clear survives untouched.
+            run_pass(
+                context,
+                PassAction::Clear {
+                    color: Some((1., 1., 1., 1.)),
+                    depth: None,
+                    stencil: None,
+                },
+                true,
+            );
+            assert_eq!(
+                read_rgba8_texture(context, color_texture, 1, 1),
+                vec![255, 255, 255, 255],
+                "depth: None must preserve the prior depth value, culling the probe"
+            );
+
+            // An explicit depth clear to 1.0 must still work: the
+            // probe now passes `Less` and overwrites the clear.
+            run_pass(
+                context,
+                PassAction::Clear {
+                    color: Some((0., 1., 0., 1.)),
+                    depth: Some(1.),
+                    stencil: None,
+                },
+                true,
+            );
+            assert_eq!(
+                read_rgba8_texture(context, color_texture, 1, 1),
+                vec![255, 0, 0, 255],
+                "an explicit depth clear must still let the probe pass"
+            );
+
+            // color: None must preserve the probe's red, not clear
+            // to a default.
+            run_pass(
+                context,
+                PassAction::Clear {
+                    color: None,
+                    depth: Some(1.),
+                    stencil: None,
+                },
+                false,
+            );
+            assert_eq!(
+                read_rgba8_texture(context, color_texture, 1, 1),
+                vec![255, 0, 0, 255],
+                "color: None must preserve the prior color contents"
+            );
+
+            context.delete_buffer(vertex_buffer);
+            context.delete_buffer(index_buffer);
+            context.delete_pipeline(probe);
+            context.delete_shader(shader);
+            context.delete_render_pass(pass);
+            context.delete_texture(depth);
+            context.delete_texture(color);
+        });
+    }
+
+    #[test]
+    #[ignore = "requires a real macOS arm64 Metal device"]
+    fn resolve_attachments_feature_renders_and_resolves_a_multisampled_pass() {
+        // Covers Tigon32/miniquad#143: a prior version of this test
+        // only created and deleted a resolve-capable pass descriptor
+        // without ever rendering through it. This renders into a
+        // real multisample target, lets Metal resolve it, and reads
+        // the resolve texture's actual pixels.
+        autoreleasepool(|| unsafe {
+            let mut harness = render_harness_msaa();
+            let context = &mut harness.context;
+            assert!(context.info().features.resolve_attachments);
+            let color = context.new_texture(
+                TextureAccess::RenderTarget,
+                TextureSource::Empty,
+                TextureParams {
+                    width: 2,
+                    height: 2,
+                    format: TextureFormat::RGBA8,
+                    sample_count: 4,
+                    ..TextureParams::default()
+                },
+            );
+            let resolve = context.new_texture(
+                TextureAccess::RenderTarget,
+                TextureSource::Empty,
+                TextureParams {
+                    width: 2,
+                    height: 2,
+                    format: TextureFormat::RGBA8,
+                    ..TextureParams::default()
+                },
+            );
+            let pass = context.new_render_pass_mrt(&[color], Some(&[resolve]), None);
+            let shader = context
+                .new_shader(
+                    ShaderSource::Msl {
+                        program: LINE_PROGRAM,
+                    },
+                    shader_meta(),
+                )
+                .unwrap();
+            let pipeline = context.new_pipeline(
+                &[BufferLayout::default()],
+                &[VertexAttribute::new("position", VertexFormat::Float2)],
+                shader,
+                PipelineParams::default(),
+            );
+            let vertex_buffer = context.new_buffer(
+                BufferType::VertexBuffer,
+                BufferUsage::Immutable,
+                BufferSource::slice(&[-3.0_f32, -3.0, 3.0, -3.0, 3.0, 3.0, -3.0, 3.0]),
+            );
+            let index_buffer = context.new_buffer(
+                BufferType::IndexBuffer,
+                BufferUsage::Immutable,
+                BufferSource::slice(&[0_u16, 1, 2, 0, 2, 3]),
+            );
+
+            context.begin_pass(Some(pass), PassAction::clear_color(0., 0., 0., 1.));
+            context.apply_pipeline(&pipeline);
+            context.apply_bindings_from_slice(&[vertex_buffer], index_buffer, &[]);
+            context.draw(0, 6, 1);
+            context.end_render_pass();
+            context.really_end_encoder();
+            let command_buffer = context.command_buffer.take().unwrap();
+            msg_send_![command_buffer, commit];
+            msg_send_![command_buffer, waitUntilCompleted];
+
+            let status: u64 = msg_send![command_buffer, status];
+            let error: ObjcId = msg_send_![command_buffer, error];
+            assert_eq!(status, 4 /* MTLCommandBufferStatusCompleted */);
+            assert!(error.is_null());
+
+            let resolve_texture = context.textures.get(resolve).texture;
+            let pixels = read_rgba8_texture(context, resolve_texture, 2, 2);
+            assert_eq!(
+                pixels,
+                vec![255_u8; 16],
+                "the resolved texture must show the real rendered color, not just exist: {:?}",
+                pixels
+            );
+
+            context.delete_buffer(vertex_buffer);
+            context.delete_buffer(index_buffer);
+            context.delete_pipeline(pipeline);
+            context.delete_shader(shader);
+            context.delete_render_pass(pass);
+            context.delete_texture(resolve);
+            context.delete_texture(color);
+        });
+    }
+
+    #[test]
+    #[ignore = "requires a real macOS arm64 Metal device"]
+    fn clear_applies_and_preserves_stencil_values() {
+        autoreleasepool(|| unsafe {
+            let mut harness = render_harness();
+            let context = &mut harness.context;
+            let color = context.new_texture(
+                TextureAccess::RenderTarget,
+                TextureSource::Empty,
+                TextureParams {
+                    width: 1,
+                    height: 1,
+                    format: TextureFormat::RGBA8,
+                    ..TextureParams::default()
+                },
+            );
+            let depth = context.new_texture(
+                TextureAccess::RenderTarget,
+                TextureSource::Empty,
+                TextureParams {
+                    width: 1,
+                    height: 1,
+                    format: TextureFormat::Depth,
+                    ..TextureParams::default()
+                },
+            );
+            let pass = context.new_render_pass_mrt(&[color], None, Some(depth));
+            let shader = context
+                .new_shader(
+                    ShaderSource::Msl {
+                        program: DEPTH_PROBE_PROGRAM,
+                    },
+                    shader_meta(),
+                )
+                .unwrap();
+            let pipeline = context.new_pipeline(
+                &[BufferLayout::default()],
+                &[VertexAttribute::new("position", VertexFormat::Float3)],
+                shader,
+                PipelineParams {
+                    depth_test: Comparison::Less,
+                    depth_write: false,
+                    ..Default::default()
+                },
+            );
+            let vertex_buffer = context.new_buffer(
+                BufferType::VertexBuffer,
+                BufferUsage::Immutable,
+                BufferSource::slice(&[-1.0_f32, -1.0, 0.5, 3.0, -1.0, 0.5, -1.0, 3.0, 0.5]),
+            );
+            let index_buffer = context.new_buffer(
+                BufferType::IndexBuffer,
+                BufferUsage::Immutable,
+                BufferSource::slice(&[0_u16, 1, 2]),
+            );
+
+            let stencil_descriptor = owned(msg_send![class!(MTLStencilDescriptor), new]);
+            msg_send_![stencil_descriptor.as_id(), setStencilCompareFunction: MTLCompareFunction::Equal];
+            msg_send_![stencil_descriptor.as_id(), setReadMask: u32::MAX];
+            msg_send_![stencil_descriptor.as_id(), setWriteMask: 0u32];
+            let depth_stencil_descriptor = owned(msg_send![class!(MTLDepthStencilDescriptor), new]);
+            msg_send_![depth_stencil_descriptor.as_id(), setDepthCompareFunction: MTLCompareFunction::Less];
+            msg_send_![depth_stencil_descriptor.as_id(), setDepthWriteEnabled: BOOL::from(false)];
+            msg_send_![depth_stencil_descriptor.as_id(), setFrontFaceStencil: stencil_descriptor.as_id()];
+            msg_send_![depth_stencil_descriptor.as_id(), setBackFaceStencil: stencil_descriptor.as_id()];
+            let stencil_state = owned(msg_send![
+                context.device,
+                newDepthStencilStateWithDescriptor: depth_stencil_descriptor.as_id()
+            ]);
+
+            let run_pass = |context: &mut MetalContext, action, draw: bool| {
+                context.begin_pass(Some(pass), action);
+                if draw {
+                    context.apply_pipeline(&pipeline);
+                    context.apply_bindings_from_slice(&[vertex_buffer], index_buffer, &[]);
+                    let encoder = context.render_encoder.unwrap();
+                    msg_send_![encoder, setDepthStencilState: stencil_state.as_id()];
+                    msg_send_![encoder, setStencilReferenceValue: 5u32];
+                    context.draw(0, 3, 1);
+                }
+                context.end_render_pass();
+                context.really_end_encoder();
+                let command_buffer = context.command_buffer.take().unwrap();
+                msg_send_![command_buffer, commit];
+                msg_send_![command_buffer, waitUntilCompleted];
+            };
+            let color_texture = context.textures.get(color).texture;
+
+            run_pass(
+                context,
+                PassAction::Clear {
+                    color: Some((0., 0., 0., 1.)),
+                    depth: Some(1.),
+                    stencil: Some(5),
+                },
+                false,
+            );
+            run_pass(
+                context,
+                PassAction::Clear {
+                    color: Some((0., 0., 0., 1.)),
+                    depth: None,
+                    stencil: None,
+                },
+                true,
+            );
+            assert_eq!(
+                read_rgba8_texture(context, color_texture, 1, 1),
+                vec![255, 0, 0, 255],
+                "stencil: None must preserve the prior value of 5"
+            );
+
+            run_pass(
+                context,
+                PassAction::Clear {
+                    color: Some((0., 1., 0., 1.)),
+                    depth: None,
+                    stencil: Some(0),
+                },
+                true,
+            );
+            assert_eq!(
+                read_rgba8_texture(context, color_texture, 1, 1),
+                vec![0, 255, 0, 255],
+                "an explicit stencil clear to 0 must reject the probe with reference 5"
+            );
+
+            context.delete_buffer(vertex_buffer);
+            context.delete_buffer(index_buffer);
+            context.delete_pipeline(pipeline);
+            context.delete_shader(shader);
+            context.delete_render_pass(pass);
+            context.delete_texture(depth);
+            context.delete_texture(color);
+        });
+    }
 }
 impl RenderingBackend for MetalContext {
     fn info(&self) -> ContextInfo {
@@ -900,7 +1741,7 @@ impl RenderingBackend for MetalContext {
             glsl_support: Default::default(),
             features: Features {
                 instancing: true,
-                resolve_attachments: false,
+                resolve_attachments: true,
             },
         }
     }
@@ -1061,12 +1902,22 @@ impl RenderingBackend for MetalContext {
         depth: Option<f32>,
         stencil: Option<i32>,
     ) {
-        self.begin_default_pass(PassAction::Clear {
+        let action = PassAction::Clear {
             color,
             depth,
             stencil,
-        });
-        self.end_render_pass();
+        };
+        // Clear the pass already being recorded, not the default
+        // framebuffer: see MADR 0020. `begin_pass` ends and reopens
+        // its encoder, so a caller that draws again afterward must
+        // reapply its pipeline/bindings/uniforms.
+        match self.current_pass_target {
+            Some(pass) => self.begin_pass(pass, action),
+            None => {
+                self.begin_default_pass(action);
+                self.end_render_pass();
+            }
+        }
     }
 
     fn new_render_pass_mrt(
@@ -1111,11 +1962,10 @@ impl RenderingBackend for MetalContext {
             if let Some(depth_img) = depth_img {
                 let depth_texture = self.textures.get(depth_img).texture;
 
+                // `begin_pass` sets loadAction/storeAction/clearDepth
+                // per call from the requested `PassAction`.
                 let depth_attachment = msg_send_![render_pass_desc, depthAttachment];
                 msg_send_![depth_attachment, setTexture: depth_texture];
-                msg_send_![depth_attachment, setLoadAction: MTLLoadAction::Clear];
-                msg_send_![depth_attachment, setStoreAction: MTLStoreAction::Store];
-                msg_send_![depth_attachment, setClearDepth:1.];
 
                 let stencil_attachment = msg_send_![render_pass_desc, stencilAttachment];
                 msg_send_![stencil_attachment, setTexture: depth_texture];
@@ -1148,10 +1998,26 @@ impl RenderingBackend for MetalContext {
         &self.pass(render_pass).texture
     }
 
-    fn new_buffer(&mut self, _: BufferType, _usage: BufferUsage, data: BufferSource) -> BufferId {
-        let size = match &data {
-            BufferSource::Slice(data) => data.size,
-            BufferSource::Empty { size, .. } => *size,
+    fn new_buffer(
+        &mut self,
+        buffer_type: BufferType,
+        _usage: BufferUsage,
+        data: BufferSource,
+    ) -> BufferId {
+        let (size, element_size) = match &data {
+            BufferSource::Slice(data) => (data.size, data.element_size),
+            BufferSource::Empty { size, element_size } => (*size, *element_size),
+        };
+        let index_type = match buffer_type {
+            BufferType::IndexBuffer => Some(match element_size {
+                2 => MTLIndexType::UInt16,
+                4 => MTLIndexType::UInt32,
+                other => panic!(
+                    "Metal: index buffer element size must be 2 (u16) or 4 (u32), got {}",
+                    other
+                ),
+            }),
+            BufferType::VertexBuffer => None,
         };
         // Cached on the `Buffer` so grow-on-demand allocations in
         // `buffer_update` match the original storage mode.
@@ -1189,6 +2055,7 @@ impl RenderingBackend for MetalContext {
             raw: vec![buffer],
             size,
             options,
+            index_type,
             value: 0,
             next_value: 0,
         };
@@ -1706,7 +2573,7 @@ impl RenderingBackend for MetalContext {
                 //layout: buffer_layout.to_vec(),
                 //attributes: vertex_layout,
                 _shader: shader,
-                //params,
+                primitive_type: params.primitive_type.into(),
             };
 
             Pipeline(self.pipelines.add(pipeline))
@@ -1754,8 +2621,12 @@ impl RenderingBackend for MetalContext {
             }
             let index_buffer = self.buffer_mut(index_buffer);
             let index_raw = index_buffer.raw[index_buffer.value];
+            let index_type = index_buffer
+                .index_type
+                .expect("apply_bindings: index_buffer argument must be a BufferType::IndexBuffer");
             index_buffer.next_value = index_buffer.value + 1;
             self.index_buffer = Some(index_raw);
+            self.index_type = index_type;
 
             let img_count = textures.len();
             if img_count > 0 {
@@ -1823,10 +2694,8 @@ impl RenderingBackend for MetalContext {
     fn begin_pass(&mut self, pass: Option<RenderPass>, action: PassAction) {
         unsafe {
             // Reuse the deferred encoder if this begin continues the
-            // same target with a load-style action — collapses the
-            // per-draw-call begin/end pattern (e.g. macroquad's) into
-            // one Metal pass, avoiding a store + (for MSAA) resolve
-            // per draw on tile-based GPUs.
+            // same target with a load-style action, such as repeated
+            // begin/end pairs for the same render pass.
             if self.pending_end_encoder
                 && self.current_pass_target == Some(pass)
                 && matches!(action, PassAction::Nothing)
@@ -1834,7 +2703,13 @@ impl RenderingBackend for MetalContext {
                 self.pending_end_encoder = false;
                 return;
             }
-            if self.pending_end_encoder {
+            // End any encoder that is still open, deferred or not.
+            // Without this, re-entering `begin_pass` (e.g. `clear`
+            // called while a pass is active) would ask Metal for a
+            // second render encoder on the same command buffer
+            // before the first one's `endEncoding`, which Metal
+            // rejects: Tigon32/miniquad#143.
+            if self.render_encoder.is_some() {
                 self.really_end_encoder();
             }
 
@@ -1899,15 +2774,54 @@ impl RenderingBackend for MetalContext {
             msg_send_![color_attachment, setStoreAction: store_action];
 
             match action {
-                PassAction::Clear { color, .. } => {
+                PassAction::Clear {
+                    color: Some(color), ..
+                } => {
                     msg_send_![color_attachment, setLoadAction: MTLLoadAction::Clear];
+                    msg_send_![color_attachment, setClearColor:MTLClearColor::new(color.0 as _, color.1 as _, color.2 as _, color.3 as _)];
+                }
+                PassAction::Clear { color: None, .. } | PassAction::Nothing => {
+                    msg_send_![color_attachment, setLoadAction: MTLLoadAction::Load];
+                }
+            }
 
-                    if let Some(color) = color {
-                        msg_send_![color_attachment, setClearColor:MTLClearColor::new(color.0 as _, color.1 as _, color.2 as _, color.3 as _)];
+            // A depth texture is present both for the default pass
+            // (MTKView's own depth attachment) and an offscreen pass
+            // with a depth target: Tigon32/miniquad#143. `depth`/
+            // `stencil` being `None` means preserve, not clear to a
+            // default, matching the GL backend's `clear`.
+            let depth_attachment = msg_send_![descriptor, depthAttachment];
+            let depth_texture: ObjcId = msg_send![depth_attachment, texture];
+            if !depth_texture.is_null() {
+                msg_send_![depth_attachment, setStoreAction: MTLStoreAction::Store];
+                match action {
+                    PassAction::Clear {
+                        depth: Some(depth), ..
+                    } => {
+                        msg_send_![depth_attachment, setLoadAction: MTLLoadAction::Clear];
+                        msg_send_![depth_attachment, setClearDepth: depth as f64];
+                    }
+                    PassAction::Clear { depth: None, .. } | PassAction::Nothing => {
+                        msg_send_![depth_attachment, setLoadAction: MTLLoadAction::Load];
                     }
                 }
-                PassAction::Nothing => {
-                    msg_send_![color_attachment, setLoadAction: MTLLoadAction::Load];
+
+                let stencil_attachment = msg_send_![descriptor, stencilAttachment];
+                let stencil_texture: ObjcId = msg_send![stencil_attachment, texture];
+                if !stencil_texture.is_null() {
+                    msg_send_![stencil_attachment, setStoreAction: MTLStoreAction::Store];
+                    match action {
+                        PassAction::Clear {
+                            stencil: Some(stencil),
+                            ..
+                        } => {
+                            msg_send_![stencil_attachment, setLoadAction: MTLLoadAction::Clear];
+                            msg_send_![stencil_attachment, setClearStencil: stencil as u32];
+                        }
+                        PassAction::Clear { stencil: None, .. } | PassAction::Nothing => {
+                            msg_send_![stencil_attachment, setLoadAction: MTLLoadAction::Load];
+                        }
+                    }
                 }
             }
 
@@ -1955,15 +2869,26 @@ impl RenderingBackend for MetalContext {
         let render_encoder = self.render_encoder.unwrap();
         assert!(self.index_buffer.is_some());
         let index_buffer = self.index_buffer.unwrap();
-
-        // Non-zero base_element is not supported yet: Tigon32/miniquad#143.
-        assert!(base_element == 0);
+        let primitive_type = self
+            .current_pipeline
+            .map(|pipeline| self.pipeline(pipeline).primitive_type)
+            .expect("draw before apply_pipeline");
+        // Reject negative values before the u64 casts below, which
+        // would otherwise silently wrap into huge offsets/counts.
+        assert!(base_element >= 0, "draw: base_element must be >= 0");
+        assert!(num_elements >= 0, "draw: num_elements must be >= 0");
+        assert!(num_instances >= 0, "draw: num_instances must be >= 0");
+        let index_byte_size = match self.index_type {
+            MTLIndexType::UInt16 => 2,
+            MTLIndexType::UInt32 => 4,
+        };
+        let index_buffer_offset = base_element as u64 * index_byte_size;
         unsafe {
-            msg_send_![render_encoder, drawIndexedPrimitives:MTLPrimitiveType::Triangle
+            msg_send_![render_encoder, drawIndexedPrimitives:primitive_type
                        indexCount:num_elements as u64
-                       indexType:MTLIndexType::UInt16
+                       indexType:self.index_type
                        indexBuffer:index_buffer
-                       indexBufferOffset:0
+                       indexBufferOffset:index_buffer_offset
                        instanceCount:num_instances as u64
                        baseVertex:0
                        baseInstance:0

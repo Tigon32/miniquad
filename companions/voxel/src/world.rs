@@ -24,6 +24,8 @@ impl ChunkCoord {
 /// An error inserting a chunk into a [`World`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WorldError {
+    /// The configured chunk dimensions are invalid.
+    InvalidDims,
     /// The chunk's dimensions do not match the world's configured
     /// chunk dimensions. A world holds uniform chunk sizes so boundary
     /// math stays simple and bounded.
@@ -36,6 +38,7 @@ pub enum WorldError {
 impl std::fmt::Display for WorldError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let message = match self {
+            WorldError::InvalidDims => "world chunk dimensions are invalid",
             WorldError::MismatchedDims => {
                 "chunk dimensions do not match the world's chunk dimensions"
             }
@@ -61,6 +64,7 @@ impl World {
     /// Creates an empty world. `max_resident_chunks` must be greater
     /// than zero; a world that can hold zero chunks has no use.
     pub fn new(dims: ChunkDims, max_resident_chunks: usize) -> Result<World, WorldError> {
+        dims.validate().map_err(|_| WorldError::InvalidDims)?;
         if max_resident_chunks == 0 {
             return Err(WorldError::TooManyResidentChunks);
         }
@@ -121,7 +125,10 @@ impl World {
     /// rather than silently culled). See `docs/offline-voxel.md` for
     /// the reasoning.
     pub fn is_solid(&self, coord: ChunkCoord, x: i32, y: i32, z: i32) -> bool {
-        let (neighbor_coord, local) = self.resolve(coord, x, y, z);
+        let Some((neighbor_coord, local)) = self.resolve(coord, x, y, z) else {
+            // A coordinate outside the representable world has no resident chunk.
+            return false;
+        };
         match self.chunks.get(&neighbor_coord) {
             Some(chunk) => chunk.is_solid(local.0, local.1, local.2),
             None => false,
@@ -133,27 +140,34 @@ impl World {
     /// coordinate. Assumes `x`, `y`, `z` are within one chunk width of
     /// `[0, dims)`, which is always true for the 6-direction neighbor
     /// offsets meshing uses.
-    fn resolve(&self, coord: ChunkCoord, x: i32, y: i32, z: i32) -> (ChunkCoord, (u32, u32, u32)) {
+    fn resolve(
+        &self,
+        coord: ChunkCoord,
+        x: i32,
+        y: i32,
+        z: i32,
+    ) -> Option<(ChunkCoord, (u32, u32, u32))> {
         let (cx, lx) = wrap_axis(x, self.dims.x);
         let (cy, ly) = wrap_axis(y, self.dims.y);
         let (cz, lz) = wrap_axis(z, self.dims.z);
-        (
-            ChunkCoord::new(coord.x + cx, coord.y + cy, coord.z + cz),
+        Some((
+            ChunkCoord::new(
+                coord.x.checked_add(cx)?,
+                coord.y.checked_add(cy)?,
+                coord.z.checked_add(cz)?,
+            ),
             (lx, ly, lz),
-        )
+        ))
     }
 }
 
 /// Maps a local axis coordinate that may be one step outside
 /// `[0, dim)` to a `(chunk offset, wrapped local coordinate)` pair.
 fn wrap_axis(value: i32, dim: u32) -> (i32, u32) {
-    if value < 0 {
-        (-1, dim - 1)
-    } else if value >= dim as i32 {
-        (1, 0)
-    } else {
-        (0, value as u32)
-    }
+    (
+        value.div_euclid(dim as i32),
+        value.rem_euclid(dim as i32) as u32,
+    )
 }
 
 #[cfg(test)]
@@ -163,6 +177,19 @@ mod tests {
 
     fn dims() -> ChunkDims {
         ChunkDims::new(4, 4, 4)
+    }
+
+    #[test]
+    fn rejects_invalid_dimensions_and_handles_coordinate_limits() {
+        assert_eq!(
+            World::new(ChunkDims::new(0, 4, 4), 1).unwrap_err(),
+            WorldError::InvalidDims
+        );
+        let world = World::new(dims(), 1).unwrap();
+        assert!(!world.is_solid(ChunkCoord::new(i32::MAX, 0, 0), 4, 0, 0));
+        assert!(!world.is_solid(ChunkCoord::new(i32::MIN, 0, 0), -1, 0, 0));
+        assert_eq!(wrap_axis(-9, 4), (-3, 3));
+        assert_eq!(wrap_axis(9, 4), (2, 1));
     }
 
     #[test]

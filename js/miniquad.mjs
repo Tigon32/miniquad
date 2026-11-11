@@ -150,7 +150,11 @@ export function mount({
         get state() { return state; },
         get frame() { return frame; },
         get supportsParameters() {
-            return instance?.exports?.mq_params_version?.() === 1;
+            const exports = instance?.exports;
+            return typeof exports?.mq_params_version === "function" &&
+                typeof exports.mq_param_set_f32 === "function" &&
+                typeof exports.mq_param_set_rgba8 === "function" &&
+                exports.mq_params_version() === 1;
         },
         pause() {
             assertLive();

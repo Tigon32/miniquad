@@ -192,7 +192,7 @@ integration.
 
 ## Tests
 
-`companions/voxel/src/*.rs` contain 32 unit tests covering:
+`companions/voxel/src/*.rs` contain 34 unit tests covering:
 
 - Small cases: an empty chunk mesh, a single solid voxel (6 faces).
 - Adjacent-voxel and chunk-boundary culling: two adjacent voxels inside
@@ -207,6 +207,10 @@ integration.
   and the same generated chunk across two calls.
 - Reused mesh buffers: building into the same `MeshBuffers` twice
   reuses (does not shrink) its `Vec` capacity.
+- Invalid world dimensions and world-coordinate limits do not cause arithmetic overflow.
+- Terrain generation rejects an invalid height range or an overflowing origin.
+  The full `u32` height range and a one-layer chunk are valid.
+  `column_height` and `generate_chunk` report `TerrainError` on invalid input.
 
 ## Commands run and results
 
@@ -218,13 +222,15 @@ the changes in this slice.
 | Command | Result |
 | --- | --- |
 | `cargo fmt` | Ran; no diff produced (already formatted) |
-| `cargo test` | **Passed** — 32 unit tests, 0 failed; 0 doc-tests |
+| `cargo test` | **Passed** — 34 unit tests, 0 failed; 0 doc-tests |
 | `cargo build --example offline` (native, dev profile) | **Passed** — compiles under `Backend::OpenGl`; not run/screenshotted |
-| `cargo build --release --target wasm32-unknown-unknown --manifest-path companions/voxel/Cargo.toml --example offline` | **Passed** — compiles to WASM; not yet pixel-tested in a browser by this change |
+| `cargo build --release --target wasm32-unknown-unknown --manifest-path companions/voxel/Cargo.toml --example offline` | **Passed** — compiles to WASM |
+| `npx playwright test tests/browser/voxel.spec.mjs` | **Passed** — Chromium, Firefox, and desktop WebKit on macOS; terrain pixels and keyboard camera input |
 
-No browser run, pixel comparison, or frame-timing measurement is
-included in this slice. That evidence is expected from the parent
-integration's browser harness, per the task handoff for this work.
+The browser test runs the compiled example through the embedding host.
+The GPU example converts its bounded mesh to checked `u16` indices for WebGL1.
+The CPU mesh retains `u32` indices. This run does not measure frame timing.
+Integration adds these checks to both browser CI lanes.
 
 ## Risks and open items
 

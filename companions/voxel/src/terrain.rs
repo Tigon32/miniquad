@@ -5,6 +5,31 @@
 
 use crate::chunk::{Chunk, ChunkDims, ChunkError, VoxelId};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TerrainError {
+    InvalidHeightRange,
+    CoordinateOverflow,
+    Chunk(ChunkError),
+}
+
+impl std::fmt::Display for TerrainError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::InvalidHeightRange => f.write_str("maximum height is less than minimum height"),
+            Self::CoordinateOverflow => f.write_str("terrain origin exceeds the coordinate range"),
+            Self::Chunk(error) => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for TerrainError {}
+
+impl From<ChunkError> for TerrainError {
+    fn from(error: ChunkError) -> Self {
+        Self::Chunk(error)
+    }
+}
+
 /// Material IDs used by the demo palette (index 0 is [`crate::chunk::AIR`]).
 pub const MATERIAL_GRASS: VoxelId = 1;
 pub const MATERIAL_DIRT: VoxelId = 2;
@@ -33,15 +58,19 @@ fn hash2(seed: u32, x: i32, z: i32) -> u32 {
 }
 
 /// Returns a deterministic column height in `[min_height, max_height]`
-/// for world column `(x, z)` under `seed`. Returns `min_height` if
-/// `max_height < min_height` (an explicit, bounded fallback instead of
-/// an underflow panic).
-pub fn column_height(seed: u32, x: i32, z: i32, min_height: u32, max_height: u32) -> u32 {
+/// for world column `(x, z)` under `seed`. Rejects inverted bounds.
+pub fn column_height(
+    seed: u32,
+    x: i32,
+    z: i32,
+    min_height: u32,
+    max_height: u32,
+) -> Result<u32, TerrainError> {
     if max_height < min_height {
-        return min_height;
+        return Err(TerrainError::InvalidHeightRange);
     }
-    let span = max_height - min_height + 1;
-    min_height + hash2(seed, x, z) % span
+    let span = u64::from(max_height) - u64::from(min_height) + 1;
+    Ok((u64::from(min_height) + u64::from(hash2(seed, x, z)) % span) as u32)
 }
 
 /// Builds one bounded chunk of deterministic terrain: solid below the
@@ -54,7 +83,14 @@ pub fn generate_chunk(
     dims: ChunkDims,
     origin_x: i32,
     origin_z: i32,
-) -> Result<Chunk, ChunkError> {
+) -> Result<Chunk, TerrainError> {
+    dims.validate()?;
+    origin_x
+        .checked_add(dims.x as i32 - 1)
+        .ok_or(TerrainError::CoordinateOverflow)?;
+    origin_z
+        .checked_add(dims.z as i32 - 1)
+        .ok_or(TerrainError::CoordinateOverflow)?;
     let mut chunk = Chunk::new(dims)?;
     let max_height = dims.y.saturating_sub(1);
     for z in 0..dims.z {
@@ -63,9 +99,9 @@ pub fn generate_chunk(
                 seed,
                 origin_x + x as i32,
                 origin_z + z as i32,
-                1,
+                1.min(max_height),
                 max_height,
-            );
+            )?;
             for y in 0..=height.min(dims.y.saturating_sub(1)) {
                 let material = if y == height {
                     MATERIAL_GRASS
@@ -87,8 +123,8 @@ mod tests {
 
     #[test]
     fn column_height_is_deterministic_for_same_seed() {
-        let a = column_height(42, 3, -7, 1, 15);
-        let b = column_height(42, 3, -7, 1, 15);
+        let a = column_height(42, 3, -7, 1, 15).unwrap();
+        let b = column_height(42, 3, -7, 1, 15).unwrap();
         assert_eq!(a, b);
         assert!((1..=15).contains(&a));
     }
@@ -103,8 +139,26 @@ mod tests {
     }
 
     #[test]
-    fn column_height_handles_inverted_bounds() {
-        assert_eq!(column_height(1, 0, 0, 10, 5), 10);
+    fn column_height_rejects_inverted_bounds_and_accepts_full_range() {
+        assert_eq!(
+            column_height(1, 0, 0, 10, 5),
+            Err(TerrainError::InvalidHeightRange)
+        );
+        assert!(column_height(1, 0, 0, 0, u32::MAX).is_ok());
+        assert_eq!(column_height(1, 0, 0, u32::MAX, u32::MAX), Ok(u32::MAX));
+    }
+
+    #[test]
+    fn terrain_rejects_coordinate_overflow_and_accepts_one_layer() {
+        assert_eq!(
+            generate_chunk(1, ChunkDims::new(2, 1, 1), i32::MAX, 0).unwrap_err(),
+            TerrainError::CoordinateOverflow
+        );
+        assert!(
+            generate_chunk(1, ChunkDims::new(1, 1, 1), i32::MAX, i32::MAX)
+                .unwrap()
+                .is_solid(0, 0, 0)
+        );
     }
 
     #[test]

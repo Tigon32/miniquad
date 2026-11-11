@@ -167,10 +167,15 @@ impl Stage {
             BufferUsage::Immutable,
             BufferSource::slice(&combined.vertices),
         );
+        let terrain_indices: Vec<u16> = combined
+            .indices
+            .iter()
+            .map(|&index| u16::try_from(index).expect("fixed demo mesh fits WebGL1 indices"))
+            .collect();
         let terrain_index_buffer = ctx.new_buffer(
             BufferType::IndexBuffer,
             BufferUsage::Immutable,
-            BufferSource::slice(&combined.indices),
+            BufferSource::slice(&terrain_indices),
         );
         let terrain_bindings = Bindings {
             vertex_buffers: vec![terrain_vertex_buffer],

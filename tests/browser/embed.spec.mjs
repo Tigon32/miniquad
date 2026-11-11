@@ -15,6 +15,26 @@ test.beforeEach(async ({ page }) => {
     await page.goto("/embed");
 });
 
+test("parameter support requires the complete optional export surface", async ({ page }) => {
+    await page.route("**/incomplete-runtime.html", route => route.fulfill({
+        contentType: "text/html",
+        body: `<canvas id="glcanvas"></canvas><script>
+        window.miniquadRuntime = {
+            start: async () => {},
+            dispose: () => {},
+            exports: { mq_params_version: () => 1 }
+        };
+        </script>`
+    }));
+    await mountScene(page, { runtimeURL: "/incomplete-runtime.html" });
+    expect(await page.evaluate(() => app.supportsParameters)).toBe(false);
+    expect(await page.evaluate(() => {
+        try { app.setParameters({ speed: 1 }); }
+        catch (error) { return error.code; }
+    })).toBe("parameters-unsupported");
+    await page.evaluate(() => app.dispose());
+});
+
 test("embedding draws pixels, preserves host focus, resizes, pauses, and remounts", async ({ page }) => {
     const errors = [];
     page.on("pageerror", error => errors.push(error.message));

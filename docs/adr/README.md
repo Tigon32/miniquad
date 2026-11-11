@@ -22,6 +22,7 @@ The documents are **STE-aligned drafts**. We have not completed a full ASD-STE10
 * [0015 — Prove the WebGPU integration before selecting its implementation](0015-proof-gated-webgpu-migration.md) — **Proposed**
 * [0016 — Support a bounded set of modern, security-maintained platforms](0016-modern-platform-support-policy.md) — **Proposed**
 * [0017 — Manage worktree ownership and post-merge cleanup](0017-manage-worktree-lifecycles.md) — **Accepted**
+* [0021 — Deprecate the unverified `ElapsedQuery` timer API](0021-deprecate-unverified-elapsed-query.md) — **Accepted**
 
 ## Write a new decision
 

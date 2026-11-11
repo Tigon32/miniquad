@@ -46,6 +46,7 @@ See [MADR 0003](adr/0003-use-asd-ste100-for-communication.md).
 | **Support tier** | The policy value for a platform: QUALIFIED, TARGETED, LEGACY, or UNSUPPORTED. See the [platform support policy](platform-support-policy.md). | Test status (Pass, Fail, Not tested, Blocked) |
 | **Axial coordinate** | A cell position `(q, r)` on a flat-top or pointy-top hexagon grid. No layer is required: a 2D hex layout uses the position alone, and a hexagonal-prism voxel adds an integer layer. | Cube coordinate, offset coordinate |
 | **2D hex layout** | An optional, pixel-only 2D module that maps an axial coordinate to a cell center, corners, and neighbors for one chosen orientation (flat-top or pointy-top), with no layer and no voxel. | Hexagonal-prism voxel |
+| **Deprecated API** | A public function or type that keeps its name and signature but no longer has a verified, working path. Calling it after a documented unsupported check gives a panic, not a success-shaped placeholder value. | Removed API |
 
 ## Add a term
 

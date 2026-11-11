@@ -806,161 +806,109 @@ fn gl_usage(usage: &BufferUsage) -> GLenum {
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub struct BufferId(usize);
 
-/// `ElapsedQuery` is used to measure duration of GPU operations.
+/// `ElapsedQuery` was meant to measure the duration of GPU operations.
 ///
-/// Usual timing/profiling methods are difficult apply to GPU workloads as draw calls are submitted
-/// asynchronously effectively hiding execution time of individual operations from the user.
-/// `ElapsedQuery` allows to measure duration of individual rendering operations, as though the time
-/// was measured on GPU rather than CPU side.
+/// This release has no verified, working implementation on any backend.
+/// [`ElapsedQuery::is_supported()`] always returns `false` and never panics.
+/// Every other method panics, because this release cannot give a real
+/// measurement and must not return a success-shaped placeholder value.
 ///
-/// The query is created using [`ElapsedQuery::new()`] function.
+/// See [MADR 0021](https://github.com/Tigon32/miniquad/blob/master/docs/adr/0021-deprecate-unverified-elapsed-query.md)
+/// and [issue #145](https://github.com/Tigon32/miniquad/issues/145) for the
+/// decision record and the path to a verified replacement.
+///
 /// ```
 /// use miniquad::graphics::ElapsedQuery;
-/// // initialization
+/// assert!(!ElapsedQuery::is_supported());
+/// ```
+///
+/// ```should_panic
+/// # use miniquad::graphics::ElapsedQuery;
 /// let mut query = ElapsedQuery::new();
-/// ```
-/// Measurement is performed by calling [`ElapsedQuery::begin_query()`] and
-/// [`ElapsedQuery::end_query()`]
-///
-/// ```
-/// # use miniquad::graphics::ElapsedQuery;
-/// # let mut query = ElapsedQuery::new();
-///
+/// // Calling the other methods after `is_supported()` returned `false` is a
+/// // contract violation. They panic instead of returning a fake value.
 /// query.begin_query();
-/// // one or multiple calls to miniquad::GraphicsContext::draw()
-/// query.end_query();
 /// ```
-///
-/// Retreival of measured duration is only possible at a later point in time. Often a frame or
-/// couple frames later. Measurement latency can especially be high on WASM/WebGL target.
-///
-/// ```
-/// // couple frames later:
-/// # use miniquad::graphics::ElapsedQuery;
-/// # let mut query = ElapsedQuery::new();
-/// # query.begin_query();
-/// # query.end_query();
-/// if query.is_available() {
-///   let duration_nanoseconds = query.get_result();
-///   // use/display duration_nanoseconds
-/// }
-/// ```
-///
-/// And during finalization:
-/// ```
-/// // clean-up
-/// # use miniquad::graphics::ElapsedQuery;
-/// # let mut query = ElapsedQuery::new();
-/// # query.begin_query();
-/// # query.end_query();
-/// # if query.is_available() {
-/// #   let duration_nanoseconds = query.get_result();
-/// #   // use/display duration_nanoseconds
-/// # }
-/// query.delete();
-/// ```
-///
-/// It is only possible to measure single query at once.
-///
-/// On OpenGL/WebGL platforms implementation relies on [`EXT_disjoint_timer_query`] extension.
-///
-/// [`EXT_disjoint_timer_query`]: https://www.khronos.org/registry/OpenGL/extensions/EXT/EXT_disjoint_timer_query.txt
-///
 #[derive(Clone, Copy)]
+#[deprecated(
+    since = "0.4.11",
+    note = "no backend has a verified implementation; see MADR 0021 and issue #145"
+)]
 pub struct ElapsedQuery {
+    // Kept for struct layout compatibility until a verified replacement lands.
+    #[allow(dead_code)]
     gl_query: GLuint,
 }
 
+#[allow(deprecated)]
 impl Default for ElapsedQuery {
     fn default() -> Self {
         Self::new()
     }
 }
 
+#[allow(deprecated)]
 impl ElapsedQuery {
     pub fn new() -> ElapsedQuery {
         ElapsedQuery { gl_query: 0 }
     }
 
-    /// Submit a beginning of elapsed-time query.
+    /// Panics. This release has no verified implementation on any backend.
     ///
-    /// Only a single query can be measured at any moment in time.
-    ///
-    /// Use [`ElapsedQuery::end_query()`] to finish the query and
-    /// [`ElapsedQuery::get_result()`] to read the result when rendering is complete.
-    ///
-    /// The query can be used again after retriving the result.
-    ///
-    /// Implemented as `glBeginQuery(GL_TIME_ELAPSED, ...)` on OpenGL/WebGL platforms.
-    ///
-    /// Use [`ElapsedQuery::is_supported()`] to check if functionality is available and the method can be called.
+    /// Use [`ElapsedQuery::is_supported()`] first; it always returns `false`
+    /// and never panics, so this method is never safe to call.
     pub fn begin_query(&mut self) {
-        if self.gl_query == 0 {
-            unsafe { glGenQueries(1, &mut self.gl_query) };
-        }
-        unsafe { glBeginQuery(GL_TIME_ELAPSED, self.gl_query) };
+        unimplemented!("ElapsedQuery has no verified implementation; see MADR 0021 and issue #145");
     }
 
-    /// Submit an end of elapsed-time query that can be read later when rendering is complete.
+    /// Panics. This release has no verified implementation on any backend.
     ///
-    /// This function is usd in conjunction with [`ElapsedQuery::begin_query()`] and
-    /// [`ElapsedQuery::get_result()`].
-    ///
-    /// Implemented as `glEndQuery(GL_TIME_ELAPSED)` on OpenGL/WebGL platforms.
+    /// Use [`ElapsedQuery::is_supported()`] first; it always returns `false`
+    /// and never panics, so this method is never safe to call.
     pub fn end_query(&mut self) {
-        unsafe { glEndQuery(GL_TIME_ELAPSED) };
+        unimplemented!("ElapsedQuery has no verified implementation; see MADR 0021 and issue #145");
     }
 
-    /// Retreieve measured duration in nanonseconds.
+    /// Panics. This release has no verified implementation on any backend.
     ///
-    /// Note that the result may be ready only couple frames later due to asynchronous nature of GPU
-    /// command submission. Use [`ElapsedQuery::is_available()`] to check if the result is
-    /// available for retrieval.
-    ///
-    /// Use [`ElapsedQuery::is_supported()`] to check if functionality is available and the method can be called.
+    /// Earlier releases returned `0` here for an unsupported context. That
+    /// value looked like a real zero-length measurement. Use
+    /// [`ElapsedQuery::is_supported()`] first; it always returns `false` and
+    /// never panics, so this method is never safe to call.
     pub fn get_result(&self) -> u64 {
-        // let mut time: GLuint64 = 0;
-        // assert!(self.gl_query != 0);
-        // unsafe { glGetQueryObjectui64v(self.gl_query, GL_QUERY_RESULT, &mut time) };
-        // time
-        0
+        unimplemented!("ElapsedQuery has no verified implementation; see MADR 0021 and issue #145");
     }
 
-    /// Reports whenever elapsed timer is supported and other methods can be invoked.
+    /// Reports whether elapsed timer queries are supported and the other
+    /// methods can be called.
+    ///
+    /// Always returns `false` in this release. No backend has a verified
+    /// implementation: the GL functions that the other methods would call
+    /// are loaded only for GL and WebGL contexts, and never for Metal, so a
+    /// static method has no safe way to probe the active backend. See
+    /// [MADR 0021](https://github.com/Tigon32/miniquad/blob/master/docs/adr/0021-deprecate-unverified-elapsed-query.md).
+    ///
+    /// This method does not panic on GL, WebGL, or Metal contexts.
     pub fn is_supported() -> bool {
-        unimplemented!();
-        //unsafe { sapp_is_elapsed_timer_supported() }
-    }
-
-    /// Reports whenever result of submitted query is available for retrieval with
-    /// [`ElapsedQuery::get_result()`].
-    ///
-    /// Note that the result may be ready only couple frames later due to asynchrnous nature of GPU
-    /// command submission.
-    ///
-    /// Use [`ElapsedQuery::is_supported()`] to check if functionality is available and the method can be called.
-    pub fn is_available(&self) -> bool {
-        // let mut available: GLint = 0;
-
-        // // begin_query was not called yet
-        // if self.gl_query == 0 {
-        //     return false;
-        // }
-
-        //unsafe { glGetQueryObjectiv(self.gl_query, GL_QUERY_RESULT_AVAILABLE, &mut available) };
-        //available != 0
-
         false
     }
 
-    /// Delete query.
+    /// Panics. This release has no verified implementation on any backend.
     ///
-    /// Note that the query is not deleted automatically when dropped.
+    /// Earlier releases returned `false` here for an unsupported context.
+    /// That value looked like a real "not ready yet" result. Use
+    /// [`ElapsedQuery::is_supported()`] first; it always returns `false` and
+    /// never panics, so this method is never safe to call.
+    pub fn is_available(&self) -> bool {
+        unimplemented!("ElapsedQuery has no verified implementation; see MADR 0021 and issue #145");
+    }
+
+    /// Panics. This release has no verified implementation on any backend.
     ///
-    /// Implemented as `glDeleteQueries(...)` on OpenGL/WebGL platforms.
+    /// Use [`ElapsedQuery::is_supported()`] first; it always returns `false`
+    /// and never panics, so this method is never safe to call.
     pub fn delete(&mut self) {
-        unsafe { glDeleteQueries(1, &self.gl_query) }
-        self.gl_query = 0;
+        unimplemented!("ElapsedQuery has no verified implementation; see MADR 0021 and issue #145");
     }
 }
 
@@ -1366,4 +1314,43 @@ pub trait RenderingBackend {
     /// NOTE: num_instances > 1 might be not supported by the GPU (gl2.1 and gles2).
     /// `features.instancing` check is required.
     fn draw(&self, base_element: i32, num_elements: i32, num_instances: i32);
+}
+
+#[cfg(test)]
+#[allow(deprecated)]
+mod elapsed_query_tests {
+    use super::ElapsedQuery;
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    // Regression test for issue #145: `is_supported()` used to call
+    // `unimplemented!()` and panic on every backend, including GL and
+    // WebGL contexts where part of the feature once worked. This test
+    // runs with no graphics context at all, on every backend this crate
+    // builds for, so it also covers the GL, WebGL, and Metal targets that
+    // the acceptance conditions name.
+    #[test]
+    fn is_supported_does_not_panic_and_reports_unsupported() {
+        let result = catch_unwind(|| ElapsedQuery::is_supported());
+        assert!(
+            result.is_ok(),
+            "ElapsedQuery::is_supported() must not panic"
+        );
+        assert!(
+            !result.unwrap(),
+            "ElapsedQuery::is_supported() must report false until a backend has a verified implementation"
+        );
+    }
+
+    // The other methods must not return a success-shaped `0`/`false` value
+    // for an unsupported context. They panic instead, so a caller that
+    // skips the `is_supported()` check gets a loud failure, not a fake
+    // measurement.
+    #[test]
+    fn operational_methods_panic_instead_of_returning_a_placeholder_value() {
+        assert!(catch_unwind(AssertUnwindSafe(|| ElapsedQuery::new().begin_query())).is_err());
+        assert!(catch_unwind(AssertUnwindSafe(|| ElapsedQuery::new().end_query())).is_err());
+        assert!(catch_unwind(AssertUnwindSafe(|| ElapsedQuery::new().get_result())).is_err());
+        assert!(catch_unwind(AssertUnwindSafe(|| ElapsedQuery::new().is_available())).is_err());
+        assert!(catch_unwind(AssertUnwindSafe(|| ElapsedQuery::new().delete())).is_err());
+    }
 }

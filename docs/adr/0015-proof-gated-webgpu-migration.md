@@ -86,6 +86,8 @@ Each candidate must:
 9. Report secure-context state, browser version, flags, and adapter information.
 10. Prove that the strict path creates no WebGL context.
 
+The [shared proof contract](../webgpu-proof-contract.md) defines the host interface,
+status, error codes, test cases, and file owners for both candidates.
 Use the same viewport, shader, output, and flags for both candidates.
 Record raw, gzip, and Brotli bytes for the built consumer WASM and JavaScript.
 Record generated files, build steps, loader changes, and project-owned adapter code.
@@ -176,6 +178,7 @@ Do not remove the legacy implementation until the required parity and migration 
 
 ## References
 
+* [WebGPU proof contract](../webgpu-proof-contract.md)
 * [Supported tool and dependency policy](0007-use-supported-and-secure-toolchains.md)
 * [Risk-based verification](0002-risk-based-verification-and-selective-tdd.md)
 * [WebGPU](https://webgpu.org/)

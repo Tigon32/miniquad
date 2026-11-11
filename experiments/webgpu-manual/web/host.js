@@ -210,6 +210,15 @@ function requestDevice(requestId, adapterHandle) {
     chosenAdapter.requestDevice().then(
         result => {
             device = result;
+            // An "uncapturederror" is a GPU validation error that did
+            // not go through requestDevice/compileShader/createPipeline/
+            // render-frame above (for example, a queue submit outside
+            // those flows). It must still become a real Rust-reported
+            // failure (contract section 5), never vanish silently or
+            // fall back to a hidden retry/WebGL.
+            device.addEventListener("uncapturederror", event => {
+                reportHostError(String((event.error && event.error.message) || event.error));
+            });
             device.lost.then(info => {
                 const reasonCode = info && info.reason === "destroyed" ? 0 : 1;
                 if (wasm) wasm.exports.mq_proof_device_lost(reasonCode);
@@ -258,7 +267,16 @@ function compileShader(requestId, deviceHandle, codePtr, codeLen) {
         reportShaderResult(requestId, false, 0, "device handle is unknown");
         return;
     }
+    // `createShaderModule` with invalid WGSL can also raise a device-level
+    // "validation" error outside the documented `getCompilationInfo()`
+    // path (that is what the device's `uncapturederror` listener exists
+    // for). Scope that one call so the shader-compilation message from
+    // `getCompilationInfo()` below stays the single report (contract's
+    // "shader-compilation" code), instead of racing the `uncapturederror`
+    // listener's "internal" code.
+    chosenDevice.pushErrorScope("validation");
     const module = chosenDevice.createShaderModule({code});
+    chosenDevice.popErrorScope().catch(() => {});
     module.getCompilationInfo().then(
         info => {
             const hasError = info.messages.some(m => m.type === "error");
@@ -489,7 +507,13 @@ function startFrameLoop() {
         let status;
         try {
             status = readStatus();
-        } catch {
+        } catch (error) {
+            // A status read failure here must not just silently stop the
+            // loop (a success-shaped silent failure: the last status
+            // could still look like "running"). Route it into Rust as a
+            // real "internal" failure (contract section 5), same as
+            // status()'s catch.
+            reportHostError(String((error && error.message) || error));
             return;
         }
         if (terminal.has(status.phase)) return;

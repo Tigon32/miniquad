@@ -103,6 +103,9 @@ fresh harness run), run in this order:
 ~/.cargo/bin/cargo test --lib
 # test result: ok. 47 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
+node --test tests/*.test.mjs
+# tests 3; pass 3; fail 0
+
 npm ci --ignore-scripts --no-audit --no-fund   # repo root; manifest changed by the merge
 # added 82 packages
 
@@ -133,7 +136,8 @@ node tests/webgpu-proof/run-proof.mjs --candidate manual --lane software --port 
 # summary: {pass: 6, rejection-pass: 6, fail: 0, not-run: 0, ok: true}
 ```
 
-All of T1-T7 (render path) and N1-N5 (rejection path) pass on the real
+All of T1-T6 pass on the render path; T7 and N1-N5 are rejection-pass
+cases (the contract's rejection path, not a rendering pass) on the real
 software lane (SwiftShader, Chromium 158, Playwright 1.65.0, matching the
 repository pin) against a **freshly rebuilt release** build. This is a
 single local run, not a substitute for the eventual common CI harness
@@ -245,6 +249,72 @@ and `dispose_after_lost_keeps_the_lost_phase_and_error`, each also
 checking that a repeat dispose call stays a no-op.
 
 Rust unit tests after this round: 47/47.
+
+## Two remaining silent-success faults (frame loop and uncaptured GPU errors)
+
+A queen review found two more tightly-coupled silent-success faults in
+`web/host.js`, found only after the Rust-side cache fallback and the
+dispose() fix above were already accepted. Both are the same class of
+bug as the rejected fix-4 cache: a failure that should become a real
+Rust-reported terminal status instead quietly left the application
+looking like it was still running.
+
+1. **The frame loop's `step()` swallowed a status-read failure.** Its
+   `catch { return; }` stopped the animation-frame loop on an unexpected
+   `readStatus()` failure, but never reported it: `host.status()` would
+   keep serving whatever the last real status was (which could still
+   look like `running`). The loop's catch now calls `reportHostError(...)`
+   (the same ingress `status()` already uses) before returning, so the
+   failure becomes a real Rust `internal` terminal status.
+2. **`requestDevice()` never listened for `GPUDevice`'s
+   `uncapturederror` event.** A GPU validation error outside the
+   request/response flows above (adapter/device/context/shader/
+   pipeline/frame) had nowhere to go; it would vanish silently instead of
+   becoming a Rust-reported failure, and there is no WebGL fallback or
+   hidden retry path to catch it either. `requestDevice()`'s success
+   callback now adds a `device.addEventListener("uncapturederror", ...)`
+   listener that routes the event through `reportHostError(...)`,
+   matching candidate B.
+
+Both fixes reuse the existing `reportHostError` ingress (bounded
+UTF-8 message, freed after one allocation, a no-op once the phase is
+already terminal via `fail_internal`'s guard) — no new Rust export or
+ownership path was added.
+
+Two new host/JS-level regression tests were added, sharing a new
+`tests/host-test-fixture.mjs` stub module with the existing
+`host-status-regression.test.mjs` test (which now imports the fixture
+instead of repeating it inline):
+
+- `tests/frame-loop-error-regression.test.mjs`: forces the next
+  `mq_proof_status()` call to throw while the frame loop is running, by
+  invoking the queued `requestAnimationFrame` callback directly (no real
+  browser clock), and asserts the host-error ingress ran exactly once and
+  the loop does not re-queue a frame afterward.
+- `tests/uncaptured-error-regression.test.mjs`: drives the real
+  `js_request_adapter`/`js_request_device` imports host.js builds (
+  captured from the `WebAssembly.instantiate(bytes, imports)` call)
+  against a fake adapter/device chain, dispatches a synthetic
+  `uncapturederror` event, and asserts it becomes a real Rust `internal`
+  failure.
+
+Both were verified to be true regression tests: a throwaway copy of
+`host.js` with each fix reverted was built, run against its matching
+test, and confirmed to fail (`0 !== 1` host-error calls for the frame
+loop; no listener registered for the device case) before being deleted.
+
+Host/JS tests after this round: 3/3 (`node --test tests/*.test.mjs`).
+
+Adding the device-wide `uncapturederror` listener first broke the real
+software-lane harness: an invalid WGSL shader (T7) raises a device-level
+"validation" error outside `getCompilationInfo()`, and the new listener
+reported it as `internal` instead of the oracle's `shader-compilation`
+code (12/12 became 11/12). `compileShader()` now wraps its
+`createShaderModule` call in `pushErrorScope("validation")` /
+`popErrorScope()` so that one call's validation error stays scoped to
+the existing `getCompilationInfo()` path instead of racing the
+listener. T7's receipt now shows the correct `shader-compilation` code
+and message again (see below).
 
 ## Imports and exports (ownership)
 

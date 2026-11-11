@@ -19,3 +19,7 @@ miniquad = { path = "../../" }
 [[example]]
 name = "offline"
 path = "examples/offline.rs"
+
+[[example]]
+name = "offline_hex"
+path = "examples/offline_hex.rs"

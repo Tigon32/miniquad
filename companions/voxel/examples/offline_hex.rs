@@ -32,12 +32,14 @@
 use miniquad::*;
 use miniquad_voxel::camera::OrbitCamera;
 use miniquad_voxel::chunk::ChunkDims;
-use miniquad_voxel::hex::{build_hex_chunk_mesh, HexFace, HEX_MAX_MESH_VERTICES};
-use miniquad_voxel::hex_pick::{pick_hex, ray_from_pixel, HexPickParams, HexRay};
+use miniquad_voxel::hex::{build_hex_chunk_mesh, HEX_MAX_MESH_VERTICES};
+use miniquad_voxel::hex_pick::{hex_cell_at_xz, pick_hex, ray_from_pixel, HexPickParams};
 use miniquad_voxel::math::{Mat4, Vec3};
 use miniquad_voxel::mesh::MeshBuffers;
-use miniquad_voxel::terrain::{column_height, PALETTE};
+use miniquad_voxel::terrain::{generate_chunk, PALETTE};
 use miniquad_voxel::world::{ChunkCoord, World};
+use std::cell::{Cell, RefCell};
+use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicI32, AtomicU32, Ordering};
 
 /// Deterministic world seed (contract section 3.1).
@@ -46,10 +48,24 @@ const CHUNK_DIMS: ChunkDims = ChunkDims::new(8, 4, 8);
 const MAX_RESIDENT_CHUNKS: usize = 4;
 const MIN_LAYER: i32 = 0;
 const MAX_LAYER: i32 = 3;
+/// The two chunks resident for the lifetime of this example (contract
+/// section 3.1). Fixed, not derived from any runtime state.
+const RESIDENT_CHUNKS: [ChunkCoord; 2] = [ChunkCoord::new(-1, 0, 0), ChunkCoord::new(0, 0, 0)];
+/// The material ID the "Place column" control writes (contract
+/// section 3.4, occlusion test). Index 2 of `terrain::PALETTE`
+/// ("dirt"), an existing opaque material; no new palette entry.
+const PLACE_COLUMN_MATERIAL: u8 = 2;
 
 static RELEASE_REQUESTED: AtomicBool = AtomicBool::new(false);
 static RESOURCES_LIVE: AtomicU32 = AtomicU32::new(0);
 static TRIANGLE_COUNT: AtomicU32 = AtomicU32::new(0);
+/// The sprite's current world `(x, z)` and integer layer, published by
+/// `draw` each frame so `hex_request_place_column` can target "the
+/// cell between camera and sprite" (contract section 3.4) without
+/// storing a `Stage` pointer: only three plain atomics.
+static SPRITE_X_BITS: AtomicU32 = AtomicU32::new(0);
+static SPRITE_Z_BITS: AtomicU32 = AtomicU32::new(0);
+static SPRITE_LAYER: AtomicI32 = AtomicI32::new(0);
 
 static PICKED_VALID: AtomicU32 = AtomicU32::new(0);
 static PICKED_Q: AtomicI32 = AtomicI32::new(0);
@@ -57,7 +73,7 @@ static PICKED_R: AtomicI32 = AtomicI32::new(0);
 static PICKED_LAYER: AtomicI32 = AtomicI32::new(0);
 static PICKED_FACE: AtomicU32 = AtomicU32::new(8); // 8 = none, per contract section 3.3.
 
-static PLACE_COLUMN: AtomicBool = AtomicBool::new(false);
+static PLACE_COLUMN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 /// Reports `resources_live`: the number of GPU objects this example
 /// currently owns (pipelines + buffers). `0` once release completes.
@@ -83,12 +99,13 @@ pub extern "C" fn hex_request_release() -> i32 {
     }
 }
 
-/// Toggles the occlusion-test column between the camera and the
-/// sprite (contract section 3.4, "Place column" / "Release" controls
-/// in the HTML host). Always returns `0`.
+/// Requests the occlusion-test column write (contract section 3.4,
+/// "Place column" control). `draw` performs the actual mutation and
+/// mesh rebuild on the live world; this only sets a flag. Always
+/// returns `0`.
 #[no_mangle]
 pub extern "C" fn hex_request_place_column() -> i32 {
-    PLACE_COLUMN.fetch_xor(true, Ordering::Relaxed);
+    PLACE_COLUMN_REQUESTED.store(true, Ordering::Relaxed);
     0
 }
 
@@ -99,7 +116,10 @@ pub extern "C" fn hex_request_place_column() -> i32 {
 pub extern "C" fn hex_probe_pick(px_bits: u32, py_bits: u32) -> i32 {
     let px = f32::from_bits(px_bits) as f64;
     let py = f32::from_bits(py_bits) as f64;
-    let Some((camera, world, viewport)) = PICK_CONTEXT.with(|cell| cell.borrow().clone()) else {
+    let Some((camera, viewport)) = PICK_CAMERA.with(|cell| cell.get()) else {
+        return 2;
+    };
+    let Some(world) = PICK_WORLD.with(|cell| cell.borrow().clone()) else {
         return 2;
     };
     let Ok(ray) = ray_from_pixel(&camera, [px, py], viewport) else {
@@ -111,7 +131,10 @@ pub extern "C" fn hex_probe_pick(px_bits: u32, py_bits: u32) -> i32 {
         min_layer: MIN_LAYER,
         max_layer: MAX_LAYER,
     };
-    match pick_hex(&world, &ray, &params) {
+    let world_ref = world.borrow();
+    let hit = pick_hex(&world_ref, &ray, &params);
+    drop(world_ref);
+    match hit {
         Ok(Some(hit)) => {
             PICKED_VALID.store(1, Ordering::Relaxed);
             PICKED_Q.store(hit.cell.q(), Ordering::Relaxed);
@@ -153,12 +176,16 @@ pub extern "C" fn hex_probe_picked_face() -> u32 {
 }
 
 thread_local! {
-    /// The current camera, world, and viewport, published by `draw`
-    /// each frame so `hex_probe_pick` can run the same analytic
-    /// picker the application would use for a real pointer event, with
-    /// no `Stage` pointer stored anywhere (contract section 3.3).
-    static PICK_CONTEXT: std::cell::RefCell<Option<(OrbitCamera, World, [f64; 2])>> =
-        const { std::cell::RefCell::new(None) };
+    /// The current camera and viewport, published by `draw` each
+    /// frame so `hex_probe_pick` can run the same analytic picker a
+    /// real pointer event would use. Plain `Copy` data, no pointer.
+    static PICK_CAMERA: Cell<Option<(OrbitCamera, [f64; 2])>> = const { Cell::new(None) };
+    /// A clone of the `Rc` to the live world, set once in `Stage::new`
+    /// (not re-pointed every frame). This is a reference-counted
+    /// handle to CPU voxel data, not a pointer to `Stage` itself:
+    /// dropping `Stage` and letting this `Rc` go out of scope frees it
+    /// normally: there is no raw/global `Stage` pointer anywhere.
+    static PICK_WORLD: RefCell<Option<Rc<RefCell<World>>>> = const { RefCell::new(None) };
 }
 
 struct Stage {
@@ -173,7 +200,7 @@ struct Stage {
     sprite_vertex_buffer: Option<BufferId>,
     sprite_index_buffer: Option<BufferId>,
 
-    world: World,
+    world: Rc<RefCell<World>>,
     camera: OrbitCamera,
     dragging: bool,
     last_mouse: (f32, f32),
@@ -182,45 +209,40 @@ struct Stage {
     released: bool,
 }
 
-/// Builds the two-chunk demo world and its combined world-space mesh.
-/// Returns an error status string instead of panicking if the mesh
-/// exceeds the checked WebGL1 index limit (contract section 1.8/3.1):
-/// no `expect` on this path.
-fn build_world_and_mesh() -> Result<(World, MeshBuffers), String> {
+/// Builds the two-chunk demo world (reusing the unchanged cubic
+/// `terrain::generate_chunk`, which already derives height from
+/// `terrain::column_height(seed, q, r, 1, 3)` for these `dims`).
+fn build_world() -> Result<World, String> {
     let mut world = World::new(CHUNK_DIMS, MAX_RESIDENT_CHUNKS)
         .map_err(|error| format!("invalid demo world configuration: {error}"))?;
-    let coords = [ChunkCoord::new(-1, 0, 0), ChunkCoord::new(0, 0, 0)];
-    for coord in coords {
-        let mut chunk = miniquad_voxel::chunk::Chunk::new(CHUNK_DIMS)
-            .map_err(|error| format!("invalid chunk dims: {error}"))?;
-        for r in 0..CHUNK_DIMS.z {
-            for q in 0..CHUNK_DIMS.x {
-                let world_q = coord.x * CHUNK_DIMS.x as i32 + q as i32;
-                let world_r = coord.z * CHUNK_DIMS.z as i32 + r as i32;
-                let height = column_height(WORLD_SEED, world_q, world_r, 1, 3)
-                    .map_err(|error| format!("terrain generation failed: {error}"))?;
-                for layer in 0..=height.min(CHUNK_DIMS.y - 1) {
-                    let material = if layer == height { 1 } else { 2 };
-                    chunk
-                        .set(q, layer, r, material)
-                        .map_err(|error| format!("chunk write out of bounds: {error}"))?;
-                }
-            }
-        }
+    for coord in RESIDENT_CHUNKS {
+        let chunk = generate_chunk(
+            WORLD_SEED,
+            CHUNK_DIMS,
+            coord.x * CHUNK_DIMS.x as i32,
+            coord.z * CHUNK_DIMS.z as i32,
+        )
+        .map_err(|error| format!("terrain generation failed: {error}"))?;
         world
             .insert(coord, chunk)
             .map_err(|error| format!("world insert failed: {error}"))?;
     }
+    Ok(world)
+}
 
+/// Rebuilds the combined world-space mesh for both resident chunks.
+/// Returns an error instead of panicking if the combined mesh exceeds
+/// the checked WebGL1 index limit (contract section 1.8/3.1): no
+/// `expect` on this path.
+fn build_combined_mesh(world: &World) -> Result<MeshBuffers, String> {
     let mut combined = MeshBuffers::new();
     let mut per_chunk = MeshBuffers::new();
-    for coord in coords {
-        build_hex_chunk_mesh(&world, coord, &PALETTE, &mut per_chunk)
-            .map_err(|error| format!("hex mesh build failed: {error:?}"))?;
+    for coord in RESIDENT_CHUNKS {
+        build_hex_chunk_mesh(world, coord, &PALETTE, &mut per_chunk)
+            .map_err(|error| format!("hex mesh build failed: {error}"))?;
         if combined.vertices.len() + per_chunk.vertices.len() > HEX_MAX_MESH_VERTICES {
             return Err(format!(
-                "combined hex mesh exceeds HEX_MAX_MESH_VERTICES ({})",
-                HEX_MAX_MESH_VERTICES
+                "combined hex mesh exceeds HEX_MAX_MESH_VERTICES ({HEX_MAX_MESH_VERTICES})"
             ));
         }
         let base = combined.vertices.len() as u32;
@@ -229,52 +251,69 @@ fn build_world_and_mesh() -> Result<(World, MeshBuffers), String> {
             .indices
             .extend(per_chunk.indices.iter().map(|index| index + base));
     }
-    Ok((world, combined))
+    Ok(combined)
+}
+
+/// Builds the terrain vertex/index GPU buffers for the current world
+/// state. On any mesh error (section 1.8/3.1 checked limits), draws no
+/// terrain and reports `hex_probe_triangles() == 0`: no `expect`.
+fn create_terrain_buffers(
+    ctx: &mut dyn RenderingBackend,
+    world: &World,
+) -> (BufferId, BufferId, i32) {
+    let combined = match build_combined_mesh(world) {
+        Ok(combined) => combined,
+        Err(message) => {
+            eprintln!("offline_hex: {message}");
+            MeshBuffers::new()
+        }
+    };
+    let terrain_indices: Vec<u16> = combined
+        .indices
+        .iter()
+        .filter_map(|&index| u16::try_from(index).ok())
+        .collect();
+    let terrain_index_count = if terrain_indices.len() == combined.indices.len() {
+        terrain_indices.len() as i32
+    } else {
+        eprintln!("offline_hex: an index exceeded u16::MAX; drawing no terrain");
+        0
+    };
+    TRIANGLE_COUNT.store((terrain_index_count / 3) as u32, Ordering::Relaxed);
+    let vertex_buffer = ctx.new_buffer(
+        BufferType::VertexBuffer,
+        BufferUsage::Immutable,
+        BufferSource::slice(&combined.vertices),
+    );
+    let index_buffer = ctx.new_buffer(
+        BufferType::IndexBuffer,
+        BufferUsage::Immutable,
+        BufferSource::slice(&terrain_indices),
+    );
+    (vertex_buffer, index_buffer, terrain_index_count)
 }
 
 impl Stage {
     pub fn new() -> Stage {
         let mut ctx: Box<dyn RenderingBackend> = window::new_rendering_backend();
 
-        let (world, combined) = match build_world_and_mesh() {
-            Ok(result) => result,
+        let world = match build_world() {
+            Ok(world) => world,
             Err(message) => {
                 // No terrain is drawn; the HTML host reports `status:
                 // error` per contract section 3.1. This path uses no
                 // `expect`/`panic!`, matching the checked-limit rule.
                 eprintln!("offline_hex: {message}");
-                (
-                    World::new(CHUNK_DIMS, MAX_RESIDENT_CHUNKS).expect("fallback world is valid"),
-                    MeshBuffers::new(),
-                )
+                World::new(CHUNK_DIMS, MAX_RESIDENT_CHUNKS).expect("fallback world is valid")
             }
         };
-        TRIANGLE_COUNT.store((combined.indices.len() / 3) as u32, Ordering::Relaxed);
+        let world = Rc::new(RefCell::new(world));
+        PICK_WORLD.with(|cell| *cell.borrow_mut() = Some(world.clone()));
 
         let mut resource_count = 0u32;
-        let terrain_vertex_buffer = ctx.new_buffer(
-            BufferType::VertexBuffer,
-            BufferUsage::Immutable,
-            BufferSource::slice(&combined.vertices),
-        );
-        resource_count += 1;
-        let terrain_indices: Vec<u16> = combined
-            .indices
-            .iter()
-            .filter_map(|&index| u16::try_from(index).ok())
-            .collect();
-        let terrain_index_count = if terrain_indices.len() == combined.indices.len() {
-            terrain_indices.len() as i32
-        } else {
-            eprintln!("offline_hex: an index exceeded u16::MAX; drawing no terrain");
-            0
-        };
-        let terrain_index_buffer = ctx.new_buffer(
-            BufferType::IndexBuffer,
-            BufferUsage::Immutable,
-            BufferSource::slice(&terrain_indices),
-        );
-        resource_count += 1;
+        let (terrain_vertex_buffer, terrain_index_buffer, terrain_index_count) =
+            create_terrain_buffers(ctx.as_mut(), &world.borrow());
+        resource_count += 2;
 
         let terrain_shader = ctx
             .new_shader(
@@ -407,6 +446,46 @@ impl Stage {
         self.released = true;
         RESOURCES_LIVE.store(0, Ordering::Relaxed);
     }
+
+    /// Writes a full-height solid column at the cell under the
+    /// sprite's current position (contract section 3.4 occlusion
+    /// test), then rebuilds the affected mesh. A no-op if that cell's
+    /// chunk is not one of the two resident chunks.
+    fn place_column_under_sprite(&mut self) {
+        let x = f32::from_bits(SPRITE_X_BITS.load(Ordering::Relaxed)) as f64;
+        let z = f32::from_bits(SPRITE_Z_BITS.load(Ordering::Relaxed)) as f64;
+        let layer = SPRITE_LAYER.load(Ordering::Relaxed);
+        let Ok(cell) = hex_cell_at_xz(x, z, 0) else {
+            return;
+        };
+        let mut world = self.world.borrow_mut();
+        for fill_layer in MIN_LAYER..=layer.min(MAX_LAYER) {
+            let Ok(cell) = miniquad_voxel::hex::HexCell::new(cell.q(), cell.r(), fill_layer) else {
+                continue;
+            };
+            let Ok((coord, local)) = cell.to_chunk_local(CHUNK_DIMS) else {
+                continue;
+            };
+            if !RESIDENT_CHUNKS.contains(&coord) {
+                continue;
+            }
+            if let Some(chunk) = world.get(coord) {
+                let mut chunk = chunk.clone();
+                let _ = chunk.set(local[0], local[1], local[2], PLACE_COLUMN_MATERIAL);
+                let _ = world.insert(coord, chunk);
+            }
+        }
+        drop(world);
+        let (vertex_buffer, index_buffer, index_count) =
+            create_terrain_buffers(self.ctx.as_mut(), &self.world.borrow());
+        if let Some(old) = self.terrain_vertex_buffer.replace(vertex_buffer) {
+            self.ctx.delete_buffer(old);
+        }
+        if let Some(old) = self.terrain_index_buffer.replace(index_buffer) {
+            self.ctx.delete_buffer(old);
+        }
+        self.terrain_index_count = index_count;
+    }
 }
 
 const ARROW_KEY_STEP: f32 = 0.03;
@@ -463,23 +542,15 @@ impl EventHandler for Stage {
             return;
         }
 
-        PICK_CONTEXT.with(|cell| {
-            *cell.borrow_mut() = Some((
+        if PLACE_COLUMN_REQUESTED.swap(false, Ordering::Relaxed) {
+            self.place_column_under_sprite();
+        }
+
+        PICK_CAMERA.with(|cell| {
+            cell.set(Some((
                 self.camera,
-                // `World` holds only bounded CPU data (chunk grids);
-                // cloning it for the probe keeps no pointer to `Stage`.
-                World::new(self.world.dims(), self.world.max_resident_chunks())
-                    .map(|mut clone| {
-                        for coord in [ChunkCoord::new(-1, 0, 0), ChunkCoord::new(0, 0, 0)] {
-                            if let Some(chunk) = self.world.get(coord) {
-                                let _ = clone.insert(coord, chunk.clone());
-                            }
-                        }
-                        clone
-                    })
-                    .unwrap_or_else(|_| World::new(CHUNK_DIMS, MAX_RESIDENT_CHUNKS).unwrap()),
-                (self.screen_size.0 as f64, self.screen_size.1 as f64),
-            ));
+                (self.screen_size.0 as f64, self.screen_size.1 as f64).into(),
+            )))
         });
 
         let t = date::now() - self.start_time;
@@ -518,9 +589,26 @@ impl EventHandler for Stage {
             2.0 + (t as f32 * 1.7).sin() * 0.3,
             (t as f32).sin() * radius,
         );
+        SPRITE_X_BITS.store(sprite_pos.x.to_bits(), Ordering::Relaxed);
+        SPRITE_Z_BITS.store(sprite_pos.z.to_bits(), Ordering::Relaxed);
+        SPRITE_LAYER.store(sprite_pos.y.floor() as i32, Ordering::Relaxed);
         let model = Mat4([
-            1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, sprite_pos.x, sprite_pos.y,
-            sprite_pos.z, 1.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0,
+            sprite_pos.x,
+            sprite_pos.y,
+            sprite_pos.z,
+            1.0,
         ]);
         if let (Some(pipeline), Some(vbuf), Some(ibuf)) = (
             self.sprite_pipeline,

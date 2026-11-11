@@ -233,9 +233,7 @@ pub fn hex_cell_at_xz(x: f64, z: f64, layer: i32) -> Result<HexCell, HexError> {
         best = Some(match best {
             None => (q, r, dist2),
             Some((bq, br, bdist)) => {
-                if dist2 < bdist - 1e-9 {
-                    (q, r, dist2)
-                } else if (dist2 - bdist).abs() <= 1e-9 && (q, r) < (bq, br) {
+                if dist2 < bdist - 1e-9 || ((dist2 - bdist).abs() <= 1e-9 && (q, r) < (bq, br)) {
                     (q, r, dist2)
                 } else {
                     (bq, br, bdist)
@@ -384,9 +382,7 @@ pub fn pick_hex(
             best_exit = Some(match best_exit {
                 None => (face.index(), t_k),
                 Some((bi, bt)) => {
-                    if t_k < bt - 1e-9 {
-                        (face.index(), t_k)
-                    } else if (t_k - bt).abs() <= 1e-9 && face.index() < bi {
+                    if t_k < bt - 1e-9 || ((t_k - bt).abs() <= 1e-9 && face.index() < bi) {
                         (face.index(), t_k)
                     } else {
                         (bi, bt)
@@ -510,8 +506,8 @@ mod tests {
     fn ray_from_pixel_is_unit_length_for_a_valid_input() {
         let camera = OrbitCamera::new(crate::math::Vec3::ZERO, 10.0, 0.4, 0.3);
         let ray = ray_from_pixel(&camera, [50.0, 50.0], [100.0, 100.0]).unwrap();
-        let len = (ray.dir[0] * ray.dir[0] + ray.dir[1] * ray.dir[1] + ray.dir[2] * ray.dir[2])
-            .sqrt();
+        let len =
+            (ray.dir[0] * ray.dir[0] + ray.dir[1] * ray.dir[1] + ray.dir[2] * ray.dir[2]).sqrt();
         assert!((len - 1.0).abs() < 1e-9);
     }
 

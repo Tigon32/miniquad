@@ -21,3 +21,9 @@ node_modules/
 # depends on the miniquad-draw companion via a path/Git dependency, not
 # a copy of its source) reproducible too. See docs/drawing-companion.md.
 !experiments/drawing-comparison/external-consumer/Cargo.lock
+
+# WebGPU proof candidates (#154): keep their pinned locks, ignore build output.
+!experiments/webgpu-manual/Cargo.lock
+!experiments/webgpu-wgpu/Cargo.lock
+/experiments/webgpu-*/target/
+/experiments/webgpu-*/dist/

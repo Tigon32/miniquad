@@ -3,6 +3,9 @@
 * Date: 2026-11-10
 * Review: **Source-based qualification record**, not a release approval
 
+The proposed [platform support policy](platform-support-policy.md) ([MADR 0016](adr/0016-modern-platform-support-policy.md), **Proposed**) gives the target matrix and the legacy removal plan.
+This record gives the observed state only.
+
 ## Android
 
 The existing manual CI used the Docker image `notfl3/cargo-apk` without a digest.

@@ -13,6 +13,13 @@ See [MADR 0003](adr/0003-use-asd-ste100-for-communication.md).
 | **Platform backend** | Code that connects Miniquad to a specific operating system or graphics API. | Game logic |
 | **Game engine** | A software system that supplies game rules and runtime functions. Miniquad does not supply the full system. | Miniquad library |
 | **Rendering API** | Functions that let an application submit drawing commands to a graphics system. | Game simulation |
+| **Voxel chunk** | A bounded grid of voxel values. The optional voxel application meshes its visible faces. | GPU buffer |
+| **Authoritative simulation** | The server-owned voxel state and command processing in mixed mode. The browser renders a local copy. | Server-side rendering |
+| **Snapshot** | A complete bounded voxel state with a world ID and revision. | Delta |
+| **Delta** | Accepted voxel commands between two stated revisions. | Complete snapshot |
+| **VXP1** | The optional voxel application's versioned binary protocol. It does not change Miniquad ABI v3. | Browser bridge ABI |
+| **Voxel sync forwarder** | A loopback test route that forwards bounded protocol bytes. It does not simulate the world. | Authoritative simulation |
+| **HUD** | A screen-space status display drawn after the voxel world and sprite. | Accessible HTML controls |
 | **Interface contract** | Rules that define the data, types, ownership, version, and behavior at a boundary. | Implementation detail |
 | **WebAssembly module (WASM)** | Rust code that is compiled into a module for a WASM runtime. | JavaScript bridge |
 | **Browser bridge** | The JavaScript file `js/gl.js`. It connects browser functions and events to WASM. | Game engine |

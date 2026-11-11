@@ -1,8 +1,8 @@
 # Miniquad source-grounded architecture
 
-* Baseline source: [master at a21f651a](https://github.com/Tigon32/miniquad/tree/a21f651a36d789e28a4213c3ec00311be9821dc0)
-* Review date: 2026-11-10
-* Scope: existing browser-first WASM implementation, not a proposed React or server runtime
+* Core baseline: [master at a21f651a](https://github.com/Tigon32/miniquad/tree/a21f651a36d789e28a4213c3ec00311be9821dc0)
+* Review date: 2026-11-11
+* Scope: browser runtime, optional embedding, and the proposed voxel boundary in MADR 0008
 * Writing status: STE-aligned draft, not a certified ASD-STE100 review
 
 The editable diagrams are [components.mmd](components.mmd) and
@@ -21,6 +21,22 @@ when the architecture changes.
 | Browser input → Rust | [js/gl.js](../../js/gl.js) keyboard, pointer, touch, paste and file-drop handlers | Browser focus governs event routing; clipboard and dropped-file bytes use the versioned [transfer contract](../wasm-transfer-abi-v3.md) |
 | WebGL and context lifecycle | [js/gl.js](../../js/gl.js) `init_webgl`, `animation`, `webglcontextlost` | GPU resources belong to WebGL. On context loss the animation stops; restoration does not automatically reconstruct state. Reload is required |
 | Native target selection | [src/lib.rs](../../src/lib.rs) `start` platform `cfg` blocks | Optional Windows, Apple, Android and Linux runtime paths; see [native qualification](../native-platform-qualification.md) |
+| Optional voxel application → Miniquad | [MADR 0008](../adr/0008-optional-voxel-topologies.md): application-owned simulation, meshes, sprite, and HUD | Core supplies rendering and input. Normal Miniquad builds gain no voxel dependency |
+| Embedding host → optional voxel server | [Voxel protocol](voxel-protocol.md) and [test forwarder](../../tests/browser/voxel-proxy.mjs): bounded request and response bytes | The native server owns authoritative simulation. The forwarder has no world state. Server mode does not silently become offline mode |
+
+## Optional voxel boundary
+
+The voxel topology remains **Proposed** until its prototype evidence passes.
+Offline mode uses local commands and has no gameplay network connection.
+Mixed mode uses the same Rust domain types. The server owns authoritative state.
+The host transfers versioned messages to application-specific WASM staging exports.
+The WASM browser bridge does not become a network client.
+
+The voxel application draws the 3D terrain, world-space sprite, and screen-space HUD.
+It sets depth and blend state for each part of the frame.
+The embedding host owns accessible HTML controls and status.
+The loopback server and test forwarder are not an Internet deployment or a security boundary.
+See the [protocol contract](voxel-protocol.md) for limits and failure behavior.
 
 ## Source and qualification limits
 

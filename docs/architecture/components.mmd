@@ -11,3 +11,8 @@ flowchart LR
     GL --> GPU["Browser GPU service"]
     Public -.->|"Native target selection"| Native["src/native/windows.rs, macos.rs, linux_x11.rs, android.rs"]
     Bridge -->|"Version and ownership contract"| ABI["docs/wasm-transfer-abi-v3.md"]
+    Voxel["Optional voxel application"] -->|"Existing rendering API"| Public
+    Voxel -->|"Offline commands or received state"| Sim["Pure Rust voxel simulation types"]
+    Host -->|"Optional server-mode fetch"| Forwarder["Loopback voxel sync forwarder"]
+    Forwarder -->|"Bounded VXP1 bytes"| Authority["Optional native voxel server"]
+    Authority -->|"Authoritative commands"| Sim

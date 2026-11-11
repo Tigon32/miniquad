@@ -29,7 +29,20 @@
       const wasmPath = "/offline_hex_" + variant + ".wasm";
 
       const faceNames = ["PosQ", "PosR", "NegQPosR", "NegQ", "NegR", "PosQNegR", "Top", "Bottom"];
-      let revision = 0;
+      // True once `resources_live()` has been observed nonzero (the
+      // scene actually started). Used below to tell a real post-
+      // release "resources_live() == 0" apart from the brief instant
+      // before the first frame, when the export may not yet exist.
+      let everLive = false;
+      // Shared with the pointerdown handler below, which is outside
+      // `updateStatus`'s own scope: once released, no further pick
+      // should run against a scene with no GPU resources.
+      let released = false;
+
+      function setControlsDisabled(disabled) {
+        document.getElementById("hex-place-column").disabled = disabled;
+        document.getElementById("hex-release").disabled = disabled;
+      }
 
       function updateStatus() {
         const exports = window.wasm_exports;
@@ -37,9 +50,24 @@
           window.requestAnimationFrame(updateStatus);
           return;
         }
-        revision = (revision + 1) >>> 0;
-        const revisionText = revision > 999999 ? "rEEEEEE" : String(revision);
-        document.getElementById("hex-revision").textContent = "Revision: " + revisionText;
+        const live = exports.resources_live();
+        if (live > 0) everLive = true;
+        released = everLive && live === 0;
+
+        // A real, bounded world-mutation count (contract: only
+        // actual "Place column" writes increment it), not a per-
+        // frame tick. Stays accurate and readable at any scene
+        // lifetime: no overflow-truncation display hack needed.
+        document.getElementById("hex-revision").textContent =
+          "Revision: " + exports.hex_world_revision();
+
+        if (released) {
+          // Stop polling: the scene has no more GPU resources and no
+          // further picked-cell state will change.
+          setControlsDisabled(true);
+          return;
+        }
+
         const valid = exports.hex_probe_picked_valid();
         if (valid) {
           const q = exports.hex_probe_picked_q();
@@ -65,7 +93,7 @@
       window.addEventListener("pointerdown", event => {
         const exports = window.wasm_exports;
         const canvas = document.getElementById("glcanvas");
-        if (!exports || event.target !== canvas) return;
+        if (!exports || released || event.target !== canvas) return;
         const rect = canvas.getBoundingClientRect();
         const dpr = window.devicePixelRatio || 1;
         const px = (event.clientX - rect.left) * dpr;

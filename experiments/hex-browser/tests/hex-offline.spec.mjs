@@ -277,22 +277,54 @@ test.describe("offline hex-voxel scene: device pixel ratio", () => {
 });
 
 test.describe("offline hex-voxel scene: occlusion and world mutation", () => {
-    test("Place column occludes the sprite's screen position with terrain color", async ({ page }) => {
+    test("Place column occludes the sprite's own screen position, sampled at one frozen pixel", async ({ page }) => {
         await gotoVariant(page, "webgl1");
         const canvas = page.locator("#glcanvas");
         const viewportPixels = [VIEWPORT_CSS.width, VIEWPORT_CSS.height];
 
-        // PALETTE[2] (dirt, contract-material index for
-        // PLACE_COLUMN_MATERIAL) scaled by the example's flat-shade
-        // lighting range; a loose per-channel tolerance accepts any
-        // in-range shade without claiming an exact lit value.
-        const dirtPalette = [0.45 * 255, 0.33 * 255, 0.2 * 255];
-        function looksLikeDirt(rgb, tol = 60) {
+        // Freeze the sprite's time-driven orbit (about 3 world
+        // units/second, see `draw`'s radius-3 circle) so the before
+        // and after samples really are the SAME world point, not two
+        // different points the sprite happened to pass through. This
+        // is example-only test support (`hex_request_freeze_time`),
+        // with no UI control and no effect on picking, release, or
+        // the world-mutation revision.
+        await page.evaluate(() => window.wasm_exports.hex_request_freeze_time());
+        // One settle frame so `draw` latches the frozen elapsed-time
+        // value before any position is read.
+        await page.waitForTimeout(50);
+
+        // The sprite shader (shader::SPRITE_FRAGMENT) outputs the
+        // `tint` uniform directly with no lighting term, so its
+        // rendered color is this exact value (alpha-blended over
+        // whatever is behind it, but here nothing is, since this
+        // sample is taken before any column write).
+        const spriteTint = [1.0 * 255, 0.2 * 255, 0.3 * 255];
+        function looksLikeSpriteTint(rgb, tol = 20) {
             return (
-                Math.abs(rgb[0] - dirtPalette[0]) <= tol &&
-                Math.abs(rgb[1] - dirtPalette[1]) <= tol &&
-                Math.abs(rgb[2] - dirtPalette[2]) <= tol &&
-                rgb[0] > rgb[2] // dirt is redder than it is blue; distinguishes it from the grass/stone palette entries.
+                Math.abs(rgb[0] - spriteTint[0]) <= tol &&
+                Math.abs(rgb[1] - spriteTint[1]) <= tol &&
+                Math.abs(rgb[2] - spriteTint[2]) <= tol
+            );
+        }
+        // PALETTE[2] (dirt, the contract material `place_column_under_sprite`
+        // writes) scaled by the shader's actual flat-shade lighting
+        // range (`shade = 0.45 + 0.55 * max(dot(normal, light_dir), 0)`,
+        // see `shader::TERRAIN_FRAGMENT`): this covers every face this
+        // scene can expose, min shade 0.45 (a face facing away from
+        // the light) through max shade ~0.94 (`HexFace::Top`, the
+        // brightest possible normal here), not one assumed value.
+        const dirtBase = [0.45, 0.33, 0.20];
+        const minShade = 0.45;
+        const maxShade = 0.45 + 0.55; // theoretical dot == 1 upper bound.
+        function looksLikeDirt(rgb) {
+            return (
+                dirtBase.every(
+                    (base, i) =>
+                        rgb[i] >= base * minShade * 255 - 5 && rgb[i] <= base * maxShade * 255 + 5
+                ) &&
+                rgb[0] > rgb[1] &&
+                rgb[1] > rgb[2] // dirt is the only palette entry with R > G > B at every shade.
             );
         }
 
@@ -306,72 +338,197 @@ test.describe("offline hex-voxel scene: occlusion and world mutation", () => {
             const i = (png.width * y + x) * 4;
             return [png.data[i], png.data[i + 1], png.data[i + 2]];
         }
+        async function readSpriteWorldPos() {
+            const xBits = await page.evaluate(() => window.wasm_exports.hex_probe_sprite_x_bits());
+            const yBits = await page.evaluate(() => window.wasm_exports.hex_probe_sprite_y_bits());
+            const zBits = await page.evaluate(() => window.wasm_exports.hex_probe_sprite_z_bits());
+            const x = new Float32Array(new Uint32Array([xBits]).buffer)[0];
+            const y = new Float32Array(new Uint32Array([yBits]).buffer)[0];
+            const z = new Float32Array(new Uint32Array([zBits]).buffer)[0];
+            return { x, y, z };
+        }
 
-        // Read the sprite's actual current world position (example-
-        // only probes, not a core API change) and project the top of
-        // the column that "Place column" is about to write, so the
-        // before/after sample is honestly at the mutated pixel
-        // instead of an assumed fixed point.
-        const spriteX = await page.evaluate(() => {
-            const bits = window.wasm_exports.hex_probe_sprite_x_bits();
-            return new Float32Array(new Uint32Array([bits]).buffer)[0];
-        });
-        const spriteZ = await page.evaluate(() => {
-            const bits = window.wasm_exports.hex_probe_sprite_z_bits();
-            return new Float32Array(new Uint32Array([bits]).buffer)[0];
-        });
-        const spriteLayer = await page.evaluate(() => window.wasm_exports.hex_probe_sprite_layer());
-        const columnTopY = (Math.min(spriteLayer, 3) + 1) * 1.0;
-        const columnTopPixel = projectToPixel(CAMERA, [spriteX, columnTopY, spriteZ], viewportPixels);
-        expect(columnTopPixel, "the sprite's current world position must project onto the viewport").not.toBeNull();
+        // Project the sprite's *own* current world-space position
+        // (exact, frozen `(x, y, z)`, not an arbitrary "column top"
+        // point or the integer `layer`) to get the one pixel this
+        // test freezes, so the before/after sample is honestly at the
+        // pixel the sprite quad actually renders at.
+        const before = await readSpriteWorldPos();
+        const beforePixel = projectToPixel(CAMERA, [before.x, before.y, before.z], viewportPixels);
+        expect(beforePixel, "the sprite's current world position must project onto the viewport").not.toBeNull();
 
-        const beforeColor = await colorAtPixel(columnTopPixel);
-        expect(beforeColor, "the column-top pixel must be in-viewport before the click").not.toBeNull();
+        const beforeColor = await colorAtPixel(beforePixel);
+        expect(beforeColor, "the frozen pixel must be in-viewport before the click").not.toBeNull();
+        expect(
+            looksLikeSpriteTint(beforeColor),
+            `expected sprite tint at the frozen pixel before any column write, got rgb=${beforeColor}`
+        ).toBe(true);
+
         const trianglesBefore = await page.evaluate(() => window.wasm_exports.hex_probe_triangles());
-
         await page.locator("#hex-place-column").click();
-        await page.waitForTimeout(300);
+        // Short settle for one mesh rebuild + draw. The sprite itself
+        // cannot drift now (time is frozen), so there is no upper
+        // bound pressure on this wait; it only needs to outlast one
+        // animation frame.
+        await page.waitForTimeout(150);
 
-        const afterColor = await colorAtPixel(columnTopPixel);
+        // Confirm the sprite's world position truly did not move
+        // while frozen, so "the SAME frozen pixel" is not just an
+        // assumption.
+        const after = await readSpriteWorldPos();
+        expect(after, "the sprite must not move while time is frozen").toEqual(before);
+
+        const afterColor = await colorAtPixel(beforePixel);
         const trianglesAfter = await page.evaluate(() => window.wasm_exports.hex_probe_triangles());
 
-        // The column write is a hard overwrite to dirt regardless of
-        // what was there before (contract: material identity, not
-        // face count, is the only guaranteed-changed signal -- see
-        // the code comment on `place_column_under_sprite`). Assert on
-        // the rendered color, not on triangle count, which can
-        // legitimately stay flat if the column was already fully
-        // solid.
-        expect(looksLikeDirt(afterColor), "the column-top pixel must be dirt-colored after Place column").toBe(true);
+        // The column write is a hard overwrite to dirt at exactly the
+        // frozen sprite's cell (contract: material identity, not face
+        // count, is the only guaranteed-changed signal -- see the
+        // code comment on `place_column_under_sprite`), so the SAME
+        // pixel must now show dirt, not the sprite's tint.
+        expect(
+            looksLikeDirt(afterColor),
+            `expected the SAME frozen pixel to show terrain/dirt (not the sprite tint) after Place column, got rgb=${afterColor}`
+        ).toBe(true);
+        expect(
+            looksLikeSpriteTint(afterColor),
+            "the frozen pixel must no longer show the sprite's tint once the column occludes it"
+        ).toBe(false);
         expect(trianglesAfter, "Place column must never remove geometry").toBeGreaterThanOrEqual(trianglesBefore);
     });
 });
 
+test.describe("offline hex-voxel scene: real world-mutation revision and release-disables-controls", () => {
+    test("hex_world_revision only advances on an actual mutation, never on idle frames", async ({ page }) => {
+        await gotoVariant(page, "webgl1");
+
+        const revisionAtLoad = await page.evaluate(() => window.wasm_exports.hex_world_revision());
+        expect(revisionAtLoad, "revision must start at 0, not a frame-tick count").toBe(0);
+
+        // Idle frames (no click) must never advance the revision: it
+        // is a bounded mutation count, not a `requestAnimationFrame`
+        // tick. Several real frames render during this wait.
+        await page.waitForTimeout(400);
+        const revisionAfterIdle = await page.evaluate(() => window.wasm_exports.hex_world_revision());
+        expect(revisionAfterIdle, "idle frames must not advance the world revision").toBe(0);
+
+        // The displayed text must mirror the real export, not an
+        // independent frame counter.
+        await expect(page.locator("#hex-revision")).toHaveText("Revision: 0");
+
+        await page.locator("#hex-place-column").click();
+        await page.waitForTimeout(150);
+        const revisionAfterFirstClick = await page.evaluate(() => window.wasm_exports.hex_world_revision());
+        expect(revisionAfterFirstClick, "one real mutation must advance the revision by exactly 1").toBe(1);
+        await expect(page.locator("#hex-revision")).toHaveText("Revision: 1");
+
+        // A second click targets the same, now-already-dirt cell: it
+        // is still a write attempt against a resident chunk (contract:
+        // material identity, not a before/after diff, is what counts
+        // as "mutated"), so the bounded counter advances again.
+        await page.locator("#hex-place-column").click();
+        await page.waitForTimeout(150);
+        const revisionAfterSecondClick = await page.evaluate(() => window.wasm_exports.hex_world_revision());
+        expect(revisionAfterSecondClick).toBe(2);
+
+        // Further idle frames after the mutations still must not
+        // advance the counter on their own.
+        await page.waitForTimeout(400);
+        const revisionAfterMoreIdle = await page.evaluate(() => window.wasm_exports.hex_world_revision());
+        expect(revisionAfterMoreIdle, "idle frames after a mutation must not advance the world revision").toBe(2);
+    });
+
+    test("Release stops status updates and disables both controls", async ({ page }) => {
+        await gotoVariant(page, "webgl1");
+
+        const placeButton = page.locator("#hex-place-column");
+        const releaseButton = page.locator("#hex-release");
+        await expect(placeButton).toBeEnabled();
+        await expect(releaseButton).toBeEnabled();
+        expect(await page.evaluate(() => window.wasm_exports.resources_live())).toBeGreaterThan(0);
+
+        await releaseButton.click();
+        // Release happens on the next draw call (contract: "release
+        // request -> next draw deletes GPU resources"), so wait for
+        // the real `resources_live()` transition instead of assuming
+        // it is synchronous with the click.
+        await expect
+            .poll(() => page.evaluate(() => window.wasm_exports.resources_live()), { timeout: 2000 })
+            .toBe(0);
+
+        await expect(placeButton, "Place column must be disabled once released").toBeDisabled();
+        await expect(releaseButton, "Release must be disabled once released").toBeDisabled();
+
+        const revisionAtRelease = await page.evaluate(() => window.wasm_exports.hex_world_revision());
+        const statusTextAtRelease = await page.locator("#hex-revision").textContent();
+
+        // The status-polling loop must have actually stopped: wait
+        // longer than a few animation frames and confirm nothing
+        // changed, rather than only checking the instant of release.
+        await page.waitForTimeout(400);
+        expect(
+            await page.evaluate(() => window.wasm_exports.hex_world_revision()),
+            "a released scene must not keep mutating its own revision"
+        ).toBe(revisionAtRelease);
+        await expect(
+            page.locator("#hex-revision"),
+            "the displayed revision text must be frozen once released"
+        ).toHaveText(statusTextAtRelease);
+
+        // A pointer click after release must not resurrect picking
+        // against a scene with no GPU resources.
+        await page.locator("#glcanvas").click({ position: { x: 320, y: 180 } });
+        await page.waitForTimeout(100);
+        expect(
+            await page.evaluate(() => window.wasm_exports.resources_live()),
+            "released resources must stay released"
+        ).toBe(0);
+    });
+});
+
 test.describe("offline hex-voxel scene: idempotent release across mount cycles", () => {
-    test("three mount/release cycles each reach resources_live()==0 with no unbounded growth", async ({ page }) => {
+    // `js/gl.js` documents (comment above its `load()` function): "A
+    // canvas has one WASM application lifecycle." The module-scope
+    // `const canvas = document.querySelector("#glcanvas")` at the top
+    // of that file is bound once per page evaluation and cannot be
+    // re-pointed at a fresh element without re-running the script.
+    // A full `page.reload()` is therefore the only existing
+    // embedding mechanism that gives a genuinely new WASM application
+    // lifecycle (new linear memory, new WebGL context); this test
+    // does not invent an in-page "remount" API gl.js does not
+    // support. What it strengthens over a bare reload-and-count
+    // check is: (1) exact per-object GL identity bijection within
+    // each cycle, not just aggregate counts (a leak plus an extra
+    // create could otherwise cancel out in a count comparison), and
+    // (2) a real `wasm_exports.memory.buffer.byteLength` sample per
+    // cycle, to catch an accidental growth in this example's
+    // steady-state allocation across remounts.
+    test("three mount/release cycles each reach resources_live()==0, exact GL identity bijection, and no WASM memory growth", async ({ page }) => {
         const liveCounts = [];
-        const createDeleteCounts = [];
+        const identityChecks = [];
+        const memoryBytesPerCycle = [];
         for (let cycle = 0; cycle < 3; cycle++) {
             await page.addInitScript(() => {
-                window.__glCreateCount = 0;
-                window.__glDeleteCount = 0;
+                window.__glCreated = [];
+                window.__glDeleted = [];
                 for (const klass of [window.WebGLRenderingContext, window.WebGL2RenderingContext]) {
                     if (!klass?.prototype) continue;
                     for (const name of ["createBuffer", "createProgram"]) {
                         const original = klass.prototype[name];
                         if (!original || klass.prototype[name].__hexWrapped) continue;
                         klass.prototype[name] = function (...args) {
-                            window.__glCreateCount++;
-                            return original.apply(this, args);
+                            const object = original.apply(this, args);
+                            window.__glCreated.push(object);
+                            return object;
                         };
                         klass.prototype[name].__hexWrapped = true;
                     }
                     for (const name of ["deleteBuffer", "deleteProgram"]) {
                         const original = klass.prototype[name];
                         if (!original || klass.prototype[name].__hexWrapped) continue;
-                        klass.prototype[name] = function (...args) {
-                            window.__glDeleteCount++;
-                            return original.apply(this, args);
+                        klass.prototype[name] = function (object, ...rest) {
+                            window.__glDeleted.push(object);
+                            return original.call(this, object, ...rest);
                         };
                         klass.prototype[name].__hexWrapped = true;
                     }
@@ -381,28 +538,53 @@ test.describe("offline hex-voxel scene: idempotent release across mount cycles",
             const before = await page.evaluate(() => window.wasm_exports.resources_live());
             expect(before, `cycle ${cycle}: resources_live() must be nonzero before release`).toBeGreaterThan(0);
 
+            const memoryBytes = await page.evaluate(() => window.wasm_exports.memory.buffer.byteLength);
+            memoryBytesPerCycle.push(memoryBytes);
+
             await page.locator("#hex-release").click();
             await page.waitForTimeout(200);
             const after = await page.evaluate(() => window.wasm_exports.resources_live());
             expect(after, `cycle ${cycle}: resources_live() must reach 0 after release`).toBe(0);
             liveCounts.push({ cycle, before, after });
 
-            const counts = await page.evaluate(() => ({
-                created: window.__glCreateCount,
-                deleted: window.__glDeleteCount
-            }));
-            createDeleteCounts.push(counts);
-            // Real GL object identity tracking, not a claim of
-            // immediate driver VRAM/GC release: only that every
-            // object this example created this cycle was also
-            // deleted exactly once by the end of the cycle.
-            expect(counts.deleted, `cycle ${cycle}: every created GL object must be deleted`).toBe(counts.created);
+            // Real identity bijection: every object instance this
+            // cycle created must appear in the deleted list exactly
+            // once (JSHandle equality via elementHandle-less
+            // in-page Set comparison, done entirely inside the page
+            // to keep object identity meaningful).
+            const identity = await page.evaluate(() => {
+                const created = window.__glCreated;
+                const deleted = window.__glDeleted;
+                const deletedRemaining = [...deleted];
+                let unmatchedCreated = 0;
+                for (const object of created) {
+                    const index = deletedRemaining.indexOf(object);
+                    if (index === -1) unmatchedCreated++;
+                    else deletedRemaining.splice(index, 1);
+                }
+                return {
+                    createdCount: created.length,
+                    deletedCount: deleted.length,
+                    unmatchedCreated,
+                    // Any delete call left over after matching every
+                    // created object is a delete of something this
+                    // cycle never created (foreign/stale handle).
+                    unmatchedDeleted: deletedRemaining.length
+                };
+            });
+            identityChecks.push({ cycle, ...identity });
+            expect(identity.unmatchedCreated, `cycle ${cycle}: every created GL object must be deleted exactly once`).toBe(0);
+            expect(identity.unmatchedDeleted, `cycle ${cycle}: no delete may target an object this cycle did not create`).toBe(0);
 
             await page.reload();
         }
+        expect(
+            new Set(memoryBytesPerCycle).size,
+            `WASM memory size must not grow across mount cycles, got ${JSON.stringify(memoryBytesPerCycle)}`
+        ).toBe(1);
         fs.writeFileSync(
             path.join(rawArtifactDir, "release-cycles.json"),
-            JSON.stringify({ liveCounts, createDeleteCounts }, null, 2)
+            JSON.stringify({ liveCounts, identityChecks, memoryBytesPerCycle }, null, 2)
         );
     });
 });

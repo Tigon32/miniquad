@@ -64,6 +64,7 @@ static TRIANGLE_COUNT: AtomicU32 = AtomicU32::new(0);
 /// cell between camera and sprite" (contract section 3.4) without
 /// storing a `Stage` pointer: only three plain atomics.
 static SPRITE_X_BITS: AtomicU32 = AtomicU32::new(0);
+static SPRITE_Y_BITS: AtomicU32 = AtomicU32::new(0);
 static SPRITE_Z_BITS: AtomicU32 = AtomicU32::new(0);
 static SPRITE_LAYER: AtomicI32 = AtomicI32::new(0);
 
@@ -74,6 +75,30 @@ static PICKED_LAYER: AtomicI32 = AtomicI32::new(0);
 static PICKED_FACE: AtomicU32 = AtomicU32::new(8); // 8 = none, per contract section 3.3.
 
 static PLACE_COLUMN_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+/// Latches the sprite's time-driven orbit so a browser proof can
+/// sample one screen pixel before and after a world mutation without
+/// the sprite's own motion (about 3 world units/second, see `draw`)
+/// drifting the sample off target between the two captures. This is
+/// example-only test support, with no UI control and no effect on
+/// picking, release, or the world-mutation revision: it only pins the
+/// elapsed-time value `draw` uses for the sprite's orbit formula.
+static TIME_FROZEN: AtomicBool = AtomicBool::new(false);
+
+/// Counts real world mutations (currently: successful "Place column"
+/// writes only). Starts at `0` and increments by exactly `1` per
+/// mutation that actually changed at least one voxel; a no-op click
+/// (for example outside the resident chunks) does not increment it.
+/// This is a bounded, state-driven counter, not a per-animation-frame
+/// tick: the HTML host must read it with `hex_world_revision()`
+/// instead of counting its own `requestAnimationFrame` calls.
+static WORLD_REVISION: AtomicU32 = AtomicU32::new(0);
+
+/// Reports the current world-mutation revision (see `WORLD_REVISION`).
+#[no_mangle]
+pub extern "C" fn hex_world_revision() -> u32 {
+    WORLD_REVISION.load(Ordering::Relaxed)
+}
 
 /// Reports `resources_live`: the number of GPU objects this example
 /// currently owns (pipelines + shader programs + buffers). `0` once
@@ -110,6 +135,18 @@ pub extern "C" fn hex_request_place_column() -> i32 {
     0
 }
 
+/// Freezes the sprite's orbit at its current elapsed-time value (see
+/// `TIME_FROZEN`). Idempotent: later calls have no further effect.
+/// Example-only test support for a deterministic occlusion sample.
+#[no_mangle]
+pub extern "C" fn hex_request_freeze_time() -> i32 {
+    if TIME_FROZEN.swap(true, Ordering::Relaxed) {
+        1
+    } else {
+        0
+    }
+}
+
 /// Reports the sprite's current world-space X, as `f32` bits (same
 /// convention as `hex_probe_pick`'s pixel inputs). Example-only test
 /// support: lets the browser proof sample the occlusion pixel at the
@@ -124,6 +161,16 @@ pub extern "C" fn hex_probe_sprite_x_bits() -> u32 {
 #[no_mangle]
 pub extern "C" fn hex_probe_sprite_z_bits() -> u32 {
     SPRITE_Z_BITS.load(Ordering::Relaxed)
+}
+
+/// Reports the sprite's current world-space Y, as `f32` bits. The
+/// sprite oscillates within its layer band (see `draw`); the occlusion
+/// browser proof needs this exact value (not the integer `layer`) to
+/// project the one screen pixel the sprite actually renders at.
+/// Example-only test support (see `hex_probe_sprite_x_bits`).
+#[no_mangle]
+pub extern "C" fn hex_probe_sprite_y_bits() -> u32 {
+    SPRITE_Y_BITS.load(Ordering::Relaxed)
 }
 
 /// Reports the sprite's current integer world layer. Example-only
@@ -233,6 +280,13 @@ struct Stage {
     screen_size: (f32, f32),
     start_time: f64,
     released: bool,
+    /// Set once `hex_request_freeze_time` latches the sprite's time-
+    /// driven orbit, so a browser proof can sample the exact same
+    /// screen pixel before and after a world mutation without the
+    /// sprite drifting between the two captures. Test support only:
+    /// no UI control exposes it, and it has no effect on picking,
+    /// release, or the revision counter.
+    frozen_t: Option<f32>,
 }
 
 /// Builds the two-chunk demo world (reusing the unchanged cubic
@@ -447,6 +501,7 @@ impl Stage {
             screen_size: window::screen_size(),
             start_time: date::now(),
             released: false,
+            frozen_t: None,
         }
     }
 
@@ -500,6 +555,7 @@ impl Stage {
             return;
         };
         let mut world = self.world.borrow_mut();
+        let mut mutated = false;
         for fill_layer in MIN_LAYER..=layer.min(MAX_LAYER) {
             let Ok(cell) = miniquad_voxel::hex::HexCell::new(cell.q(), cell.r(), fill_layer) else {
                 continue;
@@ -514,9 +570,17 @@ impl Stage {
                 let mut chunk = chunk.clone();
                 let _ = chunk.set(local[0], local[1], local[2], PLACE_COLUMN_MATERIAL);
                 let _ = world.insert(coord, chunk);
+                mutated = true;
             }
         }
         drop(world);
+        if !mutated {
+            // Nothing actually changed (for example the sprite was
+            // over a non-resident chunk): report no revision bump and
+            // skip the GPU buffer rebuild.
+            return;
+        }
+        WORLD_REVISION.fetch_add(1, Ordering::Relaxed);
         let (vertex_buffer, index_buffer, index_count) =
             create_terrain_buffers(self.ctx.as_mut(), &self.world.borrow());
         if let Some(old) = self.terrain_vertex_buffer.replace(vertex_buffer) {
@@ -594,7 +658,14 @@ impl EventHandler for Stage {
             )))
         });
 
-        let t = date::now() - self.start_time;
+        let t = if TIME_FROZEN.load(Ordering::Relaxed) {
+            *self
+                .frozen_t
+                .get_or_insert((date::now() - self.start_time) as f32)
+                as f64
+        } else {
+            date::now() - self.start_time
+        };
         let aspect = self.screen_size.0 / self.screen_size.1;
         let view = self.camera.view_matrix();
         let projection = self.camera.projection_matrix(aspect);
@@ -631,6 +702,7 @@ impl EventHandler for Stage {
             (t as f32).sin() * radius,
         );
         SPRITE_X_BITS.store(sprite_pos.x.to_bits(), Ordering::Relaxed);
+        SPRITE_Y_BITS.store(sprite_pos.y.to_bits(), Ordering::Relaxed);
         SPRITE_Z_BITS.store(sprite_pos.z.to_bits(), Ordering::Relaxed);
         SPRITE_LAYER.store(sprite_pos.y.floor() as i32, Ordering::Relaxed);
         let model = Mat4([

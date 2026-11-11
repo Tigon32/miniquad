@@ -1,2 +1,4 @@
 /target
+/target-webgl1
+/target-webgl2
 Cargo.lock

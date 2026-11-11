@@ -76,7 +76,8 @@ static PICKED_FACE: AtomicU32 = AtomicU32::new(8); // 8 = none, per contract sec
 static PLACE_COLUMN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
 /// Reports `resources_live`: the number of GPU objects this example
-/// currently owns (pipelines + buffers). `0` once release completes.
+/// currently owns (pipelines + shader programs + buffers). `0` once
+/// release completes.
 #[no_mangle]
 pub extern "C" fn resources_live() -> u32 {
     RESOURCES_LIVE.load(Ordering::Relaxed)
@@ -107,6 +108,29 @@ pub extern "C" fn hex_request_release() -> i32 {
 pub extern "C" fn hex_request_place_column() -> i32 {
     PLACE_COLUMN_REQUESTED.store(true, Ordering::Relaxed);
     0
+}
+
+/// Reports the sprite's current world-space X, as `f32` bits (same
+/// convention as `hex_probe_pick`'s pixel inputs). Example-only test
+/// support: lets the browser proof sample the occlusion pixel at the
+/// sprite's *actual* position instead of an assumed fixed pixel.
+#[no_mangle]
+pub extern "C" fn hex_probe_sprite_x_bits() -> u32 {
+    SPRITE_X_BITS.load(Ordering::Relaxed)
+}
+
+/// Reports the sprite's current world-space Z, as `f32` bits.
+/// Example-only test support (see `hex_probe_sprite_x_bits`).
+#[no_mangle]
+pub extern "C" fn hex_probe_sprite_z_bits() -> u32 {
+    SPRITE_Z_BITS.load(Ordering::Relaxed)
+}
+
+/// Reports the sprite's current integer world layer. Example-only
+/// test support (see `hex_probe_sprite_x_bits`).
+#[no_mangle]
+pub extern "C" fn hex_probe_sprite_layer() -> i32 {
+    SPRITE_LAYER.load(Ordering::Relaxed)
 }
 
 /// Picks a cell at a backing-store pixel. `px`/`py` are passed as
@@ -192,11 +216,13 @@ struct Stage {
     ctx: Box<dyn RenderingBackend>,
 
     terrain_pipeline: Option<Pipeline>,
+    terrain_shader: Option<ShaderId>,
     terrain_vertex_buffer: Option<BufferId>,
     terrain_index_buffer: Option<BufferId>,
     terrain_index_count: i32,
 
     sprite_pipeline: Option<Pipeline>,
+    sprite_shader: Option<ShaderId>,
     sprite_vertex_buffer: Option<BufferId>,
     sprite_index_buffer: Option<BufferId>,
 
@@ -327,6 +353,7 @@ impl Stage {
                 shader::terrain_meta(),
             )
             .unwrap();
+        resource_count += 1;
         let terrain_pipeline = ctx.new_pipeline(
             &[BufferLayout::default()],
             &[
@@ -377,6 +404,7 @@ impl Stage {
                 shader::sprite_meta(),
             )
             .unwrap();
+        resource_count += 1;
         let sprite_pipeline = ctx.new_pipeline(
             &[BufferLayout::default()],
             &[
@@ -402,10 +430,12 @@ impl Stage {
         Stage {
             ctx,
             terrain_pipeline: Some(terrain_pipeline),
+            terrain_shader: Some(terrain_shader),
             terrain_vertex_buffer: Some(terrain_vertex_buffer),
             terrain_index_buffer: Some(terrain_index_buffer),
             terrain_index_count,
             sprite_pipeline: Some(sprite_pipeline),
+            sprite_shader: Some(sprite_shader),
             sprite_vertex_buffer: Some(sprite_vertex_buffer),
             sprite_index_buffer: Some(sprite_index_buffer),
             world,
@@ -414,7 +444,7 @@ impl Stage {
             camera: OrbitCamera::new(Vec3::new(0.0, 1.5, 0.0), 14.0, 0.6, 0.5),
             dragging: false,
             last_mouse: (0.0, 0.0),
-            screen_size: (800.0, 600.0),
+            screen_size: window::screen_size(),
             start_time: date::now(),
             released: false,
         }
@@ -428,6 +458,14 @@ impl Stage {
         if let Some(pipeline) = self.terrain_pipeline.take() {
             self.ctx.delete_pipeline(pipeline);
         }
+        // `delete_pipeline` does not delete the underlying shader
+        // program (see `miniquad::graphics::gl::GlContext::
+        // delete_pipeline`); this example owns the shader it created,
+        // so it must delete it separately for a real, idempotent
+        // zero-GL-object release (contract section 3.3).
+        if let Some(shader) = self.terrain_shader.take() {
+            self.ctx.delete_shader(shader);
+        }
         if let Some(buffer) = self.terrain_vertex_buffer.take() {
             self.ctx.delete_buffer(buffer);
         }
@@ -436,6 +474,9 @@ impl Stage {
         }
         if let Some(pipeline) = self.sprite_pipeline.take() {
             self.ctx.delete_pipeline(pipeline);
+        }
+        if let Some(shader) = self.sprite_shader.take() {
+            self.ctx.delete_shader(shader);
         }
         if let Some(buffer) = self.sprite_vertex_buffer.take() {
             self.ctx.delete_buffer(buffer);
@@ -635,10 +676,21 @@ impl EventHandler for Stage {
 }
 
 fn main() {
-    let conf = conf::Conf {
+    #[cfg_attr(not(feature = "webgl2"), allow(unused_mut))]
+    let mut conf = conf::Conf {
         window_title: "miniquad-voxel offline hex".to_owned(),
+        // The DPR 1 vs 2 browser test (contract section 3.4) asserts
+        // the backing-store framebuffer actually scales with
+        // `devicePixelRatio`; the embedding HTML page's pointer-pick
+        // handler assumes the same (`tests/browser/hex-offline.html`
+        // multiplies by `window.devicePixelRatio`).
+        high_dpi: true,
         ..Default::default()
     };
+    #[cfg(feature = "webgl2")]
+    {
+        conf.platform.webgl_version = conf::WebGLVersion::WebGL2;
+    }
     miniquad::start(conf, move || Box::new(Stage::new()));
 }
 

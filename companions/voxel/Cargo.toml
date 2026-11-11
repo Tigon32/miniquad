@@ -16,6 +16,11 @@ publish = false
 [dependencies]
 miniquad = { path = "../../" }
 
+[features]
+# Request a WebGL2 context for offline_hex instead of the WebGL1 default.
+# No dependency change: this only toggles conf.platform.webgl_version.
+webgl2 = []
+
 [[example]]
 name = "offline"
 path = "examples/offline.rs"

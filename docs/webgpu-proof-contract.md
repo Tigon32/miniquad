@@ -25,6 +25,11 @@ Do not change version 1 in place after a worker starts.
 * The proof never creates a WebGL context. There is no automatic fallback.
 * A software-adapter pass proves the API path only.
   Hardware results are **NOT TESTED** until a hardware lane runs.
+* The proof does not define the supported OS, browser, or GPU matrix.
+  Production qualification depends on the platform policy in
+  [#156](https://github.com/Tigon32/miniquad/issues/156) and its proposed MADR 0016.
+  The proof does not promise support for old platforms.
+* The `wgpu` folder uses its own current toolchain pin. The core MSRV decision is separate.
 * The proof makes no memory, size-budget, or performance claim.
   The receipt records sizes and startup samples as data only.
 
@@ -325,6 +330,10 @@ The worker documents each import and export, with its arguments, in `README.md`.
 | `chromium-default` | Same Chromium, no flags | Record the adapter. If the adapter is null, run only the natural `adapter-unavailable` rejection. If an adapter exists, run T1 to T7 and label the result with the adapter facts. This is not hardware qualification |
 | `firefox-default`, `webkit-default` | Playwright `1.56.1` Firefox and WebKit | If `navigator.gpu` is missing, run only the natural `api-unavailable` rejection. Otherwise record the facts and run T1 to T7 |
 | hardware | Real GPU browsers | **NOT TESTED** in this proof |
+
+The first proof uses current tools on macOS with a software adapter.
+Native and hardware results are **NOT TESTED**.
+The hardware and production lanes come from the #156 platform policy, not from this contract.
 
 Use the controlled injections N1 to N4 for repeatable rejection tests.
 Do not require that a default browser has no GPU.

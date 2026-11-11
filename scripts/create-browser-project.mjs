@@ -134,12 +134,21 @@ export function resolveMiniquadSource(options, { execFileSyncImpl = execFileSync
       );
     }
 
+    // `label` is console/CLI-facing only (see the "Source: ..." line in
+    // main()); it may name the local checkout path because it is never
+    // written to a file. `provenance` is what ends up in the shipped
+    // web/MANIFEST.json, and must never carry an absolute local path or
+    // a credentialed URL -- only the source mode, the resolved commit
+    // SHA (or null if it could not be determined), and a dirty flag.
     let label = `local path dependency: ${miniquadPath}`;
+    let sha = null;
+    let dirtyFlag = false;
     try {
       const rev = execFileSyncImpl("git", ["-C", miniquadPath, "rev-parse", "HEAD"], {
         stdio: "pipe",
         encoding: "utf8",
       }).trim();
+      sha = rev;
       let dirty = "";
       try {
         execFileSyncImpl("git", ["-C", miniquadPath, "diff", "--quiet"], {
@@ -147,16 +156,18 @@ export function resolveMiniquadSource(options, { execFileSyncImpl = execFileSync
         });
       } catch {
         dirty = " (working tree has uncommitted changes)";
+        dirtyFlag = true;
       }
       label = `local path dependency: ${miniquadPath} at ${rev}${dirty}`;
     } catch {
       // Not a git checkout, or git is unavailable. The path label
-      // above is still accurate and sufficient for the manifest.
+      // above is still accurate for the console; sha stays null.
     }
 
     return {
       mode: "path",
       label,
+      provenance: { mode: "path", sha, dirty: dirtyFlag },
       dependencyToml: `path = "${miniquadPath}"`,
       readAsset(relativePath) {
         const fullPath = join(miniquadPath, relativePath);
@@ -187,6 +198,13 @@ export function resolveMiniquadSource(options, { execFileSyncImpl = execFileSync
     return {
       mode: "git",
       label: `git revision ${rev} (dependency fetched from ${gitUrl})`,
+      // `rev` is pinned and immutable, so `git show <rev>:<path>` reads
+      // the exact committed bytes regardless of the local clone's
+      // working-tree state; "dirty" has no meaning here. The dependency
+      // URL is deliberately left out of provenance: this generator never
+      // asks for a credentialed URL, but it also never assumes any URL
+      // supplied by a caller is safe to publish verbatim.
+      provenance: { mode: "git", sha: rev, dirty: false },
       dependencyToml: `git = "${gitUrl}", rev = "${rev}"`,
       readAsset(relativePath) {
         try {
@@ -287,9 +305,13 @@ export function generateProject(destination, rawOptions, deps = {}) {
   });
   writeFileSync(join(destinationPath, "web", "index.html"), indexHtml);
 
+  // web/MANIFEST.json is shipped alongside the deployed project, so its
+  // "source" field is the sanitized provenance object (mode/sha/dirty),
+  // never source.label: label may contain an absolute local checkout
+  // path, which must not leak into a public deploy artifact.
   const manifest = {
     generatedAt: new Date().toISOString(),
-    source: source.label,
+    source: source.provenance,
     files: [],
   };
   for (const relativePath of REQUIRED_WEB_ASSETS) {

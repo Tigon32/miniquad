@@ -33,10 +33,14 @@ on, the Miniquad repository at run time. The generated project has:
 - `web/gl.js`, `web/miniquad.mjs`, `web/runtime.html`,
   `web/runtime.mjs`, `web/host-preferences.mjs`: exact copies of the
   browser bridge and optional embedding module, taken from one
-  selected Miniquad source revision. `web/MANIFEST.json` records the
-  source revision and a SHA-256 hash of each copied file.
+  selected Miniquad source revision. `web/MANIFEST.json` records a
+  SHA-256 hash and byte count for each copied file.
 - `scripts/build.mjs`: builds the Rust application for
-  `wasm32-unknown-unknown` and copies the result into `web/app.wasm`.
+  `wasm32-unknown-unknown`, copies the result into `web/app.wasm`, and
+  then adds `app.wasm` and `index.html` entries (hash and byte count)
+  to `web/MANIFEST.json`, alongside the five entries the generator
+  already wrote. This binds the shipped, built bytes to the same
+  manifest that records where the source files came from.
 - `scripts/serve.mjs`: a traversal-safe static HTTP server with
   correct MIME types (including `application/wasm`) and subpath
   support, for local development or for serving the built output
@@ -84,6 +88,20 @@ The generator never silently depends on the original upstream project
 Issue #19 owns the long-term SemVer and release identity for this
 dependency; the pinning options above are an interim, explicit,
 evaluation path and are not a release process.
+
+## Manifest provenance: no local paths or credentials ship
+
+`web/MANIFEST.json`'s `source` field is sanitized provenance only:
+`{ "mode": "path" | "git", "sha": <string|null>, "dirty": <boolean> }`.
+It never contains the absolute `--miniquad-path` checkout location,
+the `--git-url`, or any other local-machine or credentialed detail,
+because this file ships with the deployed project. `sha` is the
+resolved commit (`null` if a path checkout is not a git repository or
+`git rev-parse` fails); `dirty` is `true` only for a path checkout
+with uncommitted local changes, and is always `false` for a `git`
+source because `git show <rev>:<path>` always reads exact, immutable
+committed bytes. A human-readable label with the local path is printed
+to the console during generation, but is not written to any file.
 
 ## Current limitation: generator works, full browser build is blocked
 

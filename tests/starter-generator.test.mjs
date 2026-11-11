@@ -12,6 +12,10 @@ import {
   generateProject,
 } from "../scripts/create-browser-project.mjs";
 import { resolveSafePath, parseArgs as parseServeArgs, MIME_TYPES } from "../templates/browser/project-scripts/serve.mjs";
+import {
+  sha256 as buildSha256,
+  updateManifestWithBuildOutputs,
+} from "../templates/browser/project-scripts/build.mjs";
 
 const REPO_ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
 
@@ -214,6 +218,18 @@ test("generateProject writes a fresh project with a path dependency, copied asse
       assert.equal(onDisk, contents);
       assert.equal(byFile[name].sha256.length, 64);
     }
+
+    // The shipped manifest's "source" field is sanitized provenance only
+    // (mode/sha/dirty): it must never carry the absolute local checkout
+    // path, which would otherwise leak the generating developer's home
+    // directory into a public deploy artifact.
+    assert.deepEqual(Object.keys(manifest.source).sort(), ["dirty", "mode", "sha"]);
+    assert.equal(manifest.source.mode, "path");
+    assert.equal(typeof manifest.source.dirty, "boolean");
+    const manifestText = readFileSync(join(destinationDir, "web", "MANIFEST.json"), "utf8");
+    assert.doesNotMatch(manifestText, new RegExp(sourceDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+    assert.doesNotMatch(manifestText, /\/Users\//);
+    assert.doesNotMatch(manifestText, /\/home\//);
   } finally {
     rmSync(scratchRoot, { recursive: true, force: true });
   }
@@ -228,6 +244,95 @@ test("generated Rust app exports the frozen app-parameters surface", () => {
   assert.match(mainRs, /pub extern "C" fn mq_param_set_f32\(id: u32, value: f32\) -> i32/);
   assert.match(mainRs, /pub extern "C" fn mq_param_set_rgba8\(id: u32, color: u32\) -> i32/);
   assert.match(mainRs, /AtomicU32/);
+});
+
+test("resolveMiniquadSource git-mode provenance never carries the dependency URL", () => {
+  const scratch = makeScratchDir("git-provenance-");
+  try {
+    const source = resolveMiniquadSource(
+      {
+        source: "git",
+        rev: "deadbeefcafe",
+        gitUrl: "https://ci-token:super-secret@github.com/Tigon32/miniquad.git",
+        gitRepo: scratch,
+      },
+      { execFileSyncImpl: fakeExecFileSync() }
+    );
+    assert.deepEqual(Object.keys(source.provenance).sort(), ["dirty", "mode", "sha"]);
+    assert.equal(source.provenance.mode, "git");
+    assert.equal(source.provenance.sha, "deadbeefcafe");
+    assert.equal(source.provenance.dirty, false);
+    const serialized = JSON.stringify(source.provenance);
+    assert.doesNotMatch(serialized, /ci-token/);
+    assert.doesNotMatch(serialized, /super-secret/);
+    assert.doesNotMatch(serialized, /github\.com/);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+});
+
+test("build.mjs records final app.wasm/index.html hashes without dropping source-copied entries or provenance", () => {
+  const scratchRoot = makeScratchDir("generate-then-build-");
+  const sourceDir = join(scratchRoot, "source");
+  const destinationDir = join(scratchRoot, "project");
+  try {
+    mkdirSync(join(sourceDir, "js"), { recursive: true });
+    writeFileSync(join(sourceDir, "Cargo.toml"), "[package]\nname = \"miniquad\"\n");
+    const assetContents = {
+      "gl.js": "// gl.js fixture\n",
+      "miniquad.mjs": "// miniquad.mjs fixture\n",
+      "runtime.html": "<!-- runtime.html fixture -->\n",
+      "runtime.mjs": "// runtime.mjs fixture\n",
+      "host-preferences.mjs": "// host-preferences.mjs fixture\n",
+    };
+    for (const [name, contents] of Object.entries(assetContents)) {
+      writeFileSync(join(sourceDir, "js", name), contents);
+    }
+
+    generateProject(
+      destinationDir,
+      { source: "path", miniquadPath: sourceDir, name: "Demo App!!", title: "Demo App" },
+      { execFileSyncImpl: fakeExecFileSync() }
+    );
+
+    const webDir = join(destinationDir, "web");
+    const beforeManifest = JSON.parse(readFileSync(join(webDir, "MANIFEST.json"), "utf8"));
+    assert.equal(beforeManifest.files.length, 5);
+
+    // Simulate what scripts/build.mjs does after a real cargo build:
+    // hash the two files it produces/finalizes and merge them in.
+    const wasmBytes = Buffer.from("fake wasm bytes for this test");
+    const indexHtmlBytes = readFileSync(join(webDir, "index.html"));
+    const afterManifest = updateManifestWithBuildOutputs(webDir, [
+      { file: "app.wasm", sha256: buildSha256(wasmBytes), bytes: wasmBytes.length },
+      { file: "index.html", sha256: buildSha256(indexHtmlBytes), bytes: indexHtmlBytes.length },
+    ]);
+
+    assert.equal(afterManifest.files.length, 7);
+    assert.deepEqual(afterManifest.source, beforeManifest.source);
+    const byFile = Object.fromEntries(afterManifest.files.map((entry) => [entry.file, entry]));
+    assert.equal(byFile["app.wasm"].sha256, buildSha256(wasmBytes));
+    assert.equal(byFile["app.wasm"].bytes, wasmBytes.length);
+    assert.equal(byFile["index.html"].sha256, buildSha256(indexHtmlBytes));
+    assert.equal(byFile["index.html"].bytes, indexHtmlBytes.length);
+    for (const name of Object.keys(assetContents)) {
+      assert.ok(byFile[name], `build step must not drop the generator's ${name} entry`);
+    }
+
+    // Reading the manifest back off disk must reflect the merge, and a
+    // second build (e.g. a rebuild) must update rather than duplicate.
+    const onDiskManifest = JSON.parse(readFileSync(join(webDir, "MANIFEST.json"), "utf8"));
+    assert.equal(onDiskManifest.files.length, 7);
+    const rebuiltWasmBytes = Buffer.from("different fake wasm bytes");
+    const rebuiltManifest = updateManifestWithBuildOutputs(webDir, [
+      { file: "app.wasm", sha256: buildSha256(rebuiltWasmBytes), bytes: rebuiltWasmBytes.length },
+    ]);
+    assert.equal(rebuiltManifest.files.length, 7);
+    const rebuiltByFile = Object.fromEntries(rebuiltManifest.files.map((entry) => [entry.file, entry]));
+    assert.equal(rebuiltByFile["app.wasm"].sha256, buildSha256(rebuiltWasmBytes));
+  } finally {
+    rmSync(scratchRoot, { recursive: true, force: true });
+  }
 });
 
 test("static server resolveSafePath keeps every request inside the web root", () => {

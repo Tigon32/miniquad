@@ -107,6 +107,18 @@ function init_webgl(version) {
         }
         webgl_depth_texture_supported = true;
         webgl2_context = true;
+
+        // EXT_disjoint_timer_query_webgl2 adds TIME_ELAPSED/QUERY_COUNTER_BITS
+        // tokens and the GPU_DISJOINT_EXT flag to the core WebGL2 query API.
+        // Calling getExtension (even when the handle is discarded) is
+        // required before the browser recognizes those enum tokens on
+        // getQuery/getParameter. gl.getQueryObject does not exist natively on
+        // WebGL2 (core uses getQueryParameter); bridge the legacy EXT name
+        // used by the rest of this file so both contexts share one call site.
+        var disjointTimerQueryWebgl2 = gl.getExtension('EXT_disjoint_timer_query_webgl2');
+        if (disjointTimerQueryWebgl2) {
+            gl['getQueryObject'] = function (query, pname) { return gl.getQueryParameter(query, pname); };
+        }
     } else {
         throw new Error("Unsupported WebGL version: " + version);
     }
@@ -1247,6 +1259,15 @@ var importObject = {
         },
         glEndQuery: function (target) {
             gl.endQuery(target);
+        },
+        // Core WebGL2 feature-detection idiom for EXT_disjoint_timer_query_webgl2:
+        // getQuery(TIME_ELAPSED, QUERY_COUNTER_BITS) returns a nonzero bit count
+        // only when the extension is actually granted. gl.getQuery does not
+        // exist on a WebGL1 context (it is a WebGL2 core method), so an absent
+        // method here safely reports "unsupported" (0 bits) instead of throwing.
+        glGetQueryiv: function (target, pname, ptr) {
+            var result = (typeof gl.getQuery === 'function') ? gl.getQuery(target, pname) : null;
+            getArray(ptr, Int32Array, 1)[0] = result || 0;
         },
         glGetQueryObjectiv: function (id, pname, ptr) {
             GL.validateGLObjectID(GL.timerQueries, id, 'glGetQueryObjectiv', 'id');

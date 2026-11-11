@@ -1,11 +1,16 @@
 # Deprecate the unverified `ElapsedQuery` timer API
 
-* Status: **Accepted**
+* Status: **Superseded**
 * Date: 2026-11-11
 * Tracking: [#145](https://github.com/Tigon32/miniquad/issues/145); parent audit [#141](https://github.com/Tigon32/miniquad/issues/141); earlier record in closed [#13](https://github.com/Tigon32/miniquad/issues/13)
 * Source: `8a96be961ba5f26a55d969c3343e400d77a1d931`
 * Scope: `ElapsedQuery` in `src/graphics.rs`
 * Writing review state: **STE-aligned draft**. Full dictionary review not done.
+
+> This record is superseded by
+> [MADR 0023](0023-webgl2-gpu-timer-query.md), which adds a verified
+> WebGL2 GPU timer-query path. Do not change this record in place; read
+> MADR 0023 for the current decision.
 
 ## Context and Problem Statement
 

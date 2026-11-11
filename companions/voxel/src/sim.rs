@@ -113,6 +113,73 @@ impl Sim {
         self.rev
     }
 
+    /// Full resync from a decoded `Snapshot`: replaces `seed`,
+    /// `speed_milli`, `rev`, and every resident chunk's voxel bytes
+    /// with the snapshot's content (dense `(z, y, x)`-ordered bytes
+    /// matching [`Chunk`]'s own storage order exactly, so no
+    /// per-voxel re-indexing is needed). Used by the mixed-mode client
+    /// to apply a server `Snapshot` frame; the native server never
+    /// calls this (it is the snapshot's producer, not its consumer).
+    ///
+    /// Returns an error and leaves `self` unchanged if any chunk's
+    /// declared dimensions or coordinate falls outside the fixed
+    /// scene, or its decoded byte count does not match its own
+    /// declared volume (the codec already checked this against the
+    /// chunk's own `dx`/`dy`/`dz`; this is a defence against a chunk
+    /// whose dims don't match [`SCENE_CHUNK_DIMS`]).
+    pub fn load_snapshot(
+        &mut self,
+        seed: u32,
+        speed_milli: u16,
+        rev: u32,
+        chunks: &[(ChunkCoord, u8, u8, u8, &[u8])],
+    ) -> Result<(), SimError> {
+        let mut world = World::new(SCENE_CHUNK_DIMS, MAX_RESIDENT_CHUNKS)
+            .expect("the fixed scene dimensions and chunk cap are always valid");
+        for &(coord, dx, dy, dz, voxels) in chunks {
+            if dx as u32 != SCENE_CHUNK_DIMS.x
+                || dy as u32 != SCENE_CHUNK_DIMS.y
+                || dz as u32 != SCENE_CHUNK_DIMS.z
+            {
+                return Err(SimError::OutOfScene);
+            }
+            if !SCENE_CHUNK_COORDS.contains(&coord) {
+                return Err(SimError::OutOfScene);
+            }
+            let mut chunk =
+                Chunk::new(SCENE_CHUNK_DIMS).map_err(|_| SimError::OutOfScene)?;
+            let expected_volume = SCENE_CHUNK_DIMS
+                .volume()
+                .expect("fixed scene dims are valid") as usize;
+            if voxels.len() != expected_volume {
+                return Err(SimError::OutOfScene);
+            }
+            // `(z, y, x)` order matches both Chunk's own storage and
+            // the wire layout exactly, so this is a direct memcpy, not
+            // a per-voxel re-index.
+            let dims = chunk.dims();
+            for z in 0..dims.z {
+                for y in 0..dims.y {
+                    for x in 0..dims.x {
+                        let i = (z * dims.y * dims.x + y * dims.x + x) as usize;
+                        chunk
+                            .set(x, y, z, voxels[i])
+                            .expect("index within validated dims");
+                    }
+                }
+            }
+            world.insert(coord, chunk).map_err(|_| SimError::OutOfScene)?;
+        }
+        if speed_milli > MAX_SPEED_MILLI {
+            return Err(SimError::SpeedOutOfRange);
+        }
+        self.world = world;
+        self.seed = seed;
+        self.speed_milli = speed_milli;
+        self.rev = rev;
+        Ok(())
+    }
+
     /// Applies one command. On success, increments `rev` by exactly 1.
     /// On error, the `Sim` is unchanged (strong exception safety: the
     /// voxel write only happens after every check passes).
@@ -229,6 +296,89 @@ mod tests {
         assert_eq!(sim.world().resident_chunk_count(), 2);
         assert_eq!(sim.rev(), 0);
         assert_eq!(sim.seed(), SCENE_SEED);
+    }
+
+    fn dense_chunk_bytes(sim: &Sim, coord: ChunkCoord) -> Vec<u8> {
+        let chunk = sim.world().get(coord).expect("coord is resident");
+        let dims = chunk.dims();
+        let mut bytes = Vec::with_capacity(dims.volume().unwrap() as usize);
+        for z in 0..dims.z {
+            for y in 0..dims.y {
+                for x in 0..dims.x {
+                    bytes.push(chunk.get(x, y, z).unwrap());
+                }
+            }
+        }
+        bytes
+    }
+
+    #[test]
+    fn load_snapshot_round_trips_a_sibling_sims_world_exactly() {
+        let mut source = Sim::new_scene();
+        source
+            .apply(Command::SetVoxel { x: 0, y: 0, z: 0, id: 0 })
+            .unwrap();
+        source.apply(Command::SetSpeed { milli: 1500 }).unwrap();
+
+        let mut target = Sim::new_scene();
+        let chunk_bytes: Vec<Vec<u8>> = SCENE_CHUNK_COORDS
+            .iter()
+            .map(|&c| dense_chunk_bytes(&source, c))
+            .collect();
+        let chunks: Vec<(ChunkCoord, u8, u8, u8, &[u8])> = SCENE_CHUNK_COORDS
+            .iter()
+            .zip(chunk_bytes.iter())
+            .map(|(&coord, bytes)| {
+                (
+                    coord,
+                    SCENE_CHUNK_DIMS.x as u8,
+                    SCENE_CHUNK_DIMS.y as u8,
+                    SCENE_CHUNK_DIMS.z as u8,
+                    bytes.as_slice(),
+                )
+            })
+            .collect();
+        target
+            .load_snapshot(source.seed(), source.speed_milli(), source.rev(), &chunks)
+            .expect("well-formed snapshot of the fixed scene must load");
+
+        assert_eq!(target.state_hash(), source.state_hash());
+        assert_eq!(target.rev(), source.rev());
+        assert_eq!(target.speed_milli(), source.speed_milli());
+    }
+
+    #[test]
+    fn load_snapshot_rejects_a_chunk_outside_the_fixed_scene() {
+        let mut sim = Sim::new_scene();
+        let bogus_coord = ChunkCoord::new(9, 9, 9);
+        let bytes = vec![0u8; SCENE_CHUNK_DIMS.volume().unwrap() as usize];
+        let err = sim
+            .load_snapshot(
+                SCENE_SEED,
+                1000,
+                5,
+                &[(
+                    bogus_coord,
+                    SCENE_CHUNK_DIMS.x as u8,
+                    SCENE_CHUNK_DIMS.y as u8,
+                    SCENE_CHUNK_DIMS.z as u8,
+                    &bytes,
+                )],
+            )
+            .unwrap_err();
+        assert_eq!(err, SimError::OutOfScene);
+        // Rejected: `Sim` keeps its original state.
+        assert_eq!(sim.rev(), 0);
+    }
+
+    #[test]
+    fn load_snapshot_rejects_mismatched_chunk_dimensions() {
+        let mut sim = Sim::new_scene();
+        let bytes = vec![0u8; 4];
+        let err = sim
+            .load_snapshot(SCENE_SEED, 1000, 1, &[(SCENE_CHUNK_COORDS[0], 1, 1, 4, &bytes)])
+            .unwrap_err();
+        assert_eq!(err, SimError::OutOfScene);
     }
 
     #[test]

@@ -37,8 +37,12 @@ The external project `ForlornU/VoxelsBeta` at `1f852c4214ba211cece444c5b423e43be
 | Mesh space | chunk-local plus offset; world space | **World space, bounded coordinates** | No per-chunk offset. Coordinates are bounded to `-65_536..=65_535`, so lattice values are exact in `f32`. |
 | Missing neighbor | solid; not solid | **Not solid (face visible)** | Same as the cubic mesher. The application rebuilds affected chunks when a neighbor chunk becomes resident. |
 | Index limit | none; `u16` limit | **Error above 65 536 vertices** | WebGL1 needs `u16` indices. The mesher counts before it allocates. |
+| Picking | physics collider; nearest center from a random start; analytic walk | **Analytic bounded walk through prisms** | Miniquad has no physics. A random start is not deterministic. The walk has a step limit and two written tie rules. |
+| 2D hexagons | separate 2D topology; projection of the same cells | **Same cells, `u = x`, `v = z` (Y-down)** | One topology for 2D and 3D adapters. Pointy-top is a 2D drawing rotation only. |
+| HUD | new hex HUD; shared cubic HUD | **Shared cubic HUD, HTML for hex data** | No second HUD framework. The seven-segment cells need no new hex values. |
 
 The exact types, signatures, face order, corner table, winding, and errors are in section 1 of the [contract](../hex-voxel-contract.md).
+The picking rules are in section 2. The browser example and its tests are in section 3.
 
 ## Effects
 
@@ -47,6 +51,22 @@ The exact types, signatures, face order, corner table, winding, and errors are i
 * Bad: the fixed cell size and layer height cannot change at runtime. A future change needs a revision.
 * Bad: no greedy meshing, no texture atlas, no transparent hex materials, no smooth normals.
 * Bad: hex and cubic images are different geometry. A cost comparison cannot claim equal images.
+
+## Deferred decision: mixed mode for hex worlds (#132)
+
+Status: **not decided**. Do not start before both gates pass:
+
+1. The VXP1 mixed-mode slice for #29 passes its own tests.
+2. This MADR's coordinate rules are implemented and the #130 tests pass.
+
+| Option | Detection of a wrong peer | Notes |
+| --- | --- | --- |
+| New protocol version with a topology field in `Hello` and `Snapshot` | Explicit `Version` error from a VXP1 peer | Highest change cost. Clear compatibility table. |
+| Topology bit in reserved `flags` | VXP1 peers reject non-zero `flags` | Small change. Uses the reserved field for a meaning, not an extension. |
+| Topology implied by `world_id` | None. A peer cannot detect a mismatch | Rejected: a cubic client can draw hex bytes as cubes with no error. |
+| Offline hex only | Not applicable | Valid only as a recorded decision with evidence. Do not select it only to close #132. |
+
+Record the selection in a new MADR or a revision, with codec and parity evidence. Until then, hex is offline only, and VXP1 does not change.
 
 ## Evidence status
 

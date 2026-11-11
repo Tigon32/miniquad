@@ -39,6 +39,11 @@ export default defineConfig({
   // the directory that holds the config file.
   testDir: ".",
   testMatch: "**/voxel-mixed.privatefixture.mjs",
+  // Shares root's top-level test-results/ directory (not this config's
+  // default "tests/browser/test-results") so existing CI steps that
+  // upload test-results/ on failure also capture this fixture's
+  // traces/screenshots without a new, separately-owned artifact step.
+  outputDir: "../../test-results/voxel-mixed",
   timeout: 45000,
   expect: { timeout: 20000 },
   retries: 0,

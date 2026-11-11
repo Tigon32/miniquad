@@ -35,3 +35,8 @@ pub mod math;
 pub mod mesh;
 pub mod terrain;
 pub mod world;
+
+// `pub mod hex;` is added by the #130 geometry work per
+// `docs/hex-voxel-contract.md` section 1.1. `hex_pick` (below) depends
+// on it and does not compile until that module lands.
+pub mod hex_pick;

@@ -3,6 +3,7 @@
 Cargo.lock
 node_modules/
 /test-results/
+/.local-ci/
 
 # Scratch fixtures written and removed by tests/starter-generator.test.mjs.
 /.generator-test-scratch/

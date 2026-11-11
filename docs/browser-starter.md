@@ -22,6 +22,10 @@ browser and does not need a shared native/WASM renderer.
 
 ## What the generator produces
 
+For optional lines, shapes, and curves, use the
+[drawing starter recipe](browser-starter-drawing.md).
+It pins the core and drawing package to one public Git revision.
+
 `scripts/create-browser-project.mjs` writes a fresh, standalone,
 external Rust and browser project. It does not live inside, or depend
 on, the Miniquad repository at run time. The generated project has:

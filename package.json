@@ -3,6 +3,8 @@
   "private": true,
   "description": "Development-only linting for Miniquad's browser bridge",
   "scripts": {
+    "ci:local": "node scripts/local-ci.mjs",
+    "ci:local:gh": "node scripts/local-ci.mjs --runner gh-act",
     "lint:js": "eslint js/gl.js js/*.mjs",
     "test:browser": "playwright test",
     "test:browser:chromium": "playwright test --project=chromium"

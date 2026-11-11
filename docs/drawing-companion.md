@@ -21,6 +21,9 @@ applications that do not select this package.
 
 ## Ownership and package boundary
 
+Use the [drawing starter recipe](browser-starter-drawing.md) to add this
+package to a generated external browser project without copying its implementation.
+
 `companions/draw/` is a **standalone Rust crate**. It is not a Cargo
 workspace member of the root `miniquad` crate and the root `Cargo.toml`
 is not changed. It depends on `miniquad` by path (`../../`), the same way

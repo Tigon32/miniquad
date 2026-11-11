@@ -6,7 +6,7 @@ import { dirname, extname, join, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const skip = new Set([".git", "target", "node_modules", ".external", "test-results"]);
+const skip = new Set([".git", "target", "node_modules", ".external", ".local-ci", "test-results"]);
 const statusSet = new Set(["Proposed", "Accepted", "Deprecated", "Superseded"]);
 
 export function markdownLinks(content) {

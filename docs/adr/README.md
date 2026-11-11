@@ -18,6 +18,7 @@ The documents are **STE-aligned drafts**. We have not completed a full ASD-STE10
 * [0009 — Keep browser adoption tools outside the core library](0009-optional-browser-adoption-layer.md) — **Proposed**
 * [0011 — Add optional hexagonal-prism voxels beside cubic voxels](0011-optional-hexagonal-prism-topology.md) — **Proposed**
 * [0012 — Add an optional 2D hex layout to the drawing companion](0012-optional-2d-hex-layouts.md) — **Proposed**
+* [0014 — Keep code comments minimal and track future work in issues](0014-minimal-code-comments-and-tracked-work.md) — **Accepted**
 * [0016 — Support a bounded set of modern, security-maintained platforms](0016-modern-platform-support-policy.md) — **Proposed**
 
 ## Write a new decision

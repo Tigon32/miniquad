@@ -3,8 +3,6 @@
 // this file was made by tons of hacks from emscripten's parseTools and library_webgl
 // https://github.com/emscripten-core/emscripten/blob/master/src/parseTools.js
 // https://github.com/emscripten-core/emscripten/blob/master/src/library_webgl.js
-//
-// TODO: split to gl.js and loader.js
 
 "use strict";
 
@@ -136,6 +134,8 @@ document.exitPointerLock = document.exitPointerLock ||
     document.mozExitPointerLock ||
     // pointer lock in any form is not supported on iOS safari
     (function () { });
+
+var cursor_locked = false;
 
 function assert(flag, message) {
     if (flag == false) {
@@ -1277,18 +1277,23 @@ var importObject = {
             resize(canvas);
         },
         run_animation_loop: function (blocking) {
+            // Mirrors the native platforms: while the cursor is grabbed,
+            // deliver only raw_mouse_move; otherwise deliver only
+            // mouse_move. See the cursor_grabbed branch in
+            // src/native/macos.rs mouse_moved for the matching split.
+            document.onpointerlockchange = function () {
+                cursor_locked = document.pointerLockElement === canvas;
+            };
             canvas.onmousemove = function (event) {
+                if (cursor_locked) {
+                    wasm_exports.raw_mouse_move(Math.floor(event.movementX), Math.floor(event.movementY));
+                    return;
+                }
+
                 var relative_position = mouse_relative_position(event.clientX, event.clientY);
                 var x = relative_position.x;
                 var y = relative_position.y;
-
-                // TODO: do not send mouse_move when cursor is captured
                 wasm_exports.mouse_move(Math.floor(x), Math.floor(y));
-
-                // TODO: check that mouse is captured?
-                if (event.movementX != 0 || event.movementY != 0) {
-                    wasm_exports.raw_mouse_move(Math.floor(event.movementX), Math.floor(event.movementY));
-                }
             };
             // The native context menu can consume the matching right-button
             // mouseup in WebKit. The canvas owns mouse input while running.

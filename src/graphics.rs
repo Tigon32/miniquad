@@ -825,8 +825,6 @@ pub struct BufferId(usize);
 /// ```should_panic
 /// # use miniquad::graphics::ElapsedQuery;
 /// let mut query = ElapsedQuery::new();
-/// // Calling the other methods after `is_supported()` returned `false` is a
-/// // contract violation. They panic instead of returning a fake value.
 /// query.begin_query();
 /// ```
 #[derive(Clone, Copy)]
@@ -856,17 +854,17 @@ impl ElapsedQuery {
     /// Panics. This release has no verified implementation on any backend.
     ///
     /// Use [`ElapsedQuery::is_supported()`] first; it always returns `false`
-    /// and never panics, so this method is never safe to call.
+    /// and never panics. This operation is unsupported.
     pub fn begin_query(&mut self) {
-        unimplemented!("ElapsedQuery has no verified implementation; see MADR 0021 and issue #145");
+        panic!("ElapsedQuery is unsupported; check ElapsedQuery::is_supported() first");
     }
 
     /// Panics. This release has no verified implementation on any backend.
     ///
     /// Use [`ElapsedQuery::is_supported()`] first; it always returns `false`
-    /// and never panics, so this method is never safe to call.
+    /// and never panics. This operation is unsupported.
     pub fn end_query(&mut self) {
-        unimplemented!("ElapsedQuery has no verified implementation; see MADR 0021 and issue #145");
+        panic!("ElapsedQuery is unsupported; check ElapsedQuery::is_supported() first");
     }
 
     /// Panics. This release has no verified implementation on any backend.
@@ -874,18 +872,16 @@ impl ElapsedQuery {
     /// Earlier releases returned `0` here for an unsupported context. That
     /// value looked like a real zero-length measurement. Use
     /// [`ElapsedQuery::is_supported()`] first; it always returns `false` and
-    /// never panics, so this method is never safe to call.
+    /// never panics. This operation is unsupported.
     pub fn get_result(&self) -> u64 {
-        unimplemented!("ElapsedQuery has no verified implementation; see MADR 0021 and issue #145");
+        panic!("ElapsedQuery is unsupported; check ElapsedQuery::is_supported() first");
     }
 
     /// Reports whether elapsed timer queries are supported and the other
     /// methods can be called.
     ///
     /// Always returns `false` in this release. No backend has a verified
-    /// implementation: the GL functions that the other methods would call
-    /// are loaded only for GL and WebGL contexts, and never for Metal, so a
-    /// static method has no safe way to probe the active backend. See
+    /// implementation. This method does not inspect or call GL functions. See
     /// [MADR 0021](https://github.com/Tigon32/miniquad/blob/master/docs/adr/0021-deprecate-unverified-elapsed-query.md).
     ///
     /// This method does not panic on GL, WebGL, or Metal contexts.
@@ -898,17 +894,17 @@ impl ElapsedQuery {
     /// Earlier releases returned `false` here for an unsupported context.
     /// That value looked like a real "not ready yet" result. Use
     /// [`ElapsedQuery::is_supported()`] first; it always returns `false` and
-    /// never panics, so this method is never safe to call.
+    /// never panics. This operation is unsupported.
     pub fn is_available(&self) -> bool {
-        unimplemented!("ElapsedQuery has no verified implementation; see MADR 0021 and issue #145");
+        panic!("ElapsedQuery is unsupported; check ElapsedQuery::is_supported() first");
     }
 
     /// Panics. This release has no verified implementation on any backend.
     ///
     /// Use [`ElapsedQuery::is_supported()`] first; it always returns `false`
-    /// and never panics, so this method is never safe to call.
+    /// and never panics. This operation is unsupported.
     pub fn delete(&mut self) {
-        unimplemented!("ElapsedQuery has no verified implementation; see MADR 0021 and issue #145");
+        panic!("ElapsedQuery is unsupported; check ElapsedQuery::is_supported() first");
     }
 }
 
@@ -1320,37 +1316,18 @@ pub trait RenderingBackend {
 #[allow(deprecated)]
 mod elapsed_query_tests {
     use super::ElapsedQuery;
-    use std::panic::{catch_unwind, AssertUnwindSafe};
-
-    // Regression test for issue #145: `is_supported()` used to call
-    // `unimplemented!()` and panic on every backend, including GL and
-    // WebGL contexts where part of the feature once worked. This test
-    // runs with no graphics context at all, on every backend this crate
-    // builds for, so it also covers the GL, WebGL, and Metal targets that
-    // the acceptance conditions name.
+    use std::panic::catch_unwind;
     #[test]
     fn is_supported_does_not_panic_and_reports_unsupported() {
-        let result = catch_unwind(|| ElapsedQuery::is_supported());
-        assert!(
-            result.is_ok(),
-            "ElapsedQuery::is_supported() must not panic"
-        );
-        assert!(
-            !result.unwrap(),
-            "ElapsedQuery::is_supported() must report false until a backend has a verified implementation"
-        );
+        assert!(!ElapsedQuery::is_supported());
     }
 
-    // The other methods must not return a success-shaped `0`/`false` value
-    // for an unsupported context. They panic instead, so a caller that
-    // skips the `is_supported()` check gets a loud failure, not a fake
-    // measurement.
     #[test]
     fn operational_methods_panic_instead_of_returning_a_placeholder_value() {
-        assert!(catch_unwind(AssertUnwindSafe(|| ElapsedQuery::new().begin_query())).is_err());
-        assert!(catch_unwind(AssertUnwindSafe(|| ElapsedQuery::new().end_query())).is_err());
-        assert!(catch_unwind(AssertUnwindSafe(|| ElapsedQuery::new().get_result())).is_err());
-        assert!(catch_unwind(AssertUnwindSafe(|| ElapsedQuery::new().is_available())).is_err());
-        assert!(catch_unwind(AssertUnwindSafe(|| ElapsedQuery::new().delete())).is_err());
+        assert!(catch_unwind(|| ElapsedQuery::new().begin_query()).is_err());
+        assert!(catch_unwind(|| ElapsedQuery::new().end_query()).is_err());
+        assert!(catch_unwind(|| ElapsedQuery::new().get_result()).is_err());
+        assert!(catch_unwind(|| ElapsedQuery::new().is_available()).is_err());
+        assert!(catch_unwind(|| ElapsedQuery::new().delete()).is_err());
     }
 }

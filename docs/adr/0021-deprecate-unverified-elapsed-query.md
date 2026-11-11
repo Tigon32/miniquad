@@ -20,19 +20,21 @@ The current code does not meet that contract:
   query from a query that never ran.
 * `begin_query()`, `end_query()`, and `delete()` call GL functions directly
   (`glGenQueries`, `glBeginQuery`, `glEndQuery`, `glDeleteQueries`).
-  These functions are `Option<extern "C" fn(..)>` statics. Native code only
-  fills them in `load_gl_funcs`, which the GL and WebGL backends call during
-  context creation. The Metal backend never calls `load_gl_funcs`. A call to
-  any of these functions on Metal unwraps a `None` and panics.
+  On native GL, these functions use pointers set by `load_gl_funcs`.
+  The Metal backend does not load them. With no earlier GL initialization,
+  a call on Metal unwraps `None` and panics.
+  WebGL uses imported JavaScript bridge functions instead. Their presence
+  does not prove that the browser supports timer queries.
 * `is_supported()` is a static method. It has no `&self` and no context
   argument, so it cannot read `RenderingBackend::info()` to find the active
-  backend. It has no safe way to know whether the GL functions are loaded.
+  backend. Loaded native GL pointers alone do not prove support or identify
+  the active backend.
 
 The GL query functions exist in `js/gl.js` for the browser, and `get_result`/
 `is_available` have commented-out GL calls for a native path. Even if we
 restored those calls, the combination never produced a correct result on any
 backend, because `get_result()` and `is_available()` stayed hard-coded.
-No backend has ever had a complete, truthful implementation of this API.
+The reviewed source has no complete implementation of this API.
 
 ## Decision Drivers
 
@@ -56,7 +58,7 @@ No backend has ever had a complete, truthful implementation of this API.
 | --- | --- | --- |
 | Wire a real cross-backend implementation now (GL, WebGL, Metal) | Callers get a working timer | Needs a Metal GPU timer path, `RenderingBackend` plumbing, and real hardware/browser proof. Out of scope for a P3 contract fix; risks an unproven performance claim. |
 | Make `is_supported()` probe the loaded GL function pointers directly | Small code change | A static method still has no reliable way to know the active backend without new global state. Probing `Option` pointers from outside the `gl` module is fragile and does not fix `get_result`/`is_available`. |
-| **Deprecate the whole API as unsupported in this release** | Matches the real, verified state on every backend. Removes the panic and the success-shaped placeholders. No new design or proof needed. | Callers lose a currently broken feature. A future MADR must re-introduce it with real backend plumbing. |
+| **Deprecate the whole API as unsupported in this release** | Matches the reviewed source state. Removes the support-check panic and the success-shaped placeholders. | Callers lose a currently broken feature. A future MADR must re-introduce it with real backend plumbing. |
 
 ## Decision Outcome
 
@@ -65,12 +67,12 @@ No backend has ever had a complete, truthful implementation of this API.
 * `is_supported()` returns `false` on every backend. It never panics and
   never calls a GL function.
 * `begin_query()`, `end_query()`, `get_result()`, `is_available()`, and
-  `delete()` panic with a message that names issue #145 and tells the
-  caller to check `is_supported()` first. A panic on misuse is not a
+  `delete()` panic with a message that tells the caller to check
+  `is_supported()` first. A panic on misuse is not a
   success-shaped value; `is_supported()` already told the caller not to
   call these methods.
-* The struct and its methods carry `#[deprecated]` with a note that points
-  to this record and the tracking issue.
+* The struct carries `#[deprecated]` with a note that points to this record
+  and the tracking issue. Its method calls name the deprecated type.
 * The doc comments stop telling the caller that a supported path exists.
   They record the current unsupported state and the tracking issue.
 

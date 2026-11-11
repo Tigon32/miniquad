@@ -30,6 +30,8 @@ See [MADR 0003](adr/0003-use-asd-ste100-for-communication.md).
 | **GPU buffer** | Memory on the GPU that holds data for drawing. | JavaScript ArrayBuffer |
 | **Buffer update** | An operation that changes data in a GPU buffer. The API contract defines the exact action. | A CPU memory write |
 | **Texture** | An image resource that the GPU uses for drawing. | Source image file |
+| **Raw texture** | A platform GPU texture object that the application creates and owns outside Miniquad, then wraps with `TextureId::from_raw_id`. Miniquad reads it but does not take ownership of it. | Managed texture |
+| **Managed texture** | A texture that Miniquad creates, owns, and releases through `new_texture`/`delete_texture`. | Raw texture |
 | **Render target** | The screen or an offscreen resource that receives a rendered image. | Input-only texture |
 | **Render pass** | A set of drawing operations that use one target and one defined state. | One draw call |
 | **Draw call** | A command that tells the GPU to draw geometry. | Game update |

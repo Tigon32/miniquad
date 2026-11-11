@@ -5,6 +5,7 @@ use crate::native::apple::{
     frameworks::*,
 };
 use crate::ResourceManager;
+use std::convert::TryFrom;
 
 use super::*;
 
@@ -175,12 +176,74 @@ impl From<PrimitiveType> for MTLPrimitiveType {
 impl From<TextureFormat> for MTLPixelFormat {
     fn from(format: TextureFormat) -> Self {
         match format {
+            // Metal has no 24-bit-per-pixel texture format. RGB8
+            // storage uses RGBA8Unorm instead; `rgb8_to_rgba8` /
+            // `rgba8_to_rgb8` convert at the upload / read-back
+            // boundary so the public byte contract (3 bytes/pixel,
+            // see `TextureFormat::size`) stays exact.
+            TextureFormat::RGB8 => MTLPixelFormat::RGBA8Unorm,
             TextureFormat::RGBA8 => MTLPixelFormat::RGBA8Unorm,
             // Equal to the macOS view depthStencilPixelFormat; pipelines copy that format.
             TextureFormat::Depth => MTLPixelFormat::Depth32Float_Stencil8,
+            TextureFormat::Depth32 => MTLPixelFormat::Depth32Float,
             TextureFormat::RGBA16F => MTLPixelFormat::RGBA16Float,
-            _ => todo!(),
+            TextureFormat::Alpha => MTLPixelFormat::A8Unorm,
         }
+    }
+}
+
+/// Bytes-per-pixel of the Metal storage format actually allocated
+/// for `format`. This matches `TextureFormat::size`'s public
+/// per-pixel byte count for every format except `RGB8`, where Metal
+/// has no native 24-bit format and the texture is allocated as
+/// `RGBA8Unorm` (4 bytes/pixel) instead; callers still see the
+/// documented 3-byte-per-pixel contract via conversion at the
+/// upload/read-back boundary.
+///
+/// `TextureFormat::Depth` is not covered: its combined
+/// `Depth32Float_Stencil8` storage is render-target-only and is not
+/// addressable with `replaceRegion`/`getBytes` in a way that matches
+/// `TextureFormat::size`'s 2-bytes-per-pixel contract. CPU upload or
+/// read-back of that format stays a documented unsupported state;
+/// see `new_texture`, `texture_resize`, and `texture_read_pixels`.
+fn mtl_storage_bytes_per_pixel(format: TextureFormat) -> u32 {
+    match format {
+        TextureFormat::RGB8 => 4,
+        TextureFormat::RGBA8 => 4,
+        TextureFormat::RGBA16F => 8,
+        TextureFormat::Alpha => 1,
+        TextureFormat::Depth32 => 4,
+        TextureFormat::Depth => 5,
+    }
+}
+
+/// Expands tightly-packed RGB8 (3 bytes/pixel) into RGBA8 (4
+/// bytes/pixel, alpha opaque) for Metal's RGBA8Unorm-backed RGB8
+/// storage.
+fn rgb8_to_rgba8(src: &[u8]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(src.len() / 3 * 4);
+    for pixel in src.chunks_exact(3) {
+        out.extend_from_slice(&[pixel[0], pixel[1], pixel[2], 255]);
+    }
+    out
+}
+
+/// Drops the alpha channel from RGBA8 (4 bytes/pixel) to produce
+/// RGB8 (3 bytes/pixel), the inverse of `rgb8_to_rgba8`.
+fn rgba8_to_rgb8(src: &[u8], dst: &mut [u8]) {
+    assert_eq!(src.len() / 4 * 3, dst.len(), "rgba8_to_rgb8: size mismatch");
+    for (s, d) in src.chunks_exact(4).zip(dst.chunks_exact_mut(3)) {
+        d.copy_from_slice(&s[..3]);
+    }
+}
+
+/// Converts `bytes` (in `format`'s public per-pixel layout) into the byte buffer Metal's
+/// storage format for `format` expects. Borrows `bytes` unchanged for every format except
+/// `RGB8`, which needs the RGBA8 conversion described on `mtl_storage_bytes_per_pixel`.
+fn prepare_upload_bytes(format: TextureFormat, bytes: &[u8]) -> std::borrow::Cow<'_, [u8]> {
+    match format {
+        TextureFormat::RGB8 => std::borrow::Cow::Owned(rgb8_to_rgba8(bytes)),
+        _ => std::borrow::Cow::Borrowed(bytes),
     }
 }
 
@@ -259,6 +322,11 @@ struct Texture {
     sampler: ObjcId,
     sampler_descriptor: ObjcId,
     params: TextureParams,
+    /// `TextureAccess` at creation time. Needed by `texture_resize` to rebuild a managed
+    /// texture with the same storage mode/usage/pixel-format handling as `new_texture`; a raw
+    /// texture (see `Textures::synthesize_raw_entry`) always reports `Static` since it is never
+    /// resized by miniquad.
+    access: TextureAccess,
     // A tombstone prevents messages to released Objective-C objects.
     freed: bool,
 }
@@ -275,49 +343,173 @@ impl Texture {
     }
 }
 
-struct Textures(Vec<Texture>);
+/// Best-effort reverse of `From<TextureFormat> for MTLPixelFormat`, used only to describe a
+/// caller-owned raw texture (see `Textures::synthesize_raw_entry`). A caller's `MTLTexture` may
+/// use a pixel format miniquad never produces (for example `BGRA8Unorm`, the default view
+/// color format); such formats fall back to `RGBA8` so the stored byte size stays a safe 4
+/// bytes/pixel, even if the channel order miniquad assumes does not match the real layout.
+impl TryFrom<MTLPixelFormat> for TextureFormat {
+    type Error = ();
+    fn try_from(format: MTLPixelFormat) -> Result<Self, ()> {
+        match format {
+            MTLPixelFormat::RGBA8Unorm => Ok(TextureFormat::RGBA8),
+            MTLPixelFormat::RGBA16Float => Ok(TextureFormat::RGBA16F),
+            MTLPixelFormat::A8Unorm => Ok(TextureFormat::Alpha),
+            MTLPixelFormat::Depth32Float => Ok(TextureFormat::Depth32),
+            MTLPixelFormat::Depth32Float_Stencil8 => Ok(TextureFormat::Depth),
+            _ => Err(()),
+        }
+    }
+}
+
+struct Textures {
+    managed: Vec<Texture>,
+    /// Lazily synthesized entries for externally-owned Metal textures wrapped through
+    /// `TextureId::from_raw_id(RawId::Metal(..))`, keyed by the caller's texture pointer.
+    /// `RefCell` lets read-only `RenderingBackend` methods (`texture_params`,
+    /// `texture_raw_id`) populate the cache on first use without `&mut self`.
+    ///
+    /// Ownership contract (see docs/adr/0021-metal-texture-format-and-raw-texture-contract.md): miniquad creates
+    /// and owns the sampler/sampler_descriptor in each entry; it never retains or releases the
+    /// caller's `texture` object. `delete_texture` on a raw id releases only the synthesized
+    /// sampler/descriptor and stops tracking the entry.
+    raw: std::cell::RefCell<std::collections::HashMap<usize, Texture>>,
+    device: ObjcId,
+}
 
 impl Textures {
-    fn resolve(&self, texture: TextureId) -> &Texture {
-        match texture.0 {
-            TextureIdInner::Raw(RawId::Metal(_texture)) => unimplemented!(),
-            TextureIdInner::Raw(RawId::OpenGl(_)) => panic!("Gl texture in Metal context!"),
-            TextureIdInner::Managed(texture) => &self.0[texture],
+    fn new(device: ObjcId) -> Textures {
+        Textures {
+            managed: Vec::new(),
+            raw: std::cell::RefCell::new(std::collections::HashMap::new()),
+            device,
         }
     }
 
-    fn resolve_mut(&mut self, texture: TextureId) -> &mut Texture {
+    fn push_managed(&mut self, texture: Texture) -> TextureId {
+        self.managed.push(texture);
+        TextureId(TextureIdInner::Managed(self.managed.len() - 1))
+    }
+
+    /// Reads real metadata (dimensions, pixel format, mipmap count) off the caller's
+    /// `MTLTexture` and builds a fresh sampler from `TextureParams::default()` filters, since a
+    /// caller-provided texture never arrives with a miniquad sampler.
+    unsafe fn synthesize_raw_entry(device: ObjcId, texture: ObjcId) -> Texture {
+        let width: u64 = msg_send![texture, width];
+        let height: u64 = msg_send![texture, height];
+        let mipmap_level_count: u64 = msg_send![texture, mipmapLevelCount];
+        let pixel_format: MTLPixelFormat = msg_send![texture, pixelFormat];
+        let format = TextureFormat::try_from(pixel_format).unwrap_or(TextureFormat::RGBA8);
+
+        let params = TextureParams {
+            format,
+            width: width as u32,
+            height: height as u32,
+            allocate_mipmaps: mipmap_level_count > 1,
+            ..TextureParams::default()
+        };
+
+        let sampler_descriptor = msg_send_![class!(MTLSamplerDescriptor), new];
+        assert!(
+            !sampler_descriptor.is_null(),
+            "Metal: sampler descriptor creation failed"
+        );
+        msg_send_![sampler_descriptor, setMinFilter: MTLSamplerMinMagFilter::Linear];
+        msg_send_![sampler_descriptor, setMagFilter: MTLSamplerMinMagFilter::Linear];
+        msg_send_![sampler_descriptor, setMipFilter: MTLSamplerMipFilter::NotMipmapped];
+        let sampler = msg_send_![device, newSamplerStateWithDescriptor: sampler_descriptor];
+        assert!(!sampler.is_null(), "Metal: sampler creation failed");
+
+        Texture {
+            texture,
+            sampler,
+            sampler_descriptor,
+            params,
+            access: TextureAccess::Static,
+            freed: false,
+        }
+    }
+
+    fn ensure_raw(&self, ptr: ObjcId) {
+        let key = ptr as usize;
+        if self.raw.borrow().contains_key(&key) {
+            return;
+        }
+        let entry = unsafe { Self::synthesize_raw_entry(self.device, ptr) };
+        self.raw.borrow_mut().insert(key, entry);
+    }
+
+    fn resolve(&self, texture: TextureId) -> Texture {
         match texture.0 {
-            TextureIdInner::Raw(RawId::Metal(_texture)) => unimplemented!(),
+            TextureIdInner::Raw(RawId::Metal(ptr)) => {
+                assert!(!ptr.is_null(), "Metal: from_raw_id given a null texture");
+                self.ensure_raw(ptr);
+                self.raw.borrow()[&(ptr as usize)]
+            }
             TextureIdInner::Raw(RawId::OpenGl(_)) => panic!("Gl texture in Metal context!"),
-            TextureIdInner::Managed(texture) => &mut self.0[texture],
+            TextureIdInner::Managed(texture) => self.managed[texture],
         }
     }
 
     fn get(&self, texture: TextureId) -> Texture {
         let resolved = self.resolve(texture);
         assert!(!resolved.freed, "Metal: texture used after delete_texture");
-        *resolved
-    }
-
-    fn get_mut(&mut self, texture: TextureId) -> &mut Texture {
-        let resolved = self.resolve_mut(texture);
-        assert!(!resolved.freed, "Metal: texture used after delete_texture");
         resolved
     }
 
-    fn delete(&mut self, texture: TextureId) {
-        let resolved = self.resolve_mut(texture);
-        assert!(
-            !resolved.freed,
-            "Metal: double delete_texture (already deleted)"
-        );
-        unsafe {
-            msg_send_![resolved.texture, release];
-            msg_send_![resolved.sampler, release];
-            msg_send_![resolved.sampler_descriptor, release];
+    fn get_mut(&mut self, texture: TextureId) -> &mut Texture {
+        match texture.0 {
+            TextureIdInner::Raw(RawId::Metal(ptr)) => {
+                assert!(!ptr.is_null(), "Metal: from_raw_id given a null texture");
+                self.ensure_raw(ptr);
+                let entry = self.raw.get_mut().get_mut(&(ptr as usize)).unwrap();
+                assert!(!entry.freed, "Metal: texture used after delete_texture");
+                entry
+            }
+            TextureIdInner::Raw(RawId::OpenGl(_)) => panic!("Gl texture in Metal context!"),
+            TextureIdInner::Managed(texture) => {
+                let entry = &mut self.managed[texture];
+                assert!(!entry.freed, "Metal: texture used after delete_texture");
+                entry
+            }
         }
-        resolved.freed = true;
+    }
+
+    fn delete(&mut self, texture: TextureId) {
+        match texture.0 {
+            TextureIdInner::Raw(RawId::Metal(ptr)) => {
+                let key = ptr as usize;
+                let entry = self.raw.get_mut().get_mut(&key).expect(
+                    "Metal: delete_texture on a raw texture TextureId that was never used \
+                     (nothing to delete; call a binding/read/param method on it first)",
+                );
+                assert!(
+                    !entry.freed,
+                    "Metal: double delete_texture (already deleted)"
+                );
+                unsafe {
+                    // The caller owns `texture`; miniquad owns only the sampler and
+                    // descriptor it synthesized, so only those are released here.
+                    msg_send_![entry.sampler, release];
+                    msg_send_![entry.sampler_descriptor, release];
+                }
+                entry.freed = true;
+            }
+            TextureIdInner::Raw(RawId::OpenGl(_)) => panic!("Gl texture in Metal context!"),
+            TextureIdInner::Managed(index) => {
+                let entry = &mut self.managed[index];
+                assert!(
+                    !entry.freed,
+                    "Metal: double delete_texture (already deleted)"
+                );
+                unsafe {
+                    msg_send_![entry.texture, release];
+                    msg_send_![entry.sampler, release];
+                    msg_send_![entry.sampler_descriptor, release];
+                }
+                entry.freed = true;
+            }
+        }
     }
 }
 pub struct MetalContext {
@@ -357,6 +549,90 @@ impl Default for MetalContext {
 }
 
 impl MetalContext {
+    /// Builds a fresh `MTLTexture` (no sampler) per `access`/`params`. Shared by `new_texture`
+    /// (initial allocation) and `texture_resize` (reallocation on a dimension change) so both
+    /// paths stay in lock-step for pixel format, storage mode, and usage flags.
+    unsafe fn new_mtl_texture(&self, access: TextureAccess, params: TextureParams) -> ObjcId {
+        let descriptor = msg_send_![class!(MTLTextureDescriptor),
+                   texture2DDescriptorWithPixelFormat:MTLPixelFormat::from(params.format)
+                   width: params.width as u64
+                   height: params.height as u64
+                   mipmapped: params.allocate_mipmaps as BOOL];
+        // This convenience constructor returns an autoreleased descriptor.
+        assert!(
+            !descriptor.is_null(),
+            "Metal: texture descriptor creation failed"
+        );
+
+        msg_send_![descriptor, setCpuCacheMode: MTLCPUCacheMode::DefaultCache];
+
+        if access == TextureAccess::RenderTarget {
+            // `Depth` and `Depth32` are depth attachment formats — keep their own
+            // pixel format. Every other format is a color attachment: match the
+            // view's `colorPixelFormat` — pipelines bake it and reject mismatched
+            // attachments, and MTKView's presentable formats are all `BGRA*` /
+            // `RGBA16Float` so honoring `RGBA8` literally would break every
+            // offscreen color target.
+            if params.format != TextureFormat::Depth && params.format != TextureFormat::Depth32 {
+                let view_pixel_format: MTLPixelFormat = msg_send![self.view, colorPixelFormat];
+                msg_send_![descriptor, setPixelFormat: view_pixel_format];
+            }
+            msg_send_![descriptor, setStorageMode: MTLStorageMode::Private];
+            if params.sample_count > 1 {
+                // MSAA target — render-only, no mipmaps, no
+                // shader-sample (the resolve texture is sampled
+                // instead).
+                msg_send_![
+                    descriptor,
+                    setTextureType: MTLTextureType::D2Multisample
+                ];
+                msg_send_![descriptor, setSampleCount: params.sample_count as u64];
+                msg_send_![descriptor, setMipmapLevelCount: 1u64];
+                msg_send_![
+                    descriptor,
+                    setUsage: MTLTextureUsage::RenderTarget as u64
+                ];
+            } else {
+                msg_send_![
+                    descriptor,
+                    setUsage: MTLTextureUsage::RenderTarget as u64
+                        | MTLTextureUsage::ShaderRead as u64
+                        | MTLTextureUsage::ShaderWrite as u64
+                ];
+            }
+        } else {
+            #[cfg(target_os = "macos")]
+            {
+                msg_send_![descriptor, setUsage: MTLTextureUsage::ShaderRead];
+                msg_send_![descriptor, setStorageMode: MTLStorageMode::Managed];
+                msg_send_![
+                    descriptor,
+                    setResourceOptions: MTLResourceOptions::StorageModeManaged
+                ];
+            }
+            #[cfg(any(target_os = "ios", target_os = "tvos"))]
+            {
+                msg_send_![descriptor, setStorageMode: MTLStorageMode::Shared];
+                msg_send_![
+                    descriptor,
+                    setResourceOptions: MTLResourceOptions::StorageModeShared
+                ];
+            }
+        }
+
+        match params.kind {
+            TextureKind::Texture2D => {
+                // on metal textureType2D is the default, nothing to do here
+            }
+            TextureKind::CubeMap => {
+                msg_send_![descriptor, setTextureType: MTLTextureType::CubeArray];
+            }
+        }
+
+        let raw_texture = msg_send_![self.device, newTextureWithDescriptor: descriptor];
+        assert!(!raw_texture.is_null(), "Metal: texture creation failed");
+        raw_texture
+    }
     pub fn new() -> MetalContext {
         unsafe {
             let view = crate::window::apple_view();
@@ -439,7 +715,7 @@ impl MetalContext {
                 buffers: ResourceManager::default(),
                 shaders: ResourceManager::default(),
                 pipelines: ResourceManager::default(),
-                textures: Textures(Vec::new()),
+                textures: Textures::new(device),
                 passes: ResourceManager::default(),
                 index_buffer: None,
                 index_type: MTLIndexType::UInt16,
@@ -577,7 +853,7 @@ mod tests {
                     buffers: Default::default(),
                     shaders: Default::default(),
                     pipelines: Default::default(),
-                    textures: Textures(Vec::new()),
+                    textures: Textures::new(device.as_id()),
                     passes: Default::default(),
                     command_queue: queue.as_id(),
                     command_buffer: None,
@@ -937,7 +1213,7 @@ mod tests {
         autoreleasepool(|| {
             let mut harness = harness();
             let context = &mut harness.context;
-            let textures_before = context.textures.0.len();
+            let textures_before = context.textures.managed.len();
             let params = TextureParams {
                 width: 2,
                 height: 2,
@@ -953,7 +1229,7 @@ mod tests {
             }))
             .is_err());
             assert_eq!(
-                context.textures.0.len(),
+                context.textures.managed.len(),
                 textures_before,
                 "a rejected texture must not publish a retained sampler/texture slot"
             );
@@ -1030,7 +1306,7 @@ mod tests {
                     buffers: Default::default(),
                     shaders: Default::default(),
                     pipelines: Default::default(),
-                    textures: Textures(Vec::new()),
+                    textures: Textures::new(device.as_id()),
                     passes: Default::default(),
                     command_queue: queue.as_id(),
                     command_buffer: None,
@@ -1088,7 +1364,7 @@ mod tests {
                     buffers: Default::default(),
                     shaders: Default::default(),
                     pipelines: Default::default(),
-                    textures: Textures(Vec::new()),
+                    textures: Textures::new(device.as_id()),
                     passes: Default::default(),
                     command_queue: queue.as_id(),
                     command_buffer: None,
@@ -1732,6 +2008,252 @@ mod tests {
             context.delete_texture(color);
         });
     }
+
+    #[test]
+    #[ignore = "requires a real macOS arm64 Metal device"]
+    fn rgb8_upload_and_read_pixels_round_trip_through_rgba8_conversion() {
+        // Regression for Tigon32/miniquad#142: `TextureFormat::RGB8` has no native Metal pixel
+        // format. It must upload/read back exactly `format.size(width, height)` == 3
+        // bytes/pixel at the public API, converting through Metal's `RGBA8Unorm` storage
+        // internally, with no silent channel/byte-count drift.
+        autoreleasepool(|| {
+            let mut harness = harness();
+            let context = &mut harness.context;
+            let params = TextureParams {
+                width: 2,
+                height: 1,
+                format: TextureFormat::RGB8,
+                ..TextureParams::default()
+            };
+            let rgb_bytes = [10_u8, 20, 30, 200, 210, 220];
+            assert_eq!(params.format.size(2, 1) as usize, rgb_bytes.len());
+            let texture = context.new_texture(
+                TextureAccess::Static,
+                TextureSource::Bytes(&rgb_bytes),
+                params,
+            );
+            let mut read_back = vec![0_u8; rgb_bytes.len()];
+            context.texture_read_pixels(texture, &mut read_back);
+            assert_eq!(
+                read_back, rgb_bytes,
+                "RGB8 read-back must match the uploaded 3 bytes/pixel exactly"
+            );
+            context.delete_texture(texture);
+        });
+    }
+
+    #[test]
+    #[ignore = "requires a real macOS arm64 Metal device"]
+    fn alpha_upload_and_read_pixels_round_trip() {
+        // Regression for Tigon32/miniquad#142: `TextureFormat::Alpha` maps to Metal's native
+        // `MTLPixelFormatA8Unorm` (1 byte/pixel), unlike RGB8's conversion path.
+        autoreleasepool(|| {
+            let mut harness = harness();
+            let context = &mut harness.context;
+            let params = TextureParams {
+                width: 3,
+                height: 1,
+                format: TextureFormat::Alpha,
+                ..TextureParams::default()
+            };
+            let alpha_bytes = [5_u8, 128, 250];
+            assert_eq!(params.format.size(3, 1) as usize, alpha_bytes.len());
+            let texture = context.new_texture(
+                TextureAccess::Static,
+                TextureSource::Bytes(&alpha_bytes),
+                params,
+            );
+            let mut read_back = vec![0_u8; alpha_bytes.len()];
+            context.texture_read_pixels(texture, &mut read_back);
+            assert_eq!(read_back, alpha_bytes);
+            context.delete_texture(texture);
+        });
+    }
+
+    #[test]
+    #[ignore = "requires a real macOS arm64 Metal device"]
+    fn depth32_render_target_supports_creation_clear_and_pixel_readback() {
+        // Regression for Tigon32/miniquad#142: `TextureFormat::Depth32` previously hit
+        // `todo!()` in `From<TextureFormat> for MTLPixelFormat`. It must behave like a normal
+        // color render target for creation/clear/read-back, at the documented 4 bytes/pixel.
+        autoreleasepool(|| unsafe {
+            let mut harness = render_harness();
+            let context = &mut harness.context;
+            let color = context.new_texture(
+                TextureAccess::RenderTarget,
+                TextureSource::Empty,
+                TextureParams {
+                    width: 1,
+                    height: 1,
+                    format: TextureFormat::RGBA8,
+                    ..TextureParams::default()
+                },
+            );
+            let depth = context.new_texture(
+                TextureAccess::RenderTarget,
+                TextureSource::Empty,
+                TextureParams {
+                    width: 1,
+                    height: 1,
+                    format: TextureFormat::Depth32,
+                    ..TextureParams::default()
+                },
+            );
+            let pass = context.new_render_pass_mrt(&[color], None, Some(depth));
+            context.begin_pass(
+                Some(pass),
+                PassAction::Clear {
+                    color: Some((0., 0., 0., 1.)),
+                    depth: Some(0.25),
+                    stencil: None,
+                },
+            );
+            context.end_render_pass();
+            context.really_end_encoder();
+            let command_buffer = context.command_buffer.take().unwrap();
+            msg_send_![command_buffer, commit];
+            msg_send_![command_buffer, waitUntilCompleted];
+
+            let mut bytes = [0_u8; 4];
+            context.texture_read_pixels(depth, &mut bytes);
+            let value = f32::from_ne_bytes(bytes);
+            assert!(
+                (value - 0.25).abs() < 1e-4,
+                "Depth32 clear-to-0.25 must read back as ~0.25, got {}",
+                value
+            );
+
+            context.delete_render_pass(pass);
+            context.delete_texture(depth);
+            context.delete_texture(color);
+        });
+    }
+
+    #[test]
+    #[ignore = "requires a real macOS arm64 Metal device"]
+    fn texture_resize_reallocates_storage_and_reuploads_bytes() {
+        autoreleasepool(|| {
+            let mut harness = harness();
+            let context = &mut harness.context;
+            let texture = context.new_texture(
+                TextureAccess::Static,
+                TextureSource::Bytes(&[1_u8, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]),
+                TextureParams {
+                    width: 2,
+                    height: 2,
+                    format: TextureFormat::RGBA8,
+                    ..TextureParams::default()
+                },
+            );
+            let new_bytes: Vec<u8> = (0..(3 * 3 * 4)).map(|i| i as u8).collect();
+            context.texture_resize(texture, 3, 3, Some(&new_bytes));
+            let params = context.texture_params(texture);
+            assert_eq!((params.width, params.height), (3, 3));
+            let mut read_back = vec![0_u8; new_bytes.len()];
+            context.texture_read_pixels(texture, &mut read_back);
+            assert_eq!(
+                read_back, new_bytes,
+                "texture_resize must reallocate storage at the new size and apply the given bytes"
+            );
+            context.delete_texture(texture);
+        });
+    }
+
+    #[test]
+    #[ignore = "requires a real macOS arm64 Metal device"]
+    fn texture_resize_is_rejected_for_a_raw_texture() {
+        autoreleasepool(|| unsafe {
+            let mut harness = harness();
+            let context = &mut harness.context;
+            let descriptor = msg_send_![class!(MTLTextureDescriptor),
+                       texture2DDescriptorWithPixelFormat:MTLPixelFormat::RGBA8Unorm
+                       width: 2u64
+                       height: 2u64
+                       mipmapped: NO];
+            msg_send_![descriptor, setStorageMode: MTLStorageMode::Shared];
+            let raw_texture =
+                owned(msg_send![context.device, newTextureWithDescriptor: descriptor]);
+            let texture = TextureId::from_raw_id(RawId::Metal(raw_texture.as_id()));
+
+            assert!(catch_unwind(AssertUnwindSafe(|| {
+                context.texture_resize(texture, 4, 4, None)
+            }))
+            .is_err());
+        });
+    }
+
+    #[test]
+    #[ignore = "requires a real macOS arm64 Metal device"]
+    fn depth_format_cpu_upload_resize_and_read_pixels_are_rejected_with_clear_panics() {
+        // Regression for Tigon32/miniquad#142: `TextureFormat::Depth` (Metal's combined
+        // depth/stencil storage) cannot support `TextureFormat::size`'s documented 2
+        // bytes/pixel for any CPU-visible path. Each operation must panic instead of silently
+        // reading/writing the wrong number of bytes.
+        autoreleasepool(|| {
+            let mut harness = render_harness();
+            let context = &mut harness.context;
+            let depth = context.new_texture(
+                TextureAccess::RenderTarget,
+                TextureSource::Empty,
+                TextureParams {
+                    width: 1,
+                    height: 1,
+                    format: TextureFormat::Depth,
+                    ..TextureParams::default()
+                },
+            );
+            let mut bytes = [0_u8; 2];
+            assert!(catch_unwind(AssertUnwindSafe(|| {
+                context.texture_read_pixels(depth, &mut bytes)
+            }))
+            .is_err());
+            assert!(catch_unwind(AssertUnwindSafe(|| {
+                context.texture_resize(depth, 2, 2, None)
+            }))
+            .is_err());
+            context.delete_texture(depth);
+        });
+    }
+
+    #[test]
+    #[ignore = "requires a real macOS arm64 Metal device"]
+    fn raw_metal_texture_is_introspected_and_its_ownership_is_not_taken() {
+        // Regression for Tigon32/miniquad#142: wrapping a caller-owned `MTLTexture` through
+        // `TextureId::from_raw_id` must synthesize real metadata (dimensions/format) and its
+        // own sampler, and `delete_texture` must release only that synthesized sampler, never
+        // the caller's texture.
+        autoreleasepool(|| unsafe {
+            let mut harness = harness();
+            let context = &mut harness.context;
+            let descriptor = msg_send_![class!(MTLTextureDescriptor),
+                       texture2DDescriptorWithPixelFormat:MTLPixelFormat::RGBA8Unorm
+                       width: 4u64
+                       height: 2u64
+                       mipmapped: NO];
+            msg_send_![descriptor, setStorageMode: MTLStorageMode::Shared];
+            let raw_texture =
+                owned(msg_send![context.device, newTextureWithDescriptor: descriptor]);
+            let retain_count_before: u64 = msg_send![raw_texture.as_id(), retainCount];
+
+            let texture = TextureId::from_raw_id(RawId::Metal(raw_texture.as_id()));
+            let params = context.texture_params(texture);
+            assert_eq!((params.width, params.height), (4, 2));
+            assert_eq!(params.format, TextureFormat::RGBA8);
+            assert_eq!(
+                context.texture_raw_id(texture),
+                RawId::Metal(raw_texture.as_id()),
+                "texture_raw_id must return the caller's own texture pointer unchanged"
+            );
+
+            context.delete_texture(texture);
+
+            let retain_count_after: u64 = msg_send![raw_texture.as_id(), retainCount];
+            assert_eq!(
+                retain_count_before, retain_count_after,
+                "delete_texture on a raw TextureId must not release the caller's texture"
+            );
+        });
+    }
 }
 impl RenderingBackend for MetalContext {
     fn info(&self) -> ContextInfo {
@@ -1851,17 +2373,127 @@ impl RenderingBackend for MetalContext {
         }
         texture.update_sampler(self.device);
     }
+    /// Reallocates a managed texture's backing `MTLTexture` at the new dimensions, keeping its
+    /// sampler. `bytes`, when given, must be `format.size(width, height)` bytes — the same
+    /// public per-pixel contract as `new_texture`/`texture_update_part`.
+    ///
+    /// Unsupported for a texture wrapped with `TextureId::from_raw_id`: miniquad does not own
+    /// the caller's `MTLTexture` and cannot reallocate it (see
+    /// docs/adr/0021-metal-texture-format-and-raw-texture-contract.md). Also unsupported for
+    /// `TextureFormat::Depth`, for the same combined depth/stencil reason documented on
+    /// `mtl_storage_bytes_per_pixel`.
     fn texture_resize(
         &mut self,
-        _texture: TextureId,
-        _width: u32,
-        _height: u32,
-        _bytes: Option<&[u8]>,
+        texture: TextureId,
+        width: u32,
+        height: u32,
+        bytes: Option<&[u8]>,
     ) {
-        unimplemented!()
+        assert!(
+            matches!(texture.0, TextureIdInner::Managed(_)),
+            "Metal: texture_resize is not supported for a texture wrapped with \
+             TextureId::from_raw_id; miniquad does not own the caller's texture and cannot \
+             reallocate it. Resize the caller's texture and wrap a fresh TextureId instead."
+        );
+        let old = self.textures.get(texture);
+        let mut new_params = old.params;
+        new_params.width = width;
+        new_params.height = height;
+        assert_ne!(
+            new_params.format,
+            TextureFormat::Depth,
+            "Metal: texture_resize of TextureFormat::Depth is not supported; \
+             use TextureFormat::Depth32 instead"
+        );
+
+        let raw_texture = unsafe { self.new_mtl_texture(old.access, new_params) };
+        let entry = self.textures.get_mut(texture);
+        unsafe {
+            msg_send_![entry.texture, release];
+        }
+        entry.texture = raw_texture;
+        entry.params = new_params;
+
+        if let Some(bytes) = bytes {
+            assert_eq!(new_params.format.size(width, height) as usize, bytes.len());
+            self.texture_update_part(texture, 0, 0, width as _, height as _, bytes);
+        }
     }
-    fn texture_read_pixels(&mut self, _texture: TextureId, _bytes: &mut [u8]) {
-        unimplemented!()
+    /// Reads the texture's pixels back through a blit to a CPU-visible buffer: `new_texture`
+    /// allocates render targets with `StorageModePrivate`, so `getBytes` on the texture itself
+    /// is unavailable. `bytes` must be exactly `format.size(width, height)` bytes — the public
+    /// per-pixel contract — even though `TextureFormat::RGB8` is stored as Metal `RGBA8Unorm`
+    /// internally (see `mtl_storage_bytes_per_pixel`); the alpha channel is dropped on the way
+    /// out.
+    ///
+    /// Unsupported for `TextureFormat::Depth`: see `mtl_storage_bytes_per_pixel`.
+    fn texture_read_pixels(&mut self, texture: TextureId, bytes: &mut [u8]) {
+        let t = self.textures.get(texture);
+        let format = t.params.format;
+        assert_ne!(
+            format,
+            TextureFormat::Depth,
+            "Metal: texture_read_pixels of TextureFormat::Depth is not supported; \
+             its storage size does not match TextureFormat::size's documented 2 bytes/pixel. \
+             Use TextureFormat::Depth32 for a depth texture that supports read-back."
+        );
+        let width = t.params.width as u64;
+        let height = t.params.height as u64;
+        assert_eq!(
+            format.size(width as u32, height as u32) as usize,
+            bytes.len(),
+            "texture_read_pixels: bytes length must match TextureFormat::size(width, height)"
+        );
+
+        // Close any deferred render encoder before opening a blit
+        // encoder on the same command buffer — Metal asserts
+        // "encoding in progress" otherwise.
+        self.really_end_encoder();
+
+        let storage_bytes_per_pixel = mtl_storage_bytes_per_pixel(format) as u64;
+        let bytes_per_row = width * storage_bytes_per_pixel;
+        let total_bytes = bytes_per_row * height;
+
+        unsafe {
+            let readback: ObjcId = msg_send![
+                self.device,
+                newBufferWithLength: total_bytes
+                options: MTLResourceOptions::StorageModeShared
+            ];
+            assert!(
+                !readback.is_null(),
+                "Metal: readback buffer creation failed"
+            );
+
+            if self.command_buffer.is_none() {
+                self.command_buffer = Some(msg_send![self.command_queue, commandBuffer]);
+            }
+            let command_buffer = self.command_buffer.unwrap();
+            let blit_encoder = msg_send_![command_buffer, blitCommandEncoder];
+            msg_send_![blit_encoder, copyFromTexture: t.texture
+                       sourceSlice: 0u64
+                       sourceLevel: 0u64
+                       sourceOrigin: MTLOrigin { x: 0, y: 0, z: 0 }
+                       sourceSize: MTLSize { width, height, depth: 1 }
+                       toBuffer: readback
+                       destinationOffset: 0u64
+                       destinationBytesPerRow: bytes_per_row
+                       destinationBytesPerImage: total_bytes];
+            msg_send_![blit_encoder, endEncoding];
+
+            let command_buffer = self.command_buffer.take().unwrap();
+            msg_send_![command_buffer, commit];
+            msg_send_![command_buffer, waitUntilCompleted];
+
+            let ptr: *const u8 = msg_send![readback, contents];
+            let storage_bytes = std::slice::from_raw_parts(ptr, total_bytes as usize);
+            if format == TextureFormat::RGB8 {
+                rgba8_to_rgb8(storage_bytes, bytes);
+            } else {
+                bytes.copy_from_slice(storage_bytes);
+            }
+            msg_send_![readback, release];
+        }
     }
     fn texture_generate_mipmaps(&mut self, texture: TextureId) {
         let texture = self.textures.get(texture);
@@ -2154,98 +2786,40 @@ impl RenderingBackend for MetalContext {
         bytes: TextureSource,
         params: TextureParams,
     ) -> TextureId {
-        let descriptor = unsafe {
-            msg_send_![class!(MTLTextureDescriptor),
-                       texture2DDescriptorWithPixelFormat:MTLPixelFormat::from(params.format)
-                       width: params.width as u64
-                       height: params.height as u64
-                       mipmapped: params.allocate_mipmaps as BOOL]
-        };
-        // This convenience constructor returns an autoreleased descriptor.
-        assert!(
-            !descriptor.is_null(),
-            "Metal: texture descriptor creation failed"
-        );
-
-        unsafe {
-            msg_send_![descriptor, setCpuCacheMode: MTLCPUCacheMode::DefaultCache];
-
-            if access == TextureAccess::RenderTarget {
-                if params.format != TextureFormat::Depth {
-                    // Match the view's `colorPixelFormat` — pipelines
-                    // bake it and reject mismatched attachments, and
-                    // MTKView's presentable formats are all `BGRA*` /
-                    // `RGBA16Float` so honoring `RGBA8` literally
-                    // would break every offscreen color target.
-                    let view_pixel_format: MTLPixelFormat = msg_send![self.view, colorPixelFormat];
-                    msg_send_![descriptor, setPixelFormat: view_pixel_format];
-                }
-                msg_send_![descriptor, setStorageMode: MTLStorageMode::Private];
-                if params.sample_count > 1 {
-                    // MSAA target — render-only, no mipmaps, no
-                    // shader-sample (the resolve texture is sampled
-                    // instead).
-                    msg_send_![
-                        descriptor,
-                        setTextureType: MTLTextureType::D2Multisample
-                    ];
-                    msg_send_![descriptor, setSampleCount: params.sample_count as u64];
-                    msg_send_![descriptor, setMipmapLevelCount: 1u64];
-                    msg_send_![
-                        descriptor,
-                        setUsage: MTLTextureUsage::RenderTarget as u64
-                    ];
-                } else {
-                    msg_send_![
-                        descriptor,
-                        setUsage: MTLTextureUsage::RenderTarget as u64
-                            | MTLTextureUsage::ShaderRead as u64
-                            | MTLTextureUsage::ShaderWrite as u64
-                    ];
-                }
-            } else {
-                #[cfg(target_os = "macos")]
-                {
-                    msg_send_![descriptor, setUsage: MTLTextureUsage::ShaderRead];
-                    msg_send_![descriptor, setStorageMode: MTLStorageMode::Managed];
-                    msg_send_![
-                        descriptor,
-                        setResourceOptions: MTLResourceOptions::StorageModeManaged
-                    ];
-                }
-                #[cfg(any(target_os = "ios", target_os = "tvos"))]
-                {
-                    msg_send_![descriptor, setStorageMode: MTLStorageMode::Shared];
-                    msg_send_![
-                        descriptor,
-                        setResourceOptions: MTLResourceOptions::StorageModeShared
-                    ];
-                }
-            }
-        };
-
-        match params.kind {
-            TextureKind::Texture2D => {
-                // on metal textureType2D is the default, nothing to do here
-            }
-            TextureKind::CubeMap => unsafe {
-                msg_send_![descriptor, setTextureType: MTLTextureType::CubeArray];
-            },
-        }
-
         // Reject invalid bytes before publishing objects with no caller-owned id.
+        //
+        // Depth32Float_Stencil8 (TextureFormat::Depth)'s combined depth/stencil storage is not
+        // addressable with `replaceRegion` in a way that matches `TextureFormat::size`'s
+        // documented 2-bytes-per-pixel contract (see `mtl_storage_bytes_per_pixel`), so CPU
+        // upload of that format stays a documented unsupported state. Use
+        // `TextureFormat::Depth32` for a depth texture that needs CPU-supplied bytes.
         match &bytes {
             TextureSource::Empty => {}
             TextureSource::Bytes(bytes) => {
+                assert_ne!(
+                    params.format,
+                    TextureFormat::Depth,
+                    "Metal: CPU upload of TextureFormat::Depth is not supported; \
+                     use TextureFormat::Depth32 instead"
+                );
                 assert_eq!(
                     params.format.size(params.width, params.height) as usize,
                     bytes.len()
                 );
             }
             TextureSource::Array(array) => {
+                assert_ne!(
+                    params.format,
+                    TextureFormat::Depth,
+                    "Metal: CPU upload of TextureFormat::Depth is not supported; \
+                     use TextureFormat::Depth32 instead"
+                );
                 for face in array.iter() {
                     for bytes in face.iter() {
-                        assert!(bytes.len() as u32 == params.width * params.height * 4);
+                        assert_eq!(
+                            bytes.len() as u32,
+                            params.format.size(params.width, params.height)
+                        );
                     }
                 }
             }
@@ -2283,18 +2857,18 @@ impl RenderingBackend for MetalContext {
             let sampler_owner = RcObjcId::from_owned(
                 NonNull::new(sampler_state).expect("Metal: sampler creation failed"),
             );
-            let raw_texture = msg_send_![self.device, newTextureWithDescriptor: descriptor];
+            let raw_texture = self.new_mtl_texture(access, params);
             let texture_owner = RcObjcId::from_owned(
                 NonNull::new(raw_texture).expect("Metal: texture creation failed"),
             );
-            self.textures.0.push(Texture {
+            self.textures.push_managed(Texture {
                 sampler: sampler_owner.forget().as_ptr(),
                 texture: texture_owner.forget().as_ptr(),
                 sampler_descriptor: descriptor_owner.forget().as_ptr(),
                 params,
+                access,
                 freed: false,
-            });
-            TextureId(TextureIdInner::Managed(self.textures.0.len() - 1))
+            })
         };
 
         match bytes {
@@ -2310,6 +2884,7 @@ impl RenderingBackend for MetalContext {
                 );
             }
             TextureSource::Array(array) => {
+                let bytes_per_pixel = mtl_storage_bytes_per_pixel(params.format);
                 for (n, face) in array.iter().enumerate() {
                     for (mipmap_level, bytes) in face.iter().enumerate() {
                         let raw_texture = self.textures.get(texture).texture;
@@ -2325,12 +2900,13 @@ impl RenderingBackend for MetalContext {
                                 depth: 1,
                             },
                         };
+                        let upload = prepare_upload_bytes(params.format, bytes);
                         unsafe {
                             msg_send_![raw_texture, replaceRegion:region
                                   mipmapLevel:mipmap_level
                                   slice: n
-                                  withBytes:bytes.as_ptr()
-                                  bytesPerRow:(params.width * 4) as u64
+                                  withBytes:upload.as_ptr()
+                                  bytesPerRow:(params.width * bytes_per_pixel) as u64
                                   bytesPerImage:0
                             ];
                         }
@@ -2350,7 +2926,15 @@ impl RenderingBackend for MetalContext {
         height: i32,
         bytes: &[u8],
     ) {
-        let raw_texture = self.textures.get(texture).texture;
+        let t = self.textures.get(texture);
+        let format = t.params.format;
+        assert_ne!(
+            format,
+            TextureFormat::Depth,
+            "Metal: CPU upload of TextureFormat::Depth is not supported; \
+             use TextureFormat::Depth32 instead"
+        );
+        let raw_texture = t.texture;
         let region = MTLRegion {
             origin: MTLOrigin {
                 x: x_offset as u64,
@@ -2363,11 +2947,13 @@ impl RenderingBackend for MetalContext {
                 depth: 1,
             },
         };
+        let upload = prepare_upload_bytes(format, bytes);
+        let bytes_per_pixel = mtl_storage_bytes_per_pixel(format);
         unsafe {
             msg_send_![raw_texture, replaceRegion:region
                        mipmapLevel:0
-                       withBytes:bytes.as_ptr()
-                       bytesPerRow:(width * 4) as u64];
+                       withBytes:upload.as_ptr()
+                       bytesPerRow:(width as u32 * bytes_per_pixel) as u64];
         }
     }
 

@@ -315,6 +315,28 @@ function artifactSizes(candidate) {
     return files;
 }
 
+export function comparePlaywright(pinned, installed) {
+    const exact = typeof pinned === "string" && /^\d+\.\d+\.\d+$/u.test(pinned);
+    return {pinned: pinned ?? null, installed: installed ?? null, matchesPin: exact && pinned === installed};
+}
+
+function readVersion(file) {
+    try { return JSON.parse(readFileSync(file, "utf8")).version ?? null; } catch { return null; }
+}
+
+function playwrightState() {
+    let pinned = null;
+    try {
+        pinned = JSON.parse(readFileSync(join(root, "package.json"), "utf8")).devDependencies?.["@playwright/test"] ?? null;
+    } catch { pinned = null; }
+    let installed = null;
+    for (let dir = root; !installed; dir = dirname(dir)) {
+        installed = readVersion(join(dir, "node_modules", "@playwright", "test", "package.json"));
+        if (dirname(dir) === dir) break;
+    }
+    return comparePlaywright(pinned, installed);
+}
+
 function sourceState() {
     try {
         const sha = execFileSync("git", ["rev-parse", "HEAD"], {cwd: root, encoding: "utf8"}).trim();
@@ -335,8 +357,13 @@ export async function runLane(options) {
         contract: CONTRACT, candidate: options.candidate, lane: options.lane, checkedAt: new Date().toISOString(),
         source: sourceState(), os: {platform: platform(), release: release(), arch: arch()},
         node: process.version, browser: {name: lane.browser, version: browser.version(), flags: [...lane.flags]},
-        hardware: "NOT TESTED", results: [], startupMs: [],
+        playwright: playwrightState(), hardware: "NOT TESTED", results: [], startupMs: [],
     };
+    if (!receipt.playwright.matchesPin) {
+        receipt.results.push({id: "toolchain", kind: "render", result: "fail", lastStatus: null,
+            problems: ["installed Playwright " + receipt.playwright.installed + " does not match pin " +
+                receipt.playwright.pinned]});
+    }
     try {
         const context = await browser.newContext({viewport: VIEWPORT, deviceScaleFactor: 1});
         const probe = await openPage(context, options);

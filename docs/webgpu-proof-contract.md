@@ -326,14 +326,21 @@ The worker documents each import and export, with its arguments, in `README.md`.
 
 | Lane | Browser and flags | Rule |
 | --- | --- | --- |
-| `software` | Playwright `1.56.1` Chromium, `--enable-unsafe-webgpu --enable-unsafe-swiftshader --use-angle=swiftshader` | Run all cases. Require `isFallbackAdapter: true`. Label the result **software adapter** |
+| `software` | Repository-pinned Playwright Chromium, `--enable-unsafe-webgpu --enable-unsafe-swiftshader --use-angle=swiftshader` | Run all cases. Require `isFallbackAdapter: true`. Label the result **software adapter** |
 | `chromium-default` | Same Chromium, no flags | Record the adapter. If the adapter is null, run only the natural `adapter-unavailable` rejection. If an adapter exists, run T1 to T7 and label the result with the adapter facts. This is not hardware qualification |
-| `firefox-default`, `webkit-default` | Playwright `1.56.1` Firefox and WebKit | If `navigator.gpu` is missing, run only the natural `api-unavailable` rejection. Otherwise record the facts and run T1 to T7 |
+| `firefox-default`, `webkit-default` | Repository-pinned Playwright Firefox and WebKit | If `navigator.gpu` is missing, run only the natural `api-unavailable` rejection. Otherwise record the facts and run T1 to T7 |
 | hardware | Real GPU browsers | **NOT TESTED** in this proof |
 
 The first proof uses current tools on macOS with a software adapter.
 Native and hardware results are **NOT TESTED**.
 The hardware and production lanes come from the #156 platform policy, not from this contract.
+
+The lanes use the Playwright version pinned in the root `package.json`.
+The receipt records the installed Playwright and browser versions. The receipt is the authority for the version.
+A result applies only to the recorded browser version, OS, and flags.
+Do not combine results from different browser versions into one claim.
+The earlier standalone probes are separate historical evidence: Chromium `141` on macOS passed,
+and Chromium `141` on Linux failed at `mapAsync`. They are not Miniquad candidate results.
 
 Use the controlled injections N1 to N4 for repeatable rejection tests.
 Do not require that a default browser has no GPU.

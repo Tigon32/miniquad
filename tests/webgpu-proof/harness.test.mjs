@@ -7,7 +7,7 @@ import {
     pixelPositions, planLane, summarize, validateStatus,
 } from "./contract.mjs";
 import { INJECTIONS, instrument } from "./instrumentation.mjs";
-import { parseArgs } from "./run-proof.mjs";
+import { comparePlaywright, parseArgs } from "./run-proof.mjs";
 import { checkPort, createProofServer, listen, resolveAsset } from "../../scripts/webgpu-proof-serve.mjs";
 
 function status(overrides = {}) {
@@ -208,4 +208,11 @@ test("server sends WASM with the correct type and gives 404 for missing files", 
     assert.equal((await fetch(base + "/manual/index.html")).status, 200);
     assert.equal((await fetch(base + "/manual/missing.wasm")).status, 404);
     assert.equal((await fetch(base + "/health")).status, 200);
+});
+
+test("receipts accept only the exact repository-pinned Playwright version", () => {
+    assert.equal(comparePlaywright("1.65.0", "1.65.0").matchesPin, true);
+    assert.equal(comparePlaywright("1.65.0", "1.56.1").matchesPin, false);
+    assert.equal(comparePlaywright("^1.65.0", "1.65.0").matchesPin, false);
+    assert.equal(comparePlaywright("1.65.0", null).matchesPin, false);
 });

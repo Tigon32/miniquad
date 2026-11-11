@@ -257,16 +257,22 @@ struct Texture {
     sampler: ObjcId,
     sampler_descriptor: ObjcId,
     params: TextureParams,
-    /// Set by `Textures::delete`. `buffers`/`shaders`/`pipelines`/
-    /// `passes` get the same already-deleted guard for free from
-    /// `ResourceManager`'s `remove`/`Index` panic (see `gl.rs`).
-    /// `Textures` stays a plain `Vec`, matching the OpenGL backend's
-    /// `Textures` wrapper, so Metal needs its own explicit flag:
-    /// unlike OpenGL ids, a deleted Metal texture handle still
-    /// points at a released Objective-C object, and sending it a
-    /// message is undefined behavior, not merely stale data.
+    // A tombstone prevents messages to released Objective-C objects.
     freed: bool,
 }
+
+impl Texture {
+    fn update_sampler(&mut self, device: ObjcId) {
+        unsafe {
+            let sampler =
+                msg_send_![device, newSamplerStateWithDescriptor: self.sampler_descriptor];
+            assert!(!sampler.is_null(), "Metal: sampler creation failed");
+            let previous = std::mem::replace(&mut self.sampler, sampler);
+            msg_send_![previous, release];
+        }
+    }
+}
+
 struct Textures(Vec<Texture>);
 
 impl Textures {
@@ -286,32 +292,18 @@ impl Textures {
         }
     }
 
-    /// Read access shared by every use site. Panics on a tombstoned
-    /// (already-deleted) texture instead of touching the released
-    /// `MTLTexture`/`MTLSamplerState`.
     fn get(&self, texture: TextureId) -> Texture {
         let resolved = self.resolve(texture);
-        assert!(
-            !resolved.freed,
-            "Metal: texture used after delete_texture"
-        );
+        assert!(!resolved.freed, "Metal: texture used after delete_texture");
         *resolved
     }
 
     fn get_mut(&mut self, texture: TextureId) -> &mut Texture {
         let resolved = self.resolve_mut(texture);
-        assert!(
-            !resolved.freed,
-            "Metal: texture used after delete_texture"
-        );
+        assert!(!resolved.freed, "Metal: texture used after delete_texture");
         resolved
     }
 
-    /// Release every Objective-C object `new_texture` retained for
-    /// this handle, exactly once, and tombstone the slot. Guards
-    /// the second half of a double `delete_texture`; the first half
-    /// (double construction) cannot happen because ids come from
-    /// `new_texture`.
     fn delete(&mut self, texture: TextureId) {
         let resolved = self.resolve_mut(texture);
         assert!(
@@ -465,14 +457,6 @@ impl MetalContext {
         self.pending_end_encoder = false;
     }
 
-    // The accessors below are the one shared choke point for every
-    // read of a `BufferId` / `ShaderId` / `Pipeline` / `RenderPass`
-    // handle. They forward straight to `ResourceManager`'s
-    // `Index`/`IndexMut`, which already panics on an id that was
-    // never issued or was already removed (same guard the OpenGL
-    // backend relies on for these four resource kinds). `Textures`
-    // carries a matching explicit guard for `TextureId` in its own
-    // `get`/`get_mut`/`delete`, because it stays a plain `Vec`.
     fn buffer(&self, buffer: BufferId) -> &Buffer {
         &self.buffers[buffer.0]
     }
@@ -494,6 +478,413 @@ impl MetalContext {
     }
 }
 
+#[cfg(all(test, target_os = "macos", target_arch = "aarch64"))]
+mod tests {
+    use super::*;
+    use objc::rc::{autoreleasepool, WeakPtr};
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+    use std::sync::OnceLock;
+
+    const PROGRAM: &str = r#"
+            #include <metal_stdlib>
+            using namespace metal;
+            vertex float4 vertexShader(uint id [[vertex_id]]) {
+                return float4(float(id == 1), float(id == 2), 0.0, 1.0);
+            }
+            fragment float4 fragmentShader() { return float4(1.0); }
+        "#;
+
+    struct Harness {
+        context: MetalContext,
+        _queue: RcObjcId,
+        _view: RcObjcId,
+        _device: RcObjcId,
+    }
+
+    extern "C" fn color_format(_: &Object, _: Sel) -> u64 {
+        MTLPixelFormat::BGRA8Unorm as u64
+    }
+
+    extern "C" fn depth_format(_: &Object, _: Sel) -> u64 {
+        MTLPixelFormat::Invalid as u64
+    }
+
+    extern "C" fn sample_count(_: &Object, _: Sel) -> u64 {
+        1
+    }
+
+    extern "C" fn ignore_draw(
+        _: &Object,
+        _: Sel,
+        _: u64,
+        _: u64,
+        _: u64,
+        _: ObjcId,
+        _: u64,
+        _: u64,
+        _: i64,
+        _: u64,
+    ) {
+    }
+
+    extern "C" fn ignore_end(_: &Object, _: Sel) {}
+
+    fn owned(pointer: ObjcId) -> RcObjcId {
+        RcObjcId::from_owned(
+            NonNull::new(pointer).expect("Metal test needs a real device and resources"),
+        )
+    }
+
+    // Replace only view metadata. Resource calls use the real Metal device.
+    fn harness() -> Harness {
+        static VIEW_CLASS: OnceLock<&'static Class> = OnceLock::new();
+        let view_class = VIEW_CLASS.get_or_init(|| {
+                let mut declaration =
+                    ClassDecl::new("MQMetalResourceTestView", class!(NSObject)).unwrap();
+                unsafe {
+                    declaration.add_method(sel!(colorPixelFormat), color_format as extern "C" fn(&Object, Sel) -> u64);
+                    declaration.add_method(sel!(depthStencilPixelFormat), depth_format as extern "C" fn(&Object, Sel) -> u64);
+                    declaration.add_method(sel!(sampleCount), sample_count as extern "C" fn(&Object, Sel) -> u64);
+                    declaration.add_method(sel!(endEncoding), ignore_end as extern "C" fn(&Object, Sel));
+                    declaration.add_method(
+                        sel!(drawIndexedPrimitives:indexCount:indexType:indexBuffer:indexBufferOffset:instanceCount:baseVertex:baseInstance:),
+                        ignore_draw as extern "C" fn(&Object, Sel, u64, u64, u64, ObjcId, u64, u64, i64, u64),
+                    );
+                }
+                declaration.register()
+            });
+        unsafe {
+            let device = owned(MTLCreateSystemDefaultDevice());
+            let view = owned(msg_send![*view_class, new]);
+            let queue = owned(msg_send![device.as_id(), newCommandQueue]);
+            Harness {
+                context: MetalContext {
+                    buffers: Default::default(),
+                    shaders: Default::default(),
+                    pipelines: Default::default(),
+                    textures: Textures(Vec::new()),
+                    passes: Default::default(),
+                    command_queue: queue.as_id(),
+                    command_buffer: None,
+                    render_encoder: None,
+                    current_pass_width: 0,
+                    current_pass_height: 0,
+                    current_pass_target: None,
+                    pending_end_encoder: false,
+                    view: view.as_id(),
+                    device: device.as_id(),
+                    current_frame_index: 1,
+                    uniform_buffers: [nil; 3],
+                    index_buffer: None,
+                    current_pipeline: None,
+                    current_ub_offset: 0,
+                },
+                _queue: queue,
+                _view: view,
+                _device: device,
+            }
+        }
+    }
+
+    fn shader_meta() -> ShaderMeta {
+        ShaderMeta {
+            images: Vec::new(),
+            uniforms: UniformBlockLayout {
+                uniforms: Vec::new(),
+            },
+        }
+    }
+
+    fn reference_state(pointer: &WeakPtr) -> (usize, Option<u64>) {
+        let object = pointer.load();
+        if object.is_null() {
+            (0, None)
+        } else {
+            let count = unsafe { msg_send![*object, retainCount] };
+            (*object as usize, Some(count))
+        }
+    }
+
+    #[test]
+    #[ignore = "requires a real macOS arm64 Metal device"]
+    fn resource_loop_releases_objects_after_each_pool_drains() {
+        let mut harness = harness();
+        let context = &mut harness.context;
+        // Compare Metal's cached default depth state with a direct-API control.
+        let cached_depth = autoreleasepool(|| unsafe {
+            let descriptor = owned(msg_send![class!(MTLDepthStencilDescriptor), new]);
+            msg_send_![descriptor.as_id(), setDepthWriteEnabled: NO];
+            msg_send_![descriptor.as_id(), setDepthCompareFunction: MTLCompareFunction::Always];
+            let state = owned(
+                msg_send![context.device, newDepthStencilStateWithDescriptor: descriptor.as_id()],
+            );
+            WeakPtr::new(state.as_id())
+        });
+        let cache_before = reference_state(&cached_depth);
+        let mut observed = Vec::new();
+        for _ in 0..8 {
+            autoreleasepool(|| unsafe {
+                let buffer = context.new_buffer(
+                    BufferType::IndexBuffer,
+                    BufferUsage::Immutable,
+                    BufferSource::slice(&[0_u16, 1, 2]),
+                );
+                let shader = context
+                    .new_shader(ShaderSource::Msl { program: PROGRAM }, shader_meta())
+                    .unwrap();
+                let pipeline = context.new_pipeline(&[], &[], shader, PipelineParams::default());
+                let texture = context.new_texture(
+                    TextureAccess::Static,
+                    TextureSource::Empty,
+                    TextureParams {
+                        width: 2,
+                        height: 2,
+                        ..TextureParams::default()
+                    },
+                );
+                let pass = context.new_render_pass_mrt(&[texture], None, None);
+                let internal = context.textures.get(texture);
+                for (kind, pointer) in [
+                    ("buffer", context.buffers[buffer.0].raw[0]),
+                    ("vertex function", context.shaders[shader.0].vertex_function),
+                    (
+                        "fragment function",
+                        context.shaders[shader.0].fragment_function,
+                    ),
+                    ("pipeline", context.pipelines[pipeline.0].pipeline_state),
+                    (
+                        "depth state",
+                        context.pipelines[pipeline.0].depth_stencil_state,
+                    ),
+                    ("texture", internal.texture),
+                    ("sampler descriptor", internal.sampler_descriptor),
+                    ("sampler", internal.sampler),
+                    ("pass descriptor", context.passes[pass.0].render_pass_desc),
+                ] {
+                    observed.push((kind, WeakPtr::new(pointer)));
+                }
+                context.texture_set_min_filter(texture, FilterMode::Linear, MipmapFilterMode::None);
+                observed.push((
+                    "min sampler",
+                    WeakPtr::new(context.textures.get(texture).sampler),
+                ));
+                context.texture_set_mag_filter(texture, FilterMode::Linear);
+                observed.push((
+                    "mag sampler",
+                    WeakPtr::new(context.textures.get(texture).sampler),
+                ));
+                context.texture_set_wrap(texture, TextureWrap::Repeat, TextureWrap::Mirror);
+                observed.push((
+                    "wrap sampler",
+                    WeakPtr::new(context.textures.get(texture).sampler),
+                ));
+                context.delete_render_pass(pass);
+                context.delete_pipeline(pipeline);
+                context.delete_shader(shader);
+                context.delete_texture(texture);
+                context.delete_buffer(buffer);
+            });
+        }
+        let alive: Vec<_> = observed
+            .iter()
+            .filter_map(|(kind, pointer)| {
+                let object = pointer.load();
+                if object.is_null()
+                    || (*kind == "depth state" && *object as usize == cache_before.0)
+                {
+                    None
+                } else {
+                    Some((*kind, *object as usize))
+                }
+            })
+            .collect();
+        let unique: std::collections::HashSet<_> =
+            alive.iter().map(|(_, pointer)| *pointer).collect();
+        eprintln!("Metal resource loop: {} weak observations, {} unexpected live references, {} unique unexpected objects; depth cache {:?}",
+                observed.len(), alive.len(), unique.len(), cache_before);
+        assert_eq!(
+            reference_state(&cached_depth),
+            cache_before,
+            "cached depth-state ownership changed"
+        );
+        assert!(
+            alive.is_empty(),
+            "objects still alive after deletion and pool drain: {:?}",
+            alive
+        );
+    }
+
+    #[test]
+    #[ignore = "requires a real macOS arm64 Metal device"]
+    fn sampler_changes_preserve_previous_settings() {
+        autoreleasepool(|| unsafe {
+            let mut harness = harness();
+            let context = &mut harness.context;
+            let texture = context.new_texture(
+                TextureAccess::Static,
+                TextureSource::Empty,
+                TextureParams {
+                    width: 2,
+                    height: 2,
+                    ..TextureParams::default()
+                },
+            );
+            context.texture_set_min_filter(texture, FilterMode::Linear, MipmapFilterMode::Linear);
+            context.texture_set_mag_filter(texture, FilterMode::Linear);
+            context.texture_set_wrap(texture, TextureWrap::Repeat, TextureWrap::Mirror);
+            let descriptor = context.textures.get(texture).sampler_descriptor;
+            let min: u64 = msg_send![descriptor, minFilter];
+            let mip: u64 = msg_send![descriptor, mipFilter];
+            let mag: u64 = msg_send![descriptor, magFilter];
+            let wrap_s: u64 = msg_send![descriptor, sAddressMode];
+            let wrap_t: u64 = msg_send![descriptor, tAddressMode];
+            context.delete_texture(texture);
+            assert_eq!(min, MTLSamplerMinMagFilter::Linear as u64);
+            assert_eq!(mip, MTLSamplerMipFilter::Linear as u64);
+            assert_eq!(mag, MTLSamplerMinMagFilter::Linear as u64);
+            assert_eq!(wrap_s, MTLSamplerAddressMode::Repeat as u64);
+            assert_eq!(wrap_t, MTLSamplerAddressMode::MirrorRepeat as u64);
+        });
+    }
+
+    #[test]
+    #[ignore = "requires a real macOS arm64 Metal device"]
+    fn deleting_a_bound_index_buffer_prevents_draw_and_double_delete() {
+        autoreleasepool(|| {
+            let mut harness = harness();
+            let context = &mut harness.context;
+            let buffer = context.new_buffer(
+                BufferType::IndexBuffer,
+                BufferUsage::Immutable,
+                BufferSource::slice(&[0_u16, 1, 2]),
+            );
+            context.render_encoder = Some(context.view);
+            context.apply_bindings_from_slice(&[], buffer, &[]);
+            context.delete_buffer(buffer);
+            assert!(catch_unwind(AssertUnwindSafe(|| context.draw(0, 3, 1))).is_err());
+            assert!(catch_unwind(AssertUnwindSafe(|| context.delete_buffer(buffer))).is_err());
+        });
+    }
+
+    #[test]
+    #[ignore = "requires a real macOS arm64 Metal device"]
+    fn invalid_shaders_return_errors_instead_of_panicking() {
+        autoreleasepool(|| {
+            let mut harness = harness();
+            let missing_vertex = PROGRAM.replace("vertexShader", "missingVertex");
+            let missing_fragment = PROGRAM.replace("fragmentShader", "missingFragment");
+            for program in ["not valid MSL", &missing_vertex, &missing_fragment] {
+                assert!(harness
+                    .context
+                    .new_shader(ShaderSource::Msl { program }, shader_meta())
+                    .is_err());
+            }
+        });
+    }
+
+    #[test]
+    #[ignore = "requires a real macOS arm64 Metal device"]
+    fn pass_deletion_rejects_active_use_and_ends_deferred_encoding() {
+        autoreleasepool(|| {
+            let mut harness = harness();
+            let context = &mut harness.context;
+            let texture = context.new_texture(
+                TextureAccess::Static,
+                TextureSource::Empty,
+                TextureParams {
+                    width: 2,
+                    height: 2,
+                    ..TextureParams::default()
+                },
+            );
+            let pass = context.new_render_pass_mrt(&[texture], None, None);
+            context.render_encoder = Some(context.view);
+            context.current_pass_target = Some(Some(pass));
+            assert!(catch_unwind(AssertUnwindSafe(|| context.delete_render_pass(pass))).is_err());
+            context.pending_end_encoder = true;
+            context.delete_render_pass(pass);
+            assert!(context.current_pass_target.is_none());
+            assert!(context.render_encoder.is_none());
+            assert!(catch_unwind(AssertUnwindSafe(|| context.delete_render_pass(pass))).is_err());
+            context.delete_texture(texture);
+        });
+    }
+
+    #[test]
+    #[ignore = "requires a real macOS arm64 Metal device"]
+    fn deleted_shader_and_pipeline_ids_cannot_be_reused_or_deleted_twice() {
+        autoreleasepool(|| {
+            let mut harness = harness();
+            let context = &mut harness.context;
+            let shader = context
+                .new_shader(ShaderSource::Msl { program: PROGRAM }, shader_meta())
+                .unwrap();
+            let pipeline = context.new_pipeline(&[], &[], shader, PipelineParams::default());
+
+            context.delete_pipeline(pipeline);
+            assert!(catch_unwind(AssertUnwindSafe(|| context.delete_pipeline(pipeline))).is_err());
+
+            context.delete_shader(shader);
+            assert!(catch_unwind(AssertUnwindSafe(|| context.delete_shader(shader))).is_err());
+        });
+    }
+
+    #[test]
+    #[ignore = "requires a real macOS arm64 Metal device"]
+    fn deleted_texture_id_cannot_be_used_or_deleted_twice() {
+        autoreleasepool(|| {
+            let mut harness = harness();
+            let context = &mut harness.context;
+            let texture = context.new_texture(
+                TextureAccess::Static,
+                TextureSource::Empty,
+                TextureParams {
+                    width: 2,
+                    height: 2,
+                    ..TextureParams::default()
+                },
+            );
+
+            context.delete_texture(texture);
+            assert!(catch_unwind(AssertUnwindSafe(|| context.textures.get(texture))).is_err());
+            assert!(catch_unwind(AssertUnwindSafe(|| {
+                context.texture_set_mag_filter(texture, FilterMode::Linear)
+            }))
+            .is_err());
+            assert!(catch_unwind(AssertUnwindSafe(|| context.delete_texture(texture))).is_err());
+        });
+    }
+
+    #[test]
+    #[ignore = "requires a real macOS arm64 Metal device"]
+    fn mismatched_texture_bytes_panic_before_any_object_is_published() {
+        autoreleasepool(|| {
+            let mut harness = harness();
+            let context = &mut harness.context;
+            let textures_before = context.textures.0.len();
+            let params = TextureParams {
+                width: 2,
+                height: 2,
+                ..TextureParams::default()
+            };
+            // One byte short of `params.format.size(2, 2)`.
+            let short_bytes = vec![0_u8; params.format.size(2, 2) as usize - 1];
+            assert!(catch_unwind(AssertUnwindSafe(|| {
+                context.new_texture(
+                    TextureAccess::Static,
+                    TextureSource::Bytes(&short_bytes),
+                    params,
+                )
+            }))
+            .is_err());
+            assert_eq!(
+                context.textures.0.len(),
+                textures_before,
+                "a rejected texture must not publish a retained sampler/texture slot"
+            );
+        });
+    }
+}
 impl RenderingBackend for MetalContext {
     fn info(&self) -> ContextInfo {
         ContextInfo {
@@ -506,15 +897,18 @@ impl RenderingBackend for MetalContext {
             },
         }
     }
+
     fn buffer_size(&mut self, buffer: BufferId) -> usize {
         self.buffer(buffer).size
     }
     fn delete_buffer(&mut self, buffer_id: BufferId) {
-        // `remove` panics (via `Option::unwrap`) on an id that was
-        // never issued or was already deleted, so a double
-        // `delete_buffer` fails in a defined way instead of
-        // double-releasing or silently no-oping.
         let buffer = self.buffers.remove(buffer_id.0);
+        if self
+            .index_buffer
+            .is_some_and(|raw| buffer.raw.contains(&raw))
+        {
+            self.index_buffer = None;
+        }
         unsafe {
             for raw in &buffer.raw {
                 msg_send_![*raw, release];
@@ -569,15 +963,11 @@ impl RenderingBackend for MetalContext {
             MipmapFilterMode::Linear => MTLSamplerMipFilter::Linear,
         };
 
-        texture.sampler = unsafe {
-            let sampler_descriptor = msg_send_![class!(MTLSamplerDescriptor), new];
-            msg_send_![sampler_descriptor, setMinFilter: filter];
-            msg_send_![sampler_descriptor, setMipFilter: mipmap_filter];
-            msg_send_![
-                self.device,
-                newSamplerStateWithDescriptor: sampler_descriptor
-            ]
-        };
+        unsafe {
+            msg_send_![texture.sampler_descriptor, setMinFilter: filter];
+            msg_send_![texture.sampler_descriptor, setMipFilter: mipmap_filter];
+        }
+        texture.update_sampler(self.device);
     }
     fn texture_set_mag_filter(&mut self, texture: TextureId, filter: FilterMode) {
         let texture = self.textures.get_mut(texture);
@@ -587,10 +977,10 @@ impl RenderingBackend for MetalContext {
             FilterMode::Linear => MTLSamplerMinMagFilter::Linear,
         };
 
-        texture.sampler = unsafe {
+        unsafe {
             msg_send_![texture.sampler_descriptor, setMagFilter: filter];
-            msg_send_![self.device, newSamplerStateWithDescriptor: texture.sampler_descriptor]
-        };
+        }
+        texture.update_sampler(self.device);
     }
     fn texture_set_wrap(&mut self, texture: TextureId, wrap_x: TextureWrap, wrap_y: TextureWrap) {
         let texture = self.textures.get_mut(texture);
@@ -607,12 +997,11 @@ impl RenderingBackend for MetalContext {
             TextureWrap::Clamp => MTLSamplerAddressMode::ClampToEdge,
         };
 
-        texture.sampler = unsafe {
-            //msg_send_![texture.sampler_descriptor, setRAddressMode: wrap];
+        unsafe {
             msg_send_![texture.sampler_descriptor, setSAddressMode: wrap_s];
             msg_send_![texture.sampler_descriptor, setTAddressMode: wrap_t];
-            msg_send_![self.device, newSamplerStateWithDescriptor: texture.sampler_descriptor]
-        };
+        }
+        texture.update_sampler(self.device);
     }
     fn texture_resize(
         &mut self,
@@ -689,8 +1078,10 @@ impl RenderingBackend for MetalContext {
         unsafe {
             let render_pass_desc =
                 msg_send_![class!(MTLRenderPassDescriptor), renderPassDescriptor];
-            msg_send_![render_pass_desc, retain];
-            assert!(!render_pass_desc.is_null());
+            let descriptor_owner = RcObjcId::from_unowned(
+                NonNull::new(render_pass_desc)
+                    .expect("Metal: render pass descriptor creation failed"),
+            );
             for (i, color_img) in color_img.iter().enumerate() {
                 let color_texture = self.textures.get(*color_img).texture;
                 let color_attachment = msg_send_![msg_send_![render_pass_desc, colorAttachments], objectAtIndexedSubscript:i];
@@ -723,7 +1114,7 @@ impl RenderingBackend for MetalContext {
                 msg_send_![stencil_attachment, setTexture: depth_texture];
             }
             let pass = RenderPassInternal {
-                render_pass_desc,
+                render_pass_desc: descriptor_owner.forget().as_ptr(),
                 texture: color_img.to_vec(),
                 _depth_texture: depth_img,
             };
@@ -733,6 +1124,13 @@ impl RenderingBackend for MetalContext {
     }
 
     fn delete_render_pass(&mut self, render_pass: RenderPass) {
+        if self.current_pass_target == Some(Some(render_pass)) {
+            assert!(
+                self.pending_end_encoder,
+                "Metal: cannot delete an active render pass"
+            );
+            self.really_end_encoder();
+        }
         let render_pass = self.passes.remove(render_pass.0);
         unsafe {
             msg_send_![render_pass.render_pass_desc, release];
@@ -779,11 +1177,7 @@ impl RenderingBackend for MetalContext {
                           options:options]
             }
         };
-        // `newBufferWithBytes:length:options:` / `newBufferWithLength:options:`
-        // already hand back an owned (+1) `MTLBuffer` per the
-        // Cocoa `new`/`alloc`/`copy` ownership rule — no extra
-        // `retain` is needed, and an extra one would leave
-        // `delete_buffer`'s single `release` one reference short.
+        assert!(!buffer.is_null(), "Metal: buffer creation failed");
         let buffer = Buffer {
             raw: vec![buffer],
             size,
@@ -805,22 +1199,25 @@ impl RenderingBackend for MetalContext {
 
         // Grow `raw` lazily on first hit of a new per-frame max.
         if buffer.next_value >= buffer.raw.len() {
-            // `new` already yields an owned (+1) slot; see the
-            // matching note in `new_buffer`.
             let new_slot: ObjcId = unsafe {
                 msg_send![device,
                           newBufferWithLength:buffer.size
                           options:buffer.options]
             };
+            assert!(!new_slot.is_null(), "Metal: backing buffer creation failed");
             buffer.raw.push(new_slot);
         }
 
-        unsafe {
-            let dest: *mut std::ffi::c_void = msg_send![buffer.raw[buffer.next_value], contents];
-            std::ptr::copy(data.ptr, dest, data.size);
+        if data.size != 0 {
+            unsafe {
+                let dest: *mut std::ffi::c_void =
+                    msg_send![buffer.raw[buffer.next_value], contents];
+                assert!(!dest.is_null(), "Metal: buffer contents are unavailable");
+                std::ptr::copy(data.ptr, dest, data.size);
 
-            #[cfg(target_os = "macos")]
-            msg_send_![buffer.raw[buffer.next_value], didModifyRange:NSRange::new(0, data.size as u64)];
+                #[cfg(target_os = "macos")]
+                msg_send_![buffer.raw[buffer.next_value], didModifyRange:NSRange::new(0, data.size as u64)];
+            }
         }
         buffer.value = buffer.next_value;
     }
@@ -844,25 +1241,34 @@ impl RenderingBackend for MetalContext {
                 error: &mut error
             ];
             if library.is_null() {
-                let description: ObjcId = msg_send![error, localizedDescription];
-                let string = apple_util::nsstring_to_string(description);
-                panic!("Shader {}", string);
+                let message = if error.is_null() {
+                    "Metal shader compilation failed without a diagnostic".to_owned()
+                } else {
+                    let description: ObjcId = msg_send![error, localizedDescription];
+                    apple_util::nsstring_to_string(description)
+                };
+                return Err(ShaderError::LinkError(message));
             }
+            let library_owner = RcObjcId::from_owned(
+                NonNull::new(library).expect("Metal: shader library is unavailable"),
+            );
 
             let vertex_function: ObjcId = msg_send![library, newFunctionWithName: apple_util::str_to_nsstring("vertexShader")];
-            assert!(!vertex_function.is_null());
+            let vertex_owner =
+                RcObjcId::from_owned(NonNull::new(vertex_function).ok_or_else(|| {
+                    ShaderError::LinkError("Metal: vertexShader entry point is missing".to_owned())
+                })?);
             let fragment_function: ObjcId = msg_send![library, newFunctionWithName: apple_util::str_to_nsstring("fragmentShader")];
-            assert!(!fragment_function.is_null());
-            // `newFunctionWithName:` retains the owning library
-            // internally, so the library itself does not need to
-            // outlive this call. `newLibraryWithSource:...` gave us
-            // an owned (+1) reference that nothing else holds;
-            // release it here instead of leaking one `MTLLibrary`
-            // per `new_shader` call.
-            msg_send_![library, release];
+            let fragment_owner =
+                RcObjcId::from_owned(NonNull::new(fragment_function).ok_or_else(|| {
+                    ShaderError::LinkError(
+                        "Metal: fragmentShader entry point is missing".to_owned(),
+                    )
+                })?);
+            drop(library_owner);
             let shader = ShaderInternal {
-                vertex_function,
-                fragment_function,
+                vertex_function: vertex_owner.forget().as_ptr(),
+                fragment_function: fragment_owner.forget().as_ptr(),
             };
             Ok(ShaderId(self.shaders.add(shader)))
         }
@@ -881,10 +1287,14 @@ impl RenderingBackend for MetalContext {
                        height: params.height as u64
                        mipmapped: params.allocate_mipmaps as BOOL]
         };
+        // `texture2DDescriptorWithPixelFormat:...` is a convenience
+        // constructor (not `alloc`/`new`/`copy`), so it returns an
+        // autoreleased object that this function must not release.
+        assert!(
+            !descriptor.is_null(),
+            "Metal: texture descriptor creation failed"
+        );
 
-        // unsafe {
-        //     msg_send_![descriptor, retain];
-        // }
         unsafe {
             msg_send_![descriptor, setCpuCacheMode: MTLCPUCacheMode::DefaultCache];
 
@@ -895,8 +1305,7 @@ impl RenderingBackend for MetalContext {
                     // MTKView's presentable formats are all `BGRA*` /
                     // `RGBA16Float` so honoring `RGBA8` literally
                     // would break every offscreen color target.
-                    let view_pixel_format: MTLPixelFormat =
-                        msg_send![self.view, colorPixelFormat];
+                    let view_pixel_format: MTLPixelFormat = msg_send![self.view, colorPixelFormat];
                     msg_send_![descriptor, setPixelFormat: view_pixel_format];
                 }
                 msg_send_![descriptor, setStorageMode: MTLStorageMode::Private];
@@ -952,15 +1361,33 @@ impl RenderingBackend for MetalContext {
             },
         }
 
+        // Validate source bytes before any Objective-C object is
+        // created: a late panic here must not leave a retained
+        // sampler/texture published in `self.textures.0` with no
+        // `TextureId` to delete it.
+        match &bytes {
+            TextureSource::Empty => {}
+            TextureSource::Bytes(bytes) => {
+                assert_eq!(
+                    params.format.size(params.width, params.height) as usize,
+                    bytes.len()
+                );
+            }
+            TextureSource::Array(array) => {
+                for face in array.iter() {
+                    for bytes in face.iter() {
+                        assert!(bytes.len() as u32 == params.width * params.height * 4);
+                    }
+                }
+            }
+        }
+
         let texture = unsafe {
-            // `[MTLSamplerDescriptor new]` already yields an owned
-            // (+1) object per the Cocoa `new`/`alloc`/`copy` rule;
-            // the extra `retain` previously here double-counted
-            // ownership so `Textures::delete`'s single `release`
-            // left one reference behind every time. `sampler_descriptor`
-            // is kept alive in `Texture` for `texture_set_mag_filter`
-            // / `texture_set_wrap` to mutate and reuse later.
             let sampler_descriptor = msg_send_![class!(MTLSamplerDescriptor), new];
+            let descriptor_owner = RcObjcId::from_owned(
+                NonNull::new(sampler_descriptor)
+                    .expect("Metal: sampler descriptor creation failed"),
+            );
             let min_filter = match params.min_filter {
                 FilterMode::Nearest => MTLSamplerMinMagFilter::Nearest,
                 FilterMode::Linear => MTLSamplerMinMagFilter::Linear,
@@ -984,28 +1411,28 @@ impl RenderingBackend for MetalContext {
                 self.device,
                 newSamplerStateWithDescriptor: sampler_descriptor
             ];
-            // Same over-retain as `sampler_descriptor` above:
-            // `newTextureWithDescriptor:` already returns an owned
-            // reference.
+            let sampler_owner = RcObjcId::from_owned(
+                NonNull::new(sampler_state).expect("Metal: sampler creation failed"),
+            );
             let raw_texture = msg_send_![self.device, newTextureWithDescriptor: descriptor];
+            let texture_owner = RcObjcId::from_owned(
+                NonNull::new(raw_texture).expect("Metal: texture creation failed"),
+            );
             self.textures.0.push(Texture {
-                sampler: sampler_state,
-                texture: raw_texture,
-                sampler_descriptor,
+                sampler: sampler_owner.forget().as_ptr(),
+                texture: texture_owner.forget().as_ptr(),
+                sampler_descriptor: descriptor_owner.forget().as_ptr(),
                 params,
                 freed: false,
             });
             TextureId(TextureIdInner::Managed(self.textures.0.len() - 1))
         };
 
+        // Lengths were already validated above, before any object
+        // in this texture was published.
         match bytes {
             TextureSource::Empty => {}
             TextureSource::Bytes(bytes) => {
-                assert_eq!(
-                    params.format.size(params.width, params.height) as usize,
-                    bytes.len()
-                );
-
                 self.texture_update_part(
                     texture,
                     0,
@@ -1031,7 +1458,6 @@ impl RenderingBackend for MetalContext {
                                 depth: 1,
                             },
                         };
-                        assert!(bytes.len() as u32 == params.width * params.height * 4);
                         unsafe {
                             msg_send_![raw_texture, replaceRegion:region
                                   mipmapLevel:mipmap_level
@@ -1136,6 +1562,9 @@ impl RenderingBackend for MetalContext {
             }
 
             let descriptor = msg_send_![class!(MTLRenderPipelineDescriptor), new];
+            let _descriptor_owner = RcObjcId::from_owned(
+                NonNull::new(descriptor).expect("Metal: pipeline descriptor creation failed"),
+            );
             msg_send_![descriptor, setVertexFunction:shader_internal.vertex_function];
             msg_send_![descriptor, setFragmentFunction:shader_internal.fragment_function];
             msg_send_![descriptor, setVertexDescriptor: vertex_descriptor];
@@ -1220,18 +1649,22 @@ impl RenderingBackend for MetalContext {
                 error: &mut error
             ];
             if pipeline_state.is_null() {
-                let description: ObjcId = msg_send![error, localizedDescription];
-                let string = apple_util::nsstring_to_string(description);
-                panic!("newRenderPipelineStateWithDescriptor error: {}", string);
+                let message = if error.is_null() {
+                    "Metal pipeline creation failed without a diagnostic".to_owned()
+                } else {
+                    let description: ObjcId = msg_send![error, localizedDescription];
+                    apple_util::nsstring_to_string(description)
+                };
+                panic!("Metal: pipeline creation failed: {}", message);
             }
-            // `descriptor` (`[MTLRenderPipelineDescriptor new]`) is
-            // an owned (+1) transient: `pipeline_state` captures
-            // the settings it needs and does not keep the
-            // descriptor alive, so release it here instead of
-            // leaking one per `new_pipeline` call.
-            msg_send_![descriptor, release];
+            let pipeline_owner = RcObjcId::from_owned(
+                NonNull::new(pipeline_state).expect("Metal: pipeline is unavailable"),
+            );
 
             let depth_stencil_desc = msg_send_![class!(MTLDepthStencilDescriptor), new];
+            let _depth_descriptor_owner = RcObjcId::from_owned(
+                NonNull::new(depth_stencil_desc).expect("Metal: depth descriptor creation failed"),
+            );
             msg_send_![depth_stencil_desc, setDepthWriteEnabled: BOOL::from(params.depth_write)];
             msg_send_![depth_stencil_desc, setDepthCompareFunction: MTLCompareFunction::from(params.depth_test)];
 
@@ -1263,14 +1696,13 @@ impl RenderingBackend for MetalContext {
                 self.device,
                 newDepthStencilStateWithDescriptor: depth_stencil_desc
             ];
-            // Same transient-descriptor pattern as `descriptor`
-            // above: `depth_stencil_state` does not need
-            // `depth_stencil_desc` to remain alive afterward.
-            msg_send_![depth_stencil_desc, release];
+            let depth_owner = RcObjcId::from_owned(
+                NonNull::new(depth_stencil_state).expect("Metal: depth state creation failed"),
+            );
 
             let pipeline = PipelineInternal {
-                pipeline_state,
-                depth_stencil_state,
+                pipeline_state: pipeline_owner.forget().as_ptr(),
+                depth_stencil_state: depth_owner.forget().as_ptr(),
                 //layout: buffer_layout.to_vec(),
                 //attributes: vertex_layout,
                 _shader: shader,
@@ -1418,8 +1850,7 @@ impl RenderingBackend for MetalContext {
                     // both transition to the new size one frame before
                     // `currentDrawable`'s texture is recreated; reading
                     // the attachment directly avoids the gap.
-                    let descriptor: ObjcId =
-                        msg_send_![self.view, currentRenderPassDescriptor];
+                    let descriptor: ObjcId = msg_send_![self.view, currentRenderPassDescriptor];
                     let color_attachments: ObjcId = msg_send_![descriptor, colorAttachments];
                     let attachment: ObjcId =
                         msg_send_![color_attachments, objectAtIndexedSubscript: 0];

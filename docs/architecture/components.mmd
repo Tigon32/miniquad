@@ -13,3 +13,5 @@ flowchart LR
     GL --> GPU["Browser GPU service"]
     Public -.->|"Native target selection"| Native["src/native/windows.rs, macos.rs, linux_x11.rs, android.rs"]
     Bridge -->|"Version and ownership contract"| ABI["docs/wasm-transfer-abi-v3.md"]
+    App -.->|"Proposed isolated proof only"| Proof["WebGPU integration candidates - MADR 0015"]
+    Proof -.->|"Proposed asynchronous adapter and device setup"| WebGPU["Browser WebGPU"]

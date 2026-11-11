@@ -55,6 +55,12 @@ Use [MADR 0002](docs/adr/0002-risk-based-verification-and-selective-tdd.md) to s
 An editorial change does not need a new behavior test.
 A bug fix must have a regression test when a repeatable test is possible.
 
+Use [MADR 0014](docs/adr/0014-minimal-code-comments-and-tracked-work.md) for code comments.
+Add a comment only when it gives necessary information that clear code does not express.
+Keep safety contracts, useful public API documentation, and licence notices.
+Evaluate old TODOs against the code and tests. Track valid work in issues.
+Do not remove an unresolved obligation merely to reduce the TODO count.
+
 Before you change an architecture boundary or public contract, write or revise a MADR.
 Include the alternatives, decision status, and observed evidence.
 Update the affected glossary terms, diagrams, tests, and guides in the same PR.

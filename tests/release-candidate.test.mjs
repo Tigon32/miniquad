@@ -20,6 +20,7 @@ import {
   ManifestError,
   scanForLeaks,
   evaluateGate,
+  gate,
 } from "../scripts/release-candidate.mjs";
 
 import {
@@ -507,10 +508,10 @@ function buildValidGateRecord() {
     contracts: { abiVersion: 3, starterParamsVersion: 1 },
     packages: { baselineManifestSha256: "x".repeat(64), candidateManifestSha256: "y".repeat(64), reproducible: true },
     ci: [
-      { workflow: "Miniquad integration CI", job: "rust-wasm", conclusion: "success" },
-      { workflow: "Miniquad three-engine browser acceptance", job: "engines", conclusion: "success" },
-      { workflow: "Security advisory review", job: "all", conclusion: "success" },
-      { workflow: "Miniquad release candidate", job: "reference", conclusion: "success" },
+      { workflow: "Miniquad integration CI", job: "rust-wasm", conclusion: "success", sha: "c".repeat(40) },
+      { workflow: "Miniquad three-engine browser acceptance", job: "engines", conclusion: "success", sha: "c".repeat(40) },
+      { workflow: "Security advisory review", job: "all", conclusion: "success", sha: "c".repeat(40) },
+      { workflow: "Miniquad release candidate", job: "reference", conclusion: "success", sha: "c".repeat(40) },
     ],
     compare: true,
     drill: {
@@ -519,7 +520,7 @@ function buildValidGateRecord() {
     },
     regression: {
       profileId: "gha-ubuntu-24.04-x64-pw1.56.1",
-      runs: [{ runId: "1", result: "PASS" }],
+      runs: [{ runId: "1", result: "PASS", profile: "gha-ubuntu-24.04-x64-pw1.56.1" }],
       result: "PASS",
       metrics: {},
     },
@@ -582,7 +583,8 @@ test("evaluateGate gives BLOCKED for a bootstrap baseline when a .release tag ex
 
 test("evaluateGate gives FAILED for a regression FAIL", () => {
   const record = buildValidGateRecord();
-  record.regression.runs.push({ runId: "2", result: "FAIL" });
+  record.regression.runs.push({ runId: "2", result: "FAIL", profile: "gha-ubuntu-24.04-x64-pw1.56.1" });
+  record.regression.result = "FAIL";
   const { result } = evaluateGate(record);
   assert.equal(result, "FAILED");
 });
@@ -592,6 +594,141 @@ test("evaluateGate gives BLOCKED when a waiver is recorded", () => {
   record.review.waivers = [{ check: "regression", scope: "warmFrameIntervalP95Ms", risk: "low", owner: "Tigon32", expiry: "2026-12-01" }];
   const { result } = evaluateGate(record);
   assert.equal(result, "BLOCKED");
+});
+
+// ---------------------------------------------------------------------
+// evaluateGate: regressions for reported fail-open routes to a false
+// QUALIFIED-CANDIDATE result. Each test first documents the exact pre-fix
+// behavior it reproduces, then asserts the strict post-fix behavior.
+// ---------------------------------------------------------------------
+
+test("evaluateGate gives BLOCKED when ci is present but is not the collected job list (was QUALIFIED-CANDIDATE)", () => {
+  const record = buildValidGateRecord();
+  record.ci = {}; // non-array `ci` used to satisfy requireField and skip every CI check
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "BLOCKED", reasons.join("; "));
+  assert.ok(reasons.some((r) => r.includes("ci is missing or is not the list")));
+});
+
+test("evaluateGate gives BLOCKED when a required CI job is missing from the list", () => {
+  const record = buildValidGateRecord();
+  record.ci = record.ci.filter((entry) => entry.workflow !== "Security advisory review");
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "BLOCKED", reasons.join("; "));
+});
+
+test("evaluateGate gives BLOCKED when a required CI job's evidence is for a different SHA than candidateSha", () => {
+  const record = buildValidGateRecord();
+  record.ci = record.ci.map((entry) => ({ ...entry, sha: "a".repeat(40) }));
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "BLOCKED", reasons.join("; "));
+  assert.ok(reasons.some((r) => r.includes("not recorded for the candidate SHA")));
+});
+
+test("evaluateGate gives BLOCKED when drill.local did not record PASS (was QUALIFIED-CANDIDATE)", () => {
+  const record = buildValidGateRecord();
+  record.drill.local = {}; // missing `result` used to pass silently
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "BLOCKED", reasons.join("; "));
+  assert.ok(reasons.some((r) => r.includes("Local drill result")));
+});
+
+test("evaluateGate gives BLOCKED when compare is absent (was QUALIFIED-CANDIDATE)", () => {
+  const record = buildValidGateRecord();
+  delete record.compare; // only `=== false` was ever checked; absent compare was never blocked
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "BLOCKED", reasons.join("; "));
+  assert.ok(reasons.some((r) => r.includes("compare is missing")));
+});
+
+test("evaluateGate gives BLOCKED when candidateSha or toolSha is not a real commit SHA (was QUALIFIED-CANDIDATE)", () => {
+  const record = buildValidGateRecord();
+  record.candidateSha = "not-a-real-sha";
+  record.toolSha = "also-not-real";
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "BLOCKED", reasons.join("; "));
+  assert.ok(reasons.some((r) => r.includes("candidateSha is not a 40-character")));
+});
+
+test("evaluateGate gives BLOCKED when baseline.sha equals candidateSha", () => {
+  const record = buildValidGateRecord();
+  record.baseline.sha = record.candidateSha;
+  const { result } = evaluateGate(record);
+  assert.equal(result, "BLOCKED");
+});
+
+test("evaluateGate gives BLOCKED when regression.result cherry-picks an earlier PASS over the newest retained run (was QUALIFIED-CANDIDATE)", () => {
+  const record = buildValidGateRecord();
+  const profile = record.regression.profileId;
+  record.regression.runs = [
+    { runId: "1", result: "PASS", profile },
+    { runId: "2", result: "INCONCLUSIVE", profile },
+  ];
+  record.regression.result = "PASS"; // claims the earlier PASS despite the newest run being INCONCLUSIVE
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "BLOCKED", reasons.join("; "));
+  assert.ok(reasons.some((r) => r.includes("does not match the newest retained run")));
+});
+
+test("evaluateGate gives BLOCKED when a retained regression run is not from the declared reference profile", () => {
+  const record = buildValidGateRecord();
+  record.regression.runs = [{ runId: "1", result: "PASS", profile: "local-macos-shared-rehearsal" }];
+  const { result } = evaluateGate(record);
+  assert.equal(result, "BLOCKED");
+});
+
+test("evaluateGate gives BLOCKED when more than three regression runs are retained", () => {
+  const record = buildValidGateRecord();
+  const profile = record.regression.profileId;
+  record.regression.runs = [
+    { runId: "1", result: "PASS", profile },
+    { runId: "2", result: "PASS", profile },
+    { runId: "3", result: "PASS", profile },
+    { runId: "4", result: "PASS", profile },
+  ];
+  const { result } = evaluateGate(record);
+  assert.equal(result, "BLOCKED");
+});
+
+test("evaluateGate gives BLOCKED when sizes.brotliTotalDelta is missing or not a number", () => {
+  const record = buildValidGateRecord();
+  delete record.sizes.brotliTotalDelta;
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "BLOCKED", reasons.join("; "));
+});
+
+test("gate CLI reports a failing exit code for a BLOCKED record and does not report success", () => {
+  const dir = mkdtempSync(join(tmpdir(), "release-gate-test-"));
+  const record = buildValidGateRecord();
+  delete record.compare;
+  const recordPath = join(dir, "gate.json");
+  writeFileSyncFs(recordPath, JSON.stringify(record));
+  const previousExitCode = process.exitCode;
+  process.exitCode = 0;
+  try {
+    const { result } = gate({ record: recordPath });
+    assert.equal(result, "BLOCKED");
+    assert.notEqual(process.exitCode, 0, "gate must not report a successful exit code for a BLOCKED record");
+  } finally {
+    process.exitCode = previousExitCode;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("gate CLI reports a successful exit code for a QUALIFIED-CANDIDATE record", () => {
+  const dir = mkdtempSync(join(tmpdir(), "release-gate-test-"));
+  const recordPath = join(dir, "gate.json");
+  writeFileSyncFs(recordPath, JSON.stringify(buildValidGateRecord()));
+  const previousExitCode = process.exitCode;
+  process.exitCode = 0;
+  try {
+    const { result } = gate({ record: recordPath });
+    assert.equal(result, "QUALIFIED-CANDIDATE");
+    assert.equal(process.exitCode, 0);
+  } finally {
+    process.exitCode = previousExitCode;
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 // ---------------------------------------------------------------------

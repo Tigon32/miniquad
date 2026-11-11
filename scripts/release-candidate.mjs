@@ -453,6 +453,15 @@ const REQUIRED_CI_JOBS = [
   ["Security advisory review", "all"],
   ["Miniquad release candidate", "reference"],
 ];
+const SHA_HEX_RE = /^[0-9a-f]{40}$/;
+const REGRESSION_RESULTS = new Set(["PASS", "FAIL", "INCONCLUSIVE"]);
+
+/** `true` only for a 40-character lowercase hexadecimal commit SHA. Used
+ * to fail closed on a candidate/tool/baseline SHA field that is missing,
+ * the wrong type, or not a real commit SHA (section 9.2). */
+function isCommitSha(value) {
+  return typeof value === "string" && SHA_HEX_RE.test(value);
+}
 
 export function evaluateGate(record) {
   const reasons = [];
@@ -472,34 +481,119 @@ export function evaluateGate(record) {
     reasons.push("packages.reproducible is not true");
   }
 
-  if (Array.isArray(record?.ci)) {
+  // Section 9.2/9.3: candidateSha, toolSha, and baseline.sha must each be a
+  // real 40-character lowercase hex commit SHA, and the baseline must not be
+  // the candidate itself. A string that merely passes the REQUIRED_GATE_FIELDS
+  // non-empty check (e.g. "not-a-real-sha") must still fail closed here.
+  for (const [name, value] of [
+    ["candidateSha", record?.candidateSha],
+    ["toolSha", record?.toolSha],
+    ["baseline.sha", record?.baseline?.sha],
+  ]) {
+    if (!isCommitSha(value)) {
+      blocked = true;
+      reasons.push(`${name} is not a 40-character lowercase hex commit SHA`);
+    }
+  }
+  if (isCommitSha(record?.candidateSha) && isCommitSha(record?.baseline?.sha) && record.candidateSha === record.baseline.sha) {
+    blocked = true;
+    reasons.push("baseline.sha must not equal candidateSha");
+  }
+
+  // Section 9.1/9.3: `ci` must be the actual list of collected job results,
+  // not merely present. A non-array value (e.g. `{}`) must not silently skip
+  // every required-CI-job check; it must block instead. Each required job's
+  // evidence must also be for the exact candidateSha, not a stale or
+  // unrelated run (no substituting evidence from a different commit).
+  if (!Array.isArray(record?.ci) || record.ci.length === 0) {
+    blocked = true;
+    reasons.push("ci is missing or is not the list of collected CI job results");
+  } else {
     for (const [workflow, job] of REQUIRED_CI_JOBS) {
-      const found = record.ci.find((entry) => entry.workflow === workflow && (entry.job === job || job === "all"));
-      if (!found || found.conclusion !== "success") {
-        if (found?.conclusion === "failure") failed = true;
-        else blocked = true;
+      const found = record.ci.find((entry) => entry && entry.workflow === workflow && (entry.job === job || job === "all"));
+      if (!found) {
+        blocked = true;
+        reasons.push(`Required CI job not present: ${workflow} / ${job}`);
+        continue;
+      }
+      if (found.conclusion === "failure") {
+        failed = true;
+        reasons.push(`Required CI job failed: ${workflow} / ${job}`);
+      } else if (found.conclusion !== "success") {
+        blocked = true;
         reasons.push(`Required CI job not successful: ${workflow} / ${job}`);
+      }
+      if (!isCommitSha(found.sha) || found.sha !== record?.candidateSha) {
+        blocked = true;
+        reasons.push(`Required CI job evidence is not recorded for the candidate SHA: ${workflow} / ${job}`);
       }
     }
   }
 
+  // Section 9.3: `compare` must be the recorded boolean result, not merely
+  // non-false. An absent or wrong-typed `compare` field is missing evidence,
+  // not a pass.
   if (record?.compare === false) {
     failed = true;
     reasons.push("compare did not pass");
+  } else if (record?.compare !== true) {
+    blocked = true;
+    reasons.push("compare is missing or is not a boolean result");
   }
 
+  // Section 6.2/9.1: both the reference-profile drill and the local
+  // rollout/rollback exercise must each independently record PASS. A
+  // `drill.local` of `{}` (no `result` at all) must not count as passing.
   if (record?.drill?.reference?.result === "FAIL" || record?.drill?.local?.result === "FAIL") {
     failed = true;
     reasons.push("Drill result is FAIL");
-  } else if (record?.drill?.reference?.result !== "PASS") {
+  }
+  if (record?.drill?.reference?.result !== "PASS") {
     blocked = true;
     reasons.push("Reference drill result is missing or not PASS");
   }
+  if (record?.drill?.local?.result !== "PASS") {
+    blocked = true;
+    reasons.push("Local drill result is missing or not PASS");
+  }
 
-  const regressionRuns = record?.regression?.runs ?? [];
-  if (regressionRuns.some((run) => run.result === "FAIL")) {
-    failed = true;
-    reasons.push("A retained regression run is FAIL");
+  // Section 7.5/9.3: evaluate the actual retained regression runs, not only
+  // the asserted top-level `regression.result`. The newest retained run
+  // (last in the array; the tool never drops or reorders a run) must be the
+  // one that determines `regression.result` -- a record must not cherry-pick
+  // an earlier PASS while the newest retained run is INCONCLUSIVE or absent.
+  // Every retained run must also be from the declared reference profile: a
+  // local rehearsal result must never be substituted into `regression.runs`.
+  const regressionRuns = record?.regression?.runs;
+  if (!Array.isArray(regressionRuns) || regressionRuns.length === 0) {
+    blocked = true;
+    reasons.push("regression.runs is missing or empty");
+  } else {
+    if (regressionRuns.some((run) => run?.result === "FAIL")) {
+      failed = true;
+      reasons.push("A retained regression run is FAIL");
+    }
+    const malformedRun = regressionRuns.find(
+      (run) =>
+        !run ||
+        typeof run.runId !== "string" ||
+        run.runId === "" ||
+        !REGRESSION_RESULTS.has(run.result) ||
+        run.profile !== record?.regression?.profileId,
+    );
+    if (malformedRun) {
+      blocked = true;
+      reasons.push("A retained regression run is malformed, has an unrecognized result, or is not from the declared reference profile");
+    }
+    if (regressionRuns.length > 3) {
+      blocked = true;
+      reasons.push("More than three retained regression runs are recorded for one candidate label");
+    }
+    const newestRun = regressionRuns[regressionRuns.length - 1];
+    if (!newestRun || newestRun.result !== record?.regression?.result) {
+      blocked = true;
+      reasons.push("regression.result does not match the newest retained run's result");
+    }
   }
   if (record?.regression?.result !== "PASS") {
     blocked = true;
@@ -518,6 +612,10 @@ export function evaluateGate(record) {
     if (derived !== coreToString(record?.compatibility?.derivedCore ?? {}) || derived !== labelCore) {
       blocked = true;
       reasons.push("compatibility.derivedCore differs from the label core");
+    }
+    if (record?.label && record?.tag && formatTag(record.label) !== record.tag) {
+      blocked = true;
+      reasons.push("tag does not match formatTag(label)");
     }
   } catch {
     blocked = true;
@@ -558,8 +656,10 @@ export function evaluateGate(record) {
     blocked = true;
     reasons.push("A waiver is recorded; a waiver keeps the result BLOCKED");
   }
-  const sizeIncreased = record?.sizes?.brotliTotalDelta > 0;
-  if (sizeIncreased && review.sizeIncreaseAccepted !== true) {
+  if (typeof record?.sizes?.brotliTotalDelta !== "number" || !Number.isFinite(record.sizes.brotliTotalDelta)) {
+    blocked = true;
+    reasons.push("sizes.brotliTotalDelta is missing or is not a finite number");
+  } else if (record.sizes.brotliTotalDelta > 0 && review.sizeIncreaseAccepted !== true) {
     blocked = true;
     reasons.push("Size increased without review.sizeIncreaseAccepted");
   }
@@ -1050,7 +1150,7 @@ export function collectCi(options) {
     ]).toString("utf8");
   } catch (error) {
     for (const required of REQUIRED_WORKFLOWS) {
-      results.push({ ...required, conclusion: "absent", reason: `gh api failed: ${error.message}` });
+      results.push({ ...required, conclusion: "absent", sha, reason: `gh api failed: ${error.message}` });
     }
     writeOut(options.out, results);
     return results;
@@ -1062,14 +1162,14 @@ export function collectCi(options) {
       .sort((x, y) => new Date(y.created_at) - new Date(x.created_at));
     const newest = matching[0];
     if (!newest) {
-      results.push({ ...required, conclusion: "absent", runId: null, jobId: null, url: null });
+      results.push({ ...required, conclusion: "absent", sha: null, runId: null, jobId: null, url: null });
       continue;
     }
     let jobsRaw;
     try {
       jobsRaw = execFileSync("gh", ["api", `repos/Tigon32/miniquad/actions/runs/${newest.id}/jobs`]).toString("utf8");
     } catch (error) {
-      results.push({ ...required, conclusion: "absent", runId: newest.id, jobId: null, url: newest.html_url, reason: error.message });
+      results.push({ ...required, conclusion: "absent", sha: newest.head_sha, runId: newest.id, jobId: null, url: newest.html_url, reason: error.message });
       continue;
     }
     const jobs = JSON.parse(jobsRaw).jobs ?? [];
@@ -1078,6 +1178,7 @@ export function collectCi(options) {
       results.push({
         ...required,
         conclusion: allSuccess ? "success" : (jobs.some((j) => j.conclusion === "failure") ? "failure" : (newest.status === "completed" ? "incomplete" : newest.status)),
+        sha: newest.head_sha,
         runId: newest.id,
         jobId: jobs.map((j) => j.id),
         url: newest.html_url,
@@ -1087,6 +1188,7 @@ export function collectCi(options) {
       results.push({
         ...required,
         conclusion: job?.conclusion ?? (newest.status === "completed" ? "incomplete" : newest.status),
+        sha: newest.head_sha,
         runId: newest.id,
         jobId: job?.id ?? null,
         url: newest.html_url,

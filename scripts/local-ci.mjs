@@ -78,6 +78,7 @@ export function buildCommand(options, { root, run, cache, architecture }) {
     "--var-file", join(run, "empty"),
     "--input-file", join(run, "empty"),
     "--env", "PLAYWRIGHT_BROWSERS_PATH=/ms-playwright",
+    "--env", "NODE_USE_SYSTEM_CA=1",
     "--container-options", [
       `--mount ${JSON.stringify(`type=bind,"source=${join(run, "source.bundle").replaceAll('"', '""')}",target=/miniquad-source.bundle,readonly`)}`,
       `--mount type=volume,source=miniquad-act-v1-${suffix}-cargo,target=/root/.cargo`,

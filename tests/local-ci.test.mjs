@@ -23,6 +23,7 @@ test("both local runners select only the existing required test job", () => {
   assert.deepEqual(extension.args, ["act", ...direct.args]);
   assert.equal(direct.args[direct.args.indexOf("--job") + 1], "rust-wasm");
   assert.equal(direct.args[direct.args.indexOf("--workflows") + 1], join(paths.root, ".github/workflows/integration-ci.yml"));
+  assert.ok(direct.args.includes("NODE_USE_SYSTEM_CA=1"));
   assert.ok(direct.args.includes("--rm"));
 });
 
@@ -39,9 +40,13 @@ test("local CI does not inherit authentication, SSH, personal configuration, or 
     PATH: "/bin", HOME: "/personal", XDG_CONFIG_HOME: "/personal/config",
     GH_TOKEN: "test-only", GITHUB_TOKEN: "test-only", SSH_AUTH_SOCK: "/agent",
     NODE_OPTIONS: "--require unsafe.cjs", CARGO_REGISTRY_TOKEN: "test-only",
+    NODE_TLS_REJECT_UNAUTHORIZED: "0", NODE_USE_SYSTEM_CA: "0", NODE_EXTRA_CA_CERTS: "/personal/ca.pem",
   };
   const result = isolatedEnvironment(original, "/isolated", "unix:///docker.sock", "/extensions");
-  for (const key of ["GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "NODE_OPTIONS", "CARGO_REGISTRY_TOKEN"]) {
+  for (const key of [
+    "GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "NODE_OPTIONS", "CARGO_REGISTRY_TOKEN",
+    "NODE_TLS_REJECT_UNAUTHORIZED", "NODE_USE_SYSTEM_CA", "NODE_EXTRA_CA_CERTS",
+  ]) {
     assert.equal(result[key], undefined);
   }
   assert.equal(result.HOME, "/isolated");

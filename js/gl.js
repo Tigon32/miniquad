@@ -3,8 +3,6 @@
 // this file was made by tons of hacks from emscripten's parseTools and library_webgl
 // https://github.com/emscripten-core/emscripten/blob/master/src/parseTools.js
 // https://github.com/emscripten-core/emscripten/blob/master/src/library_webgl.js
-//
-// TODO: split to gl.js and loader.js
 
 "use strict";
 
@@ -17,6 +15,10 @@ if (!canvas) {
 var gl;
 var webgl_context_lost = false;
 var webgl_depth_texture_supported = false;
+// WebGL2 (GLES3) requires a sized internalformat for depth textures (for
+// example DEPTH_COMPONENT16), unlike the unsized DEPTH_COMPONENT the WebGL1
+// WEBGL_depth_texture extension requires. See glTexImage2D below.
+var webgl2_context = false;
 
 var clipboard = null;
 
@@ -104,6 +106,7 @@ function init_webgl(version) {
             throw new Error("WebGL2 context is unavailable");
         }
         webgl_depth_texture_supported = true;
+        webgl2_context = true;
     } else {
         throw new Error("Unsupported WebGL version: " + version);
     }
@@ -136,6 +139,8 @@ document.exitPointerLock = document.exitPointerLock ||
     document.mozExitPointerLock ||
     // pointer lock in any form is not supported on iOS safari
     (function () { });
+
+var cursor_locked = false;
 
 function assert(flag, message) {
     if (flag == false) {
@@ -776,6 +781,19 @@ var importObject = {
                  internalFormat === gl.DEPTH_COMPONENT || internalFormat === gl.DEPTH_STENCIL)) {
                 throw new Error("WebGL1 depth textures are unavailable on this browser");
             }
+            // The compiled WASM sends the unsized DEPTH_COMPONENT internalformat
+            // required by the WebGL1 WEBGL_depth_texture extension. WebGL2/GLES3
+            // instead requires a sized internalformat for depth attachments; some
+            // engines tolerate the unsized value, but newer WebKit enforces the
+            // spec and leaves the attachment non-renderable (observed: WebKit 27.2
+            // reports "Framebuffer is incomplete: Attachment is not renderable" on
+            // glClear/glDrawElementsInstanced). Translate to the sized form only
+            // on a real WebGL2 context, so the WebGL1 extension path is unchanged.
+            if (webgl2_context && internalFormat === gl.DEPTH_COMPONENT) {
+                if (type === gl.UNSIGNED_SHORT) internalFormat = gl.DEPTH_COMPONENT16;
+                else if (type === gl.UNSIGNED_INT) internalFormat = gl.DEPTH_COMPONENT24;
+                else if (type === gl.FLOAT) internalFormat = gl.DEPTH_COMPONENT32F;
+            }
             gl.texImage2D(target, level, internalFormat, width, height, border, format, type,
                 pixels ? getArray(pixels, Uint8Array, texture_size(internalFormat, width, height)) : null);
         },
@@ -1277,18 +1295,23 @@ var importObject = {
             resize(canvas);
         },
         run_animation_loop: function (blocking) {
+            // Mirrors the native platforms: while the cursor is grabbed,
+            // deliver only raw_mouse_move; otherwise deliver only
+            // mouse_move. See the cursor_grabbed branch in
+            // src/native/macos.rs mouse_moved for the matching split.
+            document.onpointerlockchange = function () {
+                cursor_locked = document.pointerLockElement === canvas;
+            };
             canvas.onmousemove = function (event) {
+                if (cursor_locked) {
+                    wasm_exports.raw_mouse_move(Math.floor(event.movementX), Math.floor(event.movementY));
+                    return;
+                }
+
                 var relative_position = mouse_relative_position(event.clientX, event.clientY);
                 var x = relative_position.x;
                 var y = relative_position.y;
-
-                // TODO: do not send mouse_move when cursor is captured
                 wasm_exports.mouse_move(Math.floor(x), Math.floor(y));
-
-                // TODO: check that mouse is captured?
-                if (event.movementX != 0 || event.movementY != 0) {
-                    wasm_exports.raw_mouse_move(Math.floor(event.movementX), Math.floor(event.movementY));
-                }
             };
             // The native context menu can consume the matching right-button
             // mouseup in WebKit. The canvas owns mouse input while running.

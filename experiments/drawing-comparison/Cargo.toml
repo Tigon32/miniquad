@@ -1,0 +1,50 @@
+[package]
+name = "drawing-comparison"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = """
+Isolated, benchmark-only crate for issue #123: compares the internal
+miniquad-draw CPU geometry builders against a pinned external
+tessellation library (lyon_tessellation) on an equal bounded reference
+workload. Never a dependency of companions/draw or the root crate.
+"""
+
+# `internal` and `lyon` are mutually exclusive (see src/lib.rs
+# compile_error! guard). Build with exactly one of:
+#   cargo build --release --no-default-features --features internal
+#   cargo build --release --no-default-features --features lyon
+[features]
+default = []
+internal = ["dep:miniquad-draw"]
+lyon = ["dep:lyon_tessellation", "dep:lyon_path"]
+
+[dependencies]
+# Path dependency on the companion crate under qualification, same as an
+# application would consume miniquad-draw. Optional: only pulled in by
+# the "internal" feature, so a "lyon"-only build never compiles it.
+miniquad-draw = { path = "../../companions/draw", optional = true }
+
+# Pinned to an exact version for a reproducible benchmark-only build.
+# Source-verified (see docs/drawing-companion.md, "Lyon adapter"
+# section): license "MIT OR Apache-2.0", repository
+# https://github.com/nical/lyon, default feature "std", direct
+# dependencies lyon_path + num-traits + float_next_after.
+# User-approved per the benchmark-dependency exception: pinned Lyon is
+# isolated to this experiment crate only, never added to
+# companions/draw or the root crate.
+lyon_tessellation = { version = "=1.0.23", optional = true, default-features = false, features = ["std"] }
+lyon_path = { version = "=1.0.19", optional = true, default-features = false }
+
+[[bin]]
+name = "run_internal"
+path = "src/bin/run_internal.rs"
+required-features = ["internal"]
+
+[[bin]]
+name = "run_lyon"
+path = "src/bin/run_lyon.rs"
+required-features = ["lyon"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]

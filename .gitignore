@@ -10,3 +10,13 @@ node_modules/
 # Keep the standalone example reproducible.
 !examples/ime_demo/Cargo.lock
 /examples/ime_demo/target/
+
+# Keep the pinned-Lyon benchmark-only comparison reproducible (issue
+# #123): this is the one isolated bench project the user approved the
+# pinned-dependency exception for. See docs/drawing-companion.md.
+!experiments/drawing-comparison/Cargo.lock
+
+# Keep the issue #123 external-consumer fixture (a separate crate that
+# depends on the miniquad-draw companion via a path/Git dependency, not
+# a copy of its source) reproducible too. See docs/drawing-companion.md.
+!experiments/drawing-comparison/external-consumer/Cargo.lock

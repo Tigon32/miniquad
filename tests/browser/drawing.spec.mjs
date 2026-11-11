@@ -65,17 +65,17 @@ function installGlTracking() {
     }
 }
 
-async function mountShowcase(page) {
+async function mountShowcase(page, wasmURL = "/drawing.wasm") {
     await page.goto("/drawing-qualification");
-    await page.evaluate(async () => {
+    await page.evaluate(async wasmURL => {
         const { mount } = await import("/js/miniquad.mjs");
         window.app = mount({
             container: document.querySelector("#scene"),
-            wasmURL: "/drawing.wasm",
+            wasmURL,
             title: "Drawing companion showcase",
         });
         await window.app.ready;
-    });
+    }, wasmURL);
     await page.waitForFunction(() => window.app.frame.contentWindow.miniquadRuntime.frames > 2);
 }
 
@@ -114,6 +114,24 @@ function collectErrors(page) {
 }
 
 test.describe("drawing companion qualification", () => {
+    test("renders a downstream crate through the public drawing API", async ({ page }) => {
+        const errors = collectErrors(page);
+        await mountShowcase(page, "/drawing-consumer.wasm");
+        const image = await screenshotCanvas(page);
+        for (const [x, y, expected] of [
+            [0.05, 0.05, [26, 26, 31]],
+            [0.3, 0.3, [217, 51, 51]],
+            [0.65, 0.6, [51, 128, 230]],
+        ]) {
+            const actual = readRGBA(image, Math.floor(image.width * x), Math.floor(image.height * y));
+            for (let channel = 0; channel < 3; channel++) {
+                expect(Math.abs(actual[channel] - expected[channel])).toBeLessThanOrEqual(2);
+            }
+        }
+        expect(errors).toEqual([]);
+        await page.evaluate(() => window.app.dispose());
+    });
+
     test("renders geometry through compiled WASM and reports more than a clear color", async ({ page }) => {
         const errors = collectErrors(page);
         await mountShowcase(page);

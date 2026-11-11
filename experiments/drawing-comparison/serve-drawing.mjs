@@ -26,7 +26,7 @@ const files = new Map([
     },
   ],
   [
-    "/consumer.wasm",
+    "/drawing-consumer.wasm",
     {
       file: "experiments/drawing-comparison/external-consumer/target/wasm32-unknown-unknown/release/examples/consume.wasm",
       type: "application/wasm",

@@ -21,6 +21,7 @@
 //   ["/voxel-mixed.wasm", {file:"companions/voxel/target/wasm32-unknown-unknown/release/examples/mixed.wasm", type:"application/wasm"}]
 //   ["/voxel-mixed", {file:"tests/browser/voxel-mixed.html", type:"text/html; charset=utf-8"}]
 //   ["/voxel-host.mjs", {file:"companions/voxel/web/voxel-host.mjs", type:"text/javascript; charset=utf-8"}]
+//   ["/voxel-revision.mjs", {file:"companions/voxel/web/voxel-revision.mjs", type:"text/javascript; charset=utf-8"}]
 // plus the gateway's own POST /vx/v1/sync -> http://127.0.0.1:${VOXEL_SERVER_PORT:-4230}/vx/v1/sync.
 import { test, expect } from "@playwright/test";
 import { createServer } from "node:http";
@@ -49,6 +50,7 @@ const staticFiles = new Map([
     },
   ],
   ["/voxel-host.mjs", { file: "companions/voxel/web/voxel-host.mjs", type: "text/javascript; charset=utf-8" }],
+  ["/voxel-revision.mjs", { file: "companions/voxel/web/voxel-revision.mjs", type: "text/javascript; charset=utf-8" }],
 ]);
 
 /** Checks whether something is already listening on `port` by racing a one-shot TCP connect. */
@@ -74,7 +76,15 @@ function proxyToServer(request, response) {
     port: SERVER_PORT,
     path: request.url,
     method: request.method,
-    headers: { "content-type": request.headers["content-type"] ?? "application/octet-stream" },
+    headers: {
+      "content-type": request.headers["content-type"] ?? "application/octet-stream",
+      // Forward the real Content-Length: without it, Node's http client
+      // falls back to `Transfer-Encoding: chunked` for a piped body,
+      // which the protocol (and vx-server) explicitly rejects (no TE).
+      ...(request.headers["content-length"] !== undefined
+        ? { "content-length": request.headers["content-length"] }
+        : {}),
+    },
   };
   import("node:http").then(({ request: httpRequest }) => {
     const upstream = httpRequest(options, (upstreamResponse) => {
@@ -196,6 +206,45 @@ test("the HUD chip region is drawn with an opaque, non-background color", async 
   const alpha = image.data[idx + 3];
   expect(alpha).toBeGreaterThan(0);
 
+  await page.evaluate(() => window.app.dispose());
+});
+
+test("the host's full revision text starts at 'no snapshot yet' and shows the true decimal revision once online", async ({ page }) => {
+  // Real-browser coverage is limited to the two reachable, meaningful
+  // states (no snapshot yet; a real small revision once online): the
+  // pure boundary cases (0, 42, 999999, 1000000, u32::MAX, and the
+  // unsigned 0xFFFFFFFF -> 4294967295 conversion itself) are covered
+  // deterministically in tests/voxel-revision.test.mjs. Driving the
+  // real `Sim` to a million edits in a browser is neither necessary
+  // nor meaningful evidence for the conversion's correctness.
+  await page.goto(`${baseURL}/voxel-mixed.html`);
+  await page.evaluate(async (wasmURL) => {
+    const { mount } = await import("/js/miniquad.mjs");
+    window.app = mount({ container: document.querySelector("#scene"), wasmURL, title: "Mixed voxel scene" });
+    await window.app.ready;
+  }, `${baseURL}/voxel-mixed.wasm`);
+  await page.waitForFunction(() => window.app.frame.contentWindow.miniquadRuntime.frames > 2);
+
+  expect(await page.textContent("#revision")).toBe("no snapshot yet");
+
+  await page.evaluate((syncUrl) => {
+    window.client = window.wireVoxelMixedHost(window.app, syncUrl);
+    window.client.start();
+  }, `${baseURL}/vx/v1/sync`);
+
+  await page.waitForFunction(() => {
+    const text = document.querySelector("#revision").textContent;
+    return text !== "no snapshot yet" && /^[0-9]+$/.test(text);
+  });
+  const revisionText = await page.textContent("#revision");
+  // A fresh server's first Hello snapshot is revision 0: confirm the
+  // text is the real decimal (not, e.g., a raw negative/signed number,
+  // which an unconverted `u32` return would never be at this small
+  // value, but which this assertion still forecloses in principle).
+  expect(Number(revisionText)).toBeGreaterThanOrEqual(0);
+  expect(revisionText).not.toMatch(/^-/);
+
+  await page.evaluate(() => window.client?.dispose?.());
   await page.evaluate(() => window.app.dispose());
 });
 

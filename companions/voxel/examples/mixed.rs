@@ -357,6 +357,16 @@ pub extern "C" fn vx_world_rev() -> u32 {
     SIM.lock().unwrap().as_ref().map(|s| s.rev()).unwrap_or(0)
 }
 
+/// Whether `vx_world_rev()` reflects an actual applied snapshot yet
+/// (`1`) or is still the pre-snapshot default of `0` (`0`), so the
+/// host can distinguish "no snapshot" from "revision 0" without
+/// relying on `vx_net_set_status`. Mirrors the HUD's own
+/// `hud_revision()` gate on `HAVE_SNAPSHOT`.
+#[no_mangle]
+pub extern "C" fn vx_has_snapshot() -> u32 {
+    HAVE_SNAPSHOT.load(Ordering::Relaxed) as u32
+}
+
 /// Sprite centre in canvas pixels, packed as `x << 16 | y`.
 #[no_mangle]
 pub extern "C" fn vx_sprite_pixel() -> u32 {
@@ -377,7 +387,8 @@ pub extern "C" fn vx_sprite_pixel() -> u32 {
 /// this flag, wait (bounded) for `vx_resources_live() == 0`, then
 /// dispose the app in a `finally` block regardless of whether that
 /// wait succeeded. See `tests/browser/voxel-mixed.spec.mjs`'s
-/// `releaseGpuAndDispose` helper for the exact sequence.
+/// "vx_release_gpu genuinely deletes GPU objects" test for the exact
+/// sequence.
 #[no_mangle]
 pub extern "C" fn vx_release_gpu() {
     RELEASE_GPU.store(true, Ordering::Relaxed);

@@ -121,6 +121,72 @@ library remains a reasonable later option if a project needs concave
 polygon fill, line joins, or dashed strokes that this package does not
 provide; that step was out of scope here and is not implemented.
 
+## Fixed: real-browser rendering regression (invisible canvas)
+
+The parent integrated the initial version of this package and ran the
+`showcase` example in a real Chromium browser (`tests/browser/drawing.spec.mjs`,
+parent-owned). The test failed: the canvas advanced past frame 2, but a
+screenshot contained exactly one color (the clear color composited with
+the host page), failing the parent's `colors.size > 8` assertion. This
+section documents the root cause and the fix, both entirely within
+`companions/draw/**`.
+
+Two independent bugs stacked to produce "canvas shows nothing":
+
+1. **The index buffer used `u32` indices on a WebGL 1 context.**
+   `conf::Conf`'s default `platform.webgl_version` is `WebGL1`, and the
+   default WebGL 1 context has no `u32` element-index support without
+   the `OES_element_index_uint` extension (which this package did not
+   request). Drawing with an unsupported index type raises
+   `GL_INVALID_ENUM` and **draws nothing**, silently. A temporary,
+   instrumented build (reading `gl.getError()` after each GPU call)
+   isolated the error to the `ctx.draw(...)` call itself, not pipeline
+   or shader setup. Fix: `gpu::Renderer`'s index buffer now holds `u16`
+   indices. `batch::Batch` enforces a new `MAX_CHUNK_VERTICES` (`1 <<
+   16`) bound per chunk — a same-clip run of shapes that would overflow
+   a `u16` index range now starts a new chunk (still with the same
+   clip, so draw order and the painter's-algorithm contract are
+   unaffected) instead of growing one chunk past what a `u16` index can
+   address. The conversion from a shape's own (small, always
+   `u16`-representable) local index to the chunk's rebased index uses
+   `u16::try_from(...).expect(...)`, not an `as` truncation, so a future
+   bound regression panics instead of silently drawing wrong geometry.
+2. **The default pass clear used `PassAction::default()`**, which clears
+   alpha to `0.0`. This package's blend state (`gpu::blend_params`)
+   intentionally never *writes* a new alpha — it only protects
+   whatever alpha is already in the framebuffer, by design (`Zero, One`
+   on the alpha channel), so overlapping translucent draws do not punch
+   holes in an already-opaque canvas. That design requires the clear to
+   already be opaque; `PassAction::default()` violates that
+   precondition, so the canvas alpha stayed `0.0` for the whole frame.
+   On the WASM build, a `premultipliedAlpha: true` WebGL canvas (the
+   default; `js/gl.js` passes no explicit context attributes) composites
+   an alpha-`0.0` pixel as fully transparent, so the browser shows the
+   host page background, not the drawn colors. Fix: the `showcase`
+   example's `begin_default_pass` now clears with an explicit opaque
+   alpha (`PassAction::clear_color(0.08, 0.08, 0.1, 1.0)`).
+
+Bug 1 alone was enough to hide all drawn geometry (nothing ever reached
+the framebuffer); bug 2 alone was enough to hide an opaque background
+behind the host page. Both had to be fixed for the showcase to render.
+
+**Regression evidence.** A temporary, session-local reproduction harness
+(outside this repository, never committed) mounted the built
+`showcase.wasm` through the parent's own `js/miniquad.mjs` /
+`runtime.mjs` / `runtime.html` / `gl.js` (read only, unmodified) in
+headless Chromium, waited past frame 5, and read back the `#glcanvas`
+pixels and `gl.getError()`:
+
+| Build | `gl.getError()` | Distinct colors (480x320 canvas) |
+| --- | --- | --- |
+| Before this fix | `1280` (`GL_INVALID_ENUM`) | 1 (`#ffffffff`, the host page background) |
+| After this fix | `0` | 89–93 (varies slightly frame-to-frame with the animated points) |
+
+This clears the parent's `colors.size > 8` threshold. Only Chromium was
+exercised this way; Firefox and WebKit, resize/DPI behavior, and input
+remain the parent's stated responsibility (see the Browser reproduction
+skill), now unblocked.
+
 ## Limits (state clearly, no unverified claims)
 
 * **No benchmark or maintenance comparison was run.** This guide does not
@@ -130,12 +196,17 @@ provide; that step was out of scope here and is not implemented.
   performance or size claim is needed; see MADR 0009's own instruction
   not to report a memory or performance improvement without
   measurements.
-* **No browser or native rendering was verified.** This package was
+* **Browser rendering was verified once, in Chromium only**, via a
+  temporary, session-local harness (see the "Fixed: real-browser
+  rendering regression" section above): `gl.getError()` is clean and the
+  canvas shows 89+ distinct colors across a running showcase, clearing
+  the parent's `colors.size > 8` assertion. Firefox, WebKit, resize/DPI
+  behavior, and input were not exercised this way; the parent's own
+  `tests/browser/drawing.spec.mjs` run is the authoritative check.
+  Native-platform rendering was still not verified: this package was
   checked and tested with `cargo test` (host, macOS) and
-  `cargo check`/`cargo build --release` for `wasm32-unknown-unknown`. No
-  pixel was observed in a real browser or native window. The parent
-  owns runtime/browser verification once the showcase shader is run; see
-  the [Browser reproduction skill](../.github/skills/miniquad-browser-repro/SKILL.md).
+  `cargo check`/`cargo build --release` for `wasm32-unknown-unknown`, but
+  no pixel was observed in a real native window.
 * **No antialiasing.** Shape edges are hard-edged triangles; this package
   does not implement coverage-based or MSAA-specific antialiasing.
 * **Polyline joins are butt caps only.** Adjacent polyline segments are
@@ -167,24 +238,32 @@ provide; that step was out of scope here and is not implemented.
 Pure-geometry unit tests (`cargo test --manifest-path companions/draw/Cargo.toml`)
 cover, per module:
 
-* `color`: channel clamping, non-finite-channel replacement, premultiplication.
+* `color`: finite-channel clamping to `[0.0, 1.0]`, **rejection** (not
+  silent zeroing) of a non-finite channel via `Color::validate`,
+  premultiplication.
 * `transform`: identity, translation, scaling, composition order, rejection of
   non-finite input points and non-finite transform fields.
 * `geometry`: degenerate shapes (collinear triangle, zero/negative-size
   rectangle, single-point and all-zero-length polylines, too-few/too-many
-  circle segments, zero radius), non-finite and oversize coordinates,
-  polyline point-count bound, cubic curve termination for a fully
-  collapsed (coincident-point) curve and for a tolerance far smaller than
-  float precision can resolve (bounded by `MAX_CURVE_SUBDIVISION_DEPTH`),
-  and non-finite/non-positive curve tolerance.
+  circle segments, zero radius), non-finite and oversize coordinates, a
+  non-finite color channel rejected at shape-build time (not just at the
+  `Color` level), polyline point-count bound, cubic curve termination for
+  a fully collapsed (coincident-point) curve and for a tolerance far
+  smaller than float precision can resolve (bounded by
+  `MAX_CURVE_SUBDIVISION_DEPTH`), and non-finite/non-positive curve
+  tolerance.
 * `batch`: draw-order preservation and clip-rectangle batching (same-clip
   pushes merge into one chunk; a clip change starts a new chunk; an
   interrupted and later-reused clip value does **not** merge across the
   interruption, so overlapping translucent shapes still draw in
   submission order), atomic rejection (a failed push leaves the batch
-  unchanged), and invalid-clip rejection that keeps the previous clip.
+  unchanged), invalid-clip rejection that keeps the previous clip, and a
+  same-clip run large enough to overflow `MAX_CHUNK_VERTICES` splitting
+  into multiple chunks with every index still addressing a vertex within
+  its own chunk (the regression test for the real-browser `u16`-index
+  fix above).
 
-Observed result: **40 passed, 0 failed** (`cargo test --manifest-path
+Observed result: **41 passed, 0 failed** (`cargo test --manifest-path
 companions/draw/Cargo.toml`, macOS, local toolchain). A crate-level doc
 test (the `lib.rs` quick example) also passed.
 

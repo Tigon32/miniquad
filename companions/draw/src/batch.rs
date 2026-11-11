@@ -18,13 +18,28 @@ use crate::transform::Transform2D;
 /// unchanged, instead of growing without limit.
 pub const MAX_BATCH_VERTICES: usize = 1 << 20;
 
+/// A bound on the number of vertices a single [`Chunk`] can hold.
+///
+/// The GPU adapter uploads each chunk's indices as `u16`, because the
+/// default WebGL 1 context (used unless the host app opts into WebGL 2)
+/// does not support `u32` element indices without the
+/// `OES_element_index_uint` extension; drawing with an unsupported index
+/// type raises `GL_INVALID_ENUM` and silently draws nothing. Capping a
+/// chunk at `u16::MAX + 1` vertices keeps every index representable, so
+/// a clip change is not the only thing that can start a new chunk: a
+/// push that would overflow the current chunk also starts a new one
+/// (still with the same clip, so draw order is unaffected). See
+/// `docs/drawing-companion.md` for the regression this fixes.
+pub const MAX_CHUNK_VERTICES: usize = 1 << 16;
+
 /// One contiguous run of geometry sharing a clip rectangle.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Chunk {
     /// `None` means no clip (draw over the whole render target).
     pub clip: Option<Rect>,
     pub vertices: Vec<Vertex>,
-    pub indices: Vec<u32>,
+    /// `u16`-width indices: see [`MAX_CHUNK_VERTICES`].
+    pub indices: Vec<u16>,
 }
 
 /// An accumulator of 2D batch geometry. See the module docs for the
@@ -81,21 +96,51 @@ impl Batch {
         if self.total_vertices + vertices.len() > MAX_BATCH_VERTICES {
             return Err(GeometryError::TooManyVertices);
         }
-        match self.chunks.last_mut() {
-            Some(chunk) if chunk.clip == self.current_clip => {
-                let base = chunk.vertices.len() as u32;
-                self.total_vertices += vertices.len();
-                chunk.vertices.extend(vertices);
-                chunk.indices.extend(indices.into_iter().map(|i| i + base));
-            }
-            _ => {
-                self.total_vertices += vertices.len();
-                self.chunks.push(Chunk {
-                    clip: self.current_clip,
-                    vertices,
-                    indices,
-                });
-            }
+        // A single shape's own vertex count must itself fit a chunk; every
+        // geometry builder is bounded well under `MAX_CHUNK_VERTICES`
+        // (`MAX_POLYLINE_POINTS`, `MAX_CIRCLE_SEGMENTS`, triangle, and
+        // rectangle all stay far below `1 << 16`), so this only catches a
+        // future bound regression rather than ordinary caller input.
+        assert!(
+            vertices.len() <= MAX_CHUNK_VERTICES,
+            "a single shape produced {} vertices, more than MAX_CHUNK_VERTICES ({})",
+            vertices.len(),
+            MAX_CHUNK_VERTICES
+        );
+
+        let fits_current_chunk = matches!(
+            self.chunks.last(),
+            Some(chunk)
+                if chunk.clip == self.current_clip
+                    && chunk.vertices.len() + vertices.len() <= MAX_CHUNK_VERTICES
+        );
+
+        self.total_vertices += vertices.len();
+        if fits_current_chunk {
+            let chunk = self
+                .chunks
+                .last_mut()
+                .expect("checked by fits_current_chunk");
+            let base = chunk.vertices.len();
+            chunk.vertices.extend(vertices);
+            chunk.indices.extend(indices.into_iter().map(|i| {
+                u16::try_from(i as usize + base)
+                    .expect("base + local index is bounded by MAX_CHUNK_VERTICES above")
+            }));
+        } else {
+            let indices = indices
+                .into_iter()
+                .map(|i| {
+                    u16::try_from(i).expect(
+                        "a single shape's local index is bounded by MAX_CHUNK_VERTICES above",
+                    )
+                })
+                .collect();
+            self.chunks.push(Chunk {
+                clip: self.current_clip,
+                vertices,
+                indices,
+            });
         }
         Ok(())
     }
@@ -274,5 +319,47 @@ mod tests {
         assert!(batch.is_empty());
         assert_eq!(batch.vertex_count(), 0);
         assert_eq!(batch.clip(), Some(Rect::new(0.0, 0.0, 10.0, 10.0)));
+    }
+
+    /// Regression test for the real-browser failure where draws through a
+    /// single oversize chunk raised `GL_INVALID_ENUM` on a default WebGL 1
+    /// context (`u32` indices are unsupported there) and drew nothing. A
+    /// same-clip run that would overflow `MAX_CHUNK_VERTICES` must start a
+    /// new chunk instead of growing the current one past `u16::MAX`, and
+    /// every resulting index must stay in range.
+    #[test]
+    fn same_clip_run_past_chunk_cap_splits_into_multiple_u16_safe_chunks() {
+        let mut batch = Batch::new();
+        // 3 vertices per triangle; push enough to cross MAX_CHUNK_VERTICES.
+        let triangle_count = MAX_CHUNK_VERTICES / 3 + 10;
+        for i in 0..triangle_count {
+            let x = i as f32;
+            batch
+                .triangle((x, 0.0), (x + 1.0, 0.0), (x, 1.0), Color::WHITE, id())
+                .unwrap();
+        }
+
+        assert!(
+            batch.chunks().len() > 1,
+            "expected the oversize same-clip run to split into more than one chunk"
+        );
+        assert_eq!(batch.vertex_count(), triangle_count * 3);
+
+        let mut total_vertices_in_chunks = 0;
+        for chunk in batch.chunks() {
+            assert!(chunk.clip.is_none(), "clip was never changed");
+            assert!(
+                chunk.vertices.len() <= MAX_CHUNK_VERTICES,
+                "a chunk must never exceed MAX_CHUNK_VERTICES"
+            );
+            for &index in &chunk.indices {
+                assert!(
+                    (index as usize) < chunk.vertices.len(),
+                    "every index must address a vertex within its own chunk"
+                );
+            }
+            total_vertices_in_chunks += chunk.vertices.len();
+        }
+        assert_eq!(total_vertices_in_chunks, triangle_count * 3);
     }
 }

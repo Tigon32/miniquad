@@ -54,7 +54,7 @@ impl GrowBuffer {
             BufferType::IndexBuffer => ctx.new_buffer(
                 buffer_type,
                 BufferUsage::Stream,
-                BufferSource::empty::<u32>(initial_items),
+                BufferSource::empty::<u16>(initial_items),
             ),
         };
         GrowBuffer {

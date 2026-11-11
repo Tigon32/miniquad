@@ -139,7 +139,7 @@ pub fn triangle(
         return Err(GeometryError::DegenerateShape);
     }
 
-    let col = color.to_premultiplied();
+    let col = color.validate()?.to_premultiplied();
     Ok((
         vec![vertex(a, col), vertex(b, col), vertex(c, col)],
         vec![0, 1, 2],
@@ -161,7 +161,7 @@ pub fn rectangle(
         (rect.x, rect.y + rect.h),
     ];
     let mut verts = Vec::with_capacity(4);
-    let col = color.to_premultiplied();
+    let col = color.validate()?.to_premultiplied();
     for (x, y) in corners {
         let p = transform_point(transform, x, y)?;
         verts.push(vertex(p, col));
@@ -194,7 +194,7 @@ pub fn polyline(
     }
 
     let half = thickness / 2.0;
-    let col = color.to_premultiplied();
+    let col = color.validate()?.to_premultiplied();
     let mut verts = Vec::with_capacity(points.len() * 2);
     let mut indices = Vec::with_capacity((points.len() - 1) * 6);
 
@@ -250,7 +250,7 @@ pub fn circle(
         return Err(GeometryError::TooManyVertices);
     }
 
-    let col = color.to_premultiplied();
+    let col = color.validate()?.to_premultiplied();
     let mut verts = Vec::with_capacity(segments as usize + 1);
     verts.push(vertex(transform_point(transform, center.0, center.1)?, col));
     for i in 0..segments {
@@ -382,6 +382,19 @@ mod tests {
     fn triangle_rejects_non_finite_point() {
         let err =
             triangle((f32::NAN, 0.0), (1.0, 0.0), (0.0, 1.0), Color::WHITE, id()).unwrap_err();
+        assert_eq!(err, GeometryError::NonFiniteInput);
+    }
+
+    #[test]
+    fn triangle_rejects_non_finite_color_instead_of_drawing_black() {
+        let err = triangle(
+            (0.0, 0.0),
+            (1.0, 0.0),
+            (0.0, 1.0),
+            Color::new(f32::NAN, 0.0, 0.0, 1.0),
+            id(),
+        )
+        .unwrap_err();
         assert_eq!(err, GeometryError::NonFiniteInput);
     }
 

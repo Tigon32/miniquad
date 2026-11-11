@@ -181,7 +181,18 @@ impl EventHandler for Showcase {
         );
         self.draw_points(&mut batch, width, height);
 
-        self.ctx.begin_default_pass(Default::default());
+        // Clear with an opaque alpha. `PassAction::default()` clears alpha
+        // to 0.0, and the renderer's blend state (see `gpu.rs`) never
+        // writes a *new* alpha afterward, it only ever preserves
+        // whatever is already in the framebuffer; this protects an
+        // already-opaque canvas from translucent draws, but only if the
+        // canvas starts opaque. On the WASM build, a canvas with alpha
+        // 0.0 composites as fully transparent against the host page
+        // (`premultipliedAlpha: true` is the WebGL default), hiding every
+        // drawn color behind the page background. See
+        // `docs/drawing-companion.md` for the full writeup.
+        self.ctx
+            .begin_default_pass(PassAction::clear_color(0.08, 0.08, 0.1, 1.0));
         self.renderer
             .draw(self.ctx.as_mut(), &batch, (width, height));
         self.ctx.end_render_pass();

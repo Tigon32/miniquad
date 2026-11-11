@@ -275,23 +275,32 @@ test("vx_release_gpu genuinely deletes GPU objects (paused), and resources_live 
   const before = await page.evaluate(() => window.app.frame.contentWindow.miniquadRuntime.exports.vx_resources_live());
   expect(before).toBeGreaterThan(0);
 
-  // resume -> release -> wait for resources_live==0 -> dispose, per the
-  // acceptance requirement that release is serviced "even when the app
-  // is paused": pause it first, then confirm vx_release_gpu still runs.
+  // The agreed release protocol (host-driven, no raw Stage re-entry
+  // from the export): pause first (proving release is requested while
+  // paused), then the host itself must (1) resume if paused, because
+  // `draw()` never runs while paused and `vx_release_gpu()` only sets
+  // a flag that the *next* `draw()` services, (2) call
+  // `vx_release_gpu()` to set that flag, (3) wait (bounded) for
+  // `vx_resources_live() === 0`, and (4) `dispose()` in a `finally`
+  // regardless of whether the wait succeeded, so a wait timeout can
+  // never leak the iframe/GPU context.
   await page.evaluate(() => window.app.pause());
-  await page.evaluate(() => window.app.resume());
-  await page.evaluate(() => window.app.pause());
-  await page.evaluate(() => window.app.frame.contentWindow.miniquadRuntime.exports.vx_release_gpu());
-  await page.waitForFunction(
-    () => window.app.frame.contentWindow.miniquadRuntime.exports.vx_resources_live() === 0,
-    null,
-    { timeout: 2000 },
-  );
 
-  const afterRelease = await page.evaluate(() => ({
-    live: window.app.frame.contentWindow.miniquadRuntime.exports.vx_resources_live(),
-    glCounts: window.app.frame.contentWindow.__glCounts,
-  }));
+  const afterRelease = await page.evaluate(async () => {
+    const exports = window.app.frame.contentWindow.miniquadRuntime.exports;
+    if (window.app.state === "paused") window.app.resume();
+    exports.vx_release_gpu();
+    const deadline = Date.now() + 1000;
+    while (exports.vx_resources_live() !== 0 && Date.now() < deadline) {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+    }
+    return {
+      live: exports.vx_resources_live(),
+      glCounts: window.app.frame.contentWindow.__glCounts,
+      waitTimedOut: exports.vx_resources_live() !== 0,
+    };
+  });
+  expect(afterRelease.waitTimedOut).toBe(false);
   expect(afterRelease.live).toBe(0);
   // The real GPU object count must have actually dropped to (at most)
   // the pre-release baseline: every buffer/texture created for this

@@ -1,6 +1,6 @@
 # Voxel mixed-mode protocol v1
 
-* Status: **Proposed** design. Not implemented. See [MADR 0008](../adr/0008-optional-voxel-topologies.md) and [#29](https://github.com/Tigon32/miniquad/issues/29).
+* Status: **Partially implemented**. The shared `Sim`/world/mesh/terrain code, the native `vx-server`, and the `mixed` WASM example exist, with passing Rust unit/integration tests and a Chromium smoke-test suite (`tests/browser/voxel-mixed.spec.mjs`). Firefox/WebKit evidence, full frozen-scene/edit-parity and occlusion coverage, separate WebGL1/WebGL2 build assertions, and measured performance/footprint evidence are not done yet. See [MADR 0008](../adr/0008-optional-voxel-topologies.md) and [#29](https://github.com/Tigon32/miniquad/issues/29).
 * Scope: `companions/voxel/` only. Core ABI v3 does not change.
 * Writing review: **STE-aligned draft**.
 
@@ -72,7 +72,7 @@ Protocol errors use HTTP `200` with an `Error` frame. HTTP parser errors use `40
 
 The mailbox is a module `static` (`Mutex` or a WASM `thread_local`). `Stage` reads it in `update`.
 
-> Correction: `vx_release_gpu` must release GPU resources even while the host has the app paused, and a paused app never runs another `draw` call to service that release. So one export (`vx_release_gpu`) does store a `Stage` pointer, captured once in `main` right after `Box::new(Stage::new())` heap-allocates it (not inside `Stage::new()`, where `self` is still a stack temporary that later moves). The real invariant: no export stores a pointer to a `Stage` value that a move or aliasing could invalidate. WASM here is single threaded with no re-entrant exports, so this pointer is read (by `vx_release_gpu`) only when no other export is executing.
+> Correction: `vx_release_gpu` must release GPU resources even while the host has the app paused, and a paused app never runs another `draw` call to service that release. No export stores a pointer to a `Stage` value: `vx_release_gpu` only sets an `AtomicBool` flag, read and serviced exclusively by the next `draw` call. Because `draw` does not run while paused, the *host* (not the WASM export) is responsible for the full release sequence: resume the app if it is paused, call `vx_release_gpu()` to set the flag, wait (bounded) for `vx_resources_live() == 0`, and call `dispose()` in a `finally` regardless of whether that wait observed zero in time. See "Rendering and GPU resources" below for the exact bound.
 
 During a disconnect, the client discards queued inputs and counts them. The world stays read-only. Before the first snapshot, the client draws only the clear colour and the HUD.
 The host retries after 250 ms × 2^n, at most 4 s. It uses `AbortController` with a 2 s limit for each request and polls each 100 ms.

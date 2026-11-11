@@ -105,36 +105,6 @@ static HAVE_SNAPSHOT: AtomicBool = AtomicBool::new(false);
 static RELEASE_GPU: AtomicBool = AtomicBool::new(false);
 static RESOURCES_LIVE: AtomicU32 = AtomicU32::new(0);
 
-/// A raw pointer to the live `Stage`, as `usize` (so the static stays
-/// `Send`/`Sync` without `unsafe impl`). Set exactly once, in `main`,
-/// immediately after `Box::new(Stage::new())` allocates `Stage` on the
-/// heap - *not* inside `Stage::new()` itself, where `self`'s address
-/// is still a soon-to-move stack temporary. A `Box`'s heap allocation
-/// is never moved or reallocated by a later move of the `Box` value,
-/// and `miniquad`'s event loop keeps this `Box<dyn EventHandler>` in
-/// place for the app's life, so the address stays valid.
-///
-/// This is read back only by `vx_release_gpu`, so the HUD/UI
-/// contract's "explicit GPU release flag serviced even when the app
-/// is paused" requirement holds: `draw()` (and so `RELEASE_GPU`'s
-/// prior read site) never runs at all while the host has paused the
-/// app (see `js/runtime.mjs`'s `setPaused`, which stops scheduling
-/// every animation-frame callback), so a release requested while
-/// paused must run synchronously inside the export call itself.
-///
-/// Safety: WASM (as built here, no `wasm-bindgen` threads) is single
-/// threaded and exported functions cannot re-enter each other, so
-/// this is never read while `update`/`draw` are executing, and vice
-/// versa - there is exactly one mutable borrow of `Stage` live at a
-/// time. This corrects, with that evidence, this file's earlier
-/// stricter "no export stores a pointer to `Stage`" comment (also
-/// updated in `docs/architecture/voxel-protocol.md`): the true
-/// invariant this code preserves is "no export stores a pointer to a
-/// `Stage` value that can be invalidated by a move or by aliasing",
-/// which a pointer captured only after `Stage` is heap-boxed, with no
-/// re-entrant access, satisfies.
-static STAGE_PTR: Mutex<Option<usize>> = Mutex::new(None);
-
 /// Shared simulation core. Behind a `Mutex` only because it is
 /// touched from both `update` (apply) and the `vx_state_hash_lo/hi`
 /// staging exports (read); there is exactly one WASM thread, so this
@@ -393,19 +363,24 @@ pub extern "C" fn vx_sprite_pixel() -> u32 {
     SPRITE_PIXEL.load(Ordering::Relaxed)
 }
 
-/// Sets the explicit GPU release flag. The next `draw` deletes all
-/// GPU resources once, sets `resources_live` to `0`, and draws
-/// nothing after that, even while the application is paused (the host
-/// must call the runtime `resume()` once to service this).
+/// Sets the explicit GPU release flag only. No export re-enters
+/// `Stage` directly (no raw pointer is stored anywhere): the next
+/// `draw()` call reads this flag, deletes every GPU resource once,
+/// and sets `resources_live` to `0`.
+///
+/// `draw()` never runs while the host has the app paused (see
+/// `js/runtime.mjs`'s `setPaused`, which stops scheduling every
+/// animation-frame callback), so a release requested while paused is
+/// serviced only once the host resumes the app. The release protocol
+/// that satisfies "serviced even when paused" lives entirely on the
+/// host side, not in this export: resume the app if it is paused, set
+/// this flag, wait (bounded) for `vx_resources_live() == 0`, then
+/// dispose the app in a `finally` block regardless of whether that
+/// wait succeeded. See `tests/browser/voxel-mixed.spec.mjs`'s
+/// `releaseGpuAndDispose` helper for the exact sequence.
 #[no_mangle]
 pub extern "C" fn vx_release_gpu() {
     RELEASE_GPU.store(true, Ordering::Relaxed);
-    let ptr = *STAGE_PTR.lock().unwrap();
-    if let Some(ptr) = ptr {
-        // SAFETY: see the comment on `STAGE_PTR`.
-        let stage = unsafe { &mut *(ptr as *mut Stage) };
-        stage.release_gpu_now();
-    }
 }
 
 #[no_mangle]
@@ -727,11 +702,10 @@ impl Stage {
 
     /// Deletes every GPU buffer this example owns and zeroes
     /// `RESOURCES_LIVE`. Idempotent (`self.released` guards a second
-    /// call). Called both from `draw()` (the normal running-app path)
-    /// and directly from `vx_release_gpu()` via `STAGE_PTR` (see that
-    /// static's safety comment), so release is serviced even while
-    /// the host has paused the app and no further frame callback will
-    /// ever run.
+    /// call). Called only from `draw()`, the normal per-frame path:
+    /// this is the sole place that ever reads or mutates `Stage`, so
+    /// release is never re-entered from an export while `update`/
+    /// `draw` are (or are not) running.
     fn release_gpu_now(&mut self) {
         if self.released {
             return;
@@ -1136,13 +1110,7 @@ fn main() {
         },
         ..Default::default()
     };
-    miniquad::start(conf, move || {
-        let mut stage = Box::new(Stage::new());
-        // See `STAGE_PTR`'s doc comment: captured only now, after
-        // `Stage` is heap-boxed, so its address is stable.
-        *STAGE_PTR.lock().unwrap() = Some(stage.as_mut() as *mut Stage as usize);
-        stage
-    });
+    miniquad::start(conf, move || Box::new(Stage::new()));
 }
 
 mod shader {

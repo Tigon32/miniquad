@@ -36,6 +36,8 @@ See [MADR 0003](adr/0003-use-asd-ste100-for-communication.md).
 | **Rendering pipeline** | The shaders and render state that the GPU uses for drawing. | CI pipeline |
 | **Frame** | One completed visual update. | Physics simulation step |
 | **CI check** | A test or build check that runs automatically. | Proof of browser behavior |
+| **Worktree** | A Git working directory with its own HEAD and index. Linked worktrees share repository objects and branch references. | Branch |
+| **Worktree owner** | The contributor or agent assigned as the single writer for a task worktree. | PR author |
 | **Integration PR** | A pull request that adds selected upstream changes to this fork. | Original upstream PR |
 | **SSE (server-side execution)** | Game simulation or other work that runs on a server. | Intel SSE instructions or HTTP Server-Sent Events |
 | **BDD** | Behavior-driven development. It records user behavior in test scenarios. | A guarantee that all tests pass |

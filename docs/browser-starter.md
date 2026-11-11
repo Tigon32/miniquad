@@ -1,11 +1,16 @@
 # Browser consumer starter
 
-Status: **implemented generator, blocked full browser build**.
+Status: **generator and external consumer implemented and
+browser-tested at one reviewed revision; not release qualified**.
 Addresses [issue #124](https://github.com/Tigon32/miniquad/issues/124).
-Depends on the optional browser adoption layer proposed in
-[MADR 0009](adr/0009-optional-browser-adoption-layer.md) (not yet
-accepted) and on [#19](https://github.com/Tigon32/miniquad/issues/19)
-for release identity and distribution.
+Implemented by [#125](https://github.com/Tigon32/miniquad/pull/125);
+browser-tested by [#127](https://github.com/Tigon32/miniquad/pull/127).
+Depends on the optional browser adoption layer recorded in
+[MADR 0009](adr/0009-optional-browser-adoption-layer.md) (status:
+proposed; the layer's files already exist and are tested, the MADR's
+own acceptance record is what is still open) and on
+[#19](https://github.com/Tigon32/miniquad/issues/19) for release
+identity and distribution.
 
 Miniquad is a Rust library for windows, input, and graphics. It is not
 a game engine, and it is not a replacement for Canvas 2D. Use Miniquad
@@ -47,7 +52,9 @@ on, the Miniquad repository at run time. The generated project has:
   directly.
 
 Only `scripts/build.mjs` and `scripts/serve.mjs`, Cargo, and the Rust
-toolchain are developer-only tools. The deployed `web/` output needs
+toolchain (including the `wasm32-unknown-unknown` target) are
+developer-only tools: a developer generating or building the project
+needs Node.js and Rust installed. The deployed `web/` output needs
 only a browser; it does not need Rust or Node.js at the user's device.
 
 ## Commands
@@ -86,9 +93,11 @@ The generator never silently depends on the original upstream project
   SHA with `git rev-parse --verify` against `--git-repo` and fails if
   that does not succeed. The resolved SHA, not the input, is what is
   pinned in `Cargo.toml` and read from with `git show`. `--rev`
-  defaults to the reviewed baseline
-  `454792c46febefc476e1df153a5efed8bbb2ef79`; the default `--git-url`
-  is the `Tigon32/miniquad` fork, not upstream.
+  defaults to a reviewed, browser-tested, immutable, publicly
+  available revision `f837a98d415262320a8c66ef9f8024d8f2faeab1` (see
+  "Evidence and tested scope" below); the default `--git-url` is the
+  `Tigon32/miniquad` fork, not upstream. An explicit `--rev` to a
+  different revision that has all five required files still works.
 
 Issue #19 owns the long-term SemVer and release identity for this
 dependency; the pinning options above are an interim, explicit,
@@ -116,41 +125,65 @@ immutable committed bytes. A human-readable label with the local path
 is printed to the console during generation, but is not written to
 any file.
 
-## Current limitation: generator works, full browser build is blocked
+## Evidence and tested scope
 
-The generator refuses to write a project unless the selected source
-revision has all five required browser files. Today's accepted source
-only has `js/gl.js`. `js/miniquad.mjs`, `js/runtime.html`,
-`js/runtime.mjs`, and `js/host-preferences.mjs` are proposed in MADR
-0009 and are not yet integrated. Running the generator against the
-current repository produces an actionable, itemized error naming the
-missing files; it does not fail silently and does not write a partial
-project.
+`node scripts/create-browser-project.mjs <dest> --source git --git-repo
+<local clone>` (no `--rev`) resolves to, and copies exact asset bytes
+from, `f837a98d415262320a8c66ef9f8024d8f2faeab1`: a reviewed,
+browser-tested, immutable, publicly available `Tigon32/miniquad`
+revision with all five required browser files. An explicit
+`--rev <other sha>` that also has all five files still works; the
+generator does not special-case the default revision.
+`tests/starter-generator.test.mjs` asserts that the default `--rev`
+resolution never falls back to the old pre-adoption revision, and
+exercises the resolve/copy/pin pipeline end to end against an owned,
+hermetic git fixture repository (no network fetch, no dependency on
+this checkout's own commit history), so it fails if the default ever
+points back at a revision missing a required file.
 
-What is verified in this change:
+What is tested at `f837a98d415262320a8c66ef9f8024d8f2faeab1`,
+end to end, against a freshly generated external consumer
+(`tests/browser/starter.spec.mjs`, run across pinned Chromium,
+Firefox, and desktop WebKit as part of the repository's combined
+141-test browser suite; 18 of those 141 cases are starter-specific,
+6 per engine. The other 123 cases qualify unrelated Miniquad browser
+behavior, not this starter):
+
+- The generated project builds and serves under a deployment subpath,
+  and real WASM parameter changes (speed, foreground/background color)
+  reach the compiled module.
+- A visible, non-silent error is shown when WASM startup fails.
+- High-DPI (device pixel ratio 2) drawing, canvas resize, and canvas
+  and keyboard control focus.
+- Reduced-motion start-paused behavior, the host preference adapter's
+  palette refresh, and `forced-colors` handling, at 320px, 1280px, and
+  1440px widths.
+
+What is also verified, but not through a browser:
 
 - The generated `Cargo.toml` and `src/main.rs` compile to
   `wasm32-unknown-unknown` through a `path` dependency, and the
   resulting WASM module exports `mq_params_version`,
   `mq_param_set_f32`, and `mq_param_set_rgba8` (checked by inspecting
-  the compiled module's export list).
+  the compiled module's export list). Core ABI v3 is unchanged by any
+  of this.
 - The static server serves correct MIME types, supports a subpath
   base, and keeps every request inside the web root, including with
   `..` segments and percent-encoded separators (checked with raw HTTP
   requests against a running server, not only an HTTP client that
   pre-normalizes the URL).
-- Generator preflight and project-writing logic (`tests/starter-generator.test.mjs`).
+- Generator preflight and project-writing logic
+  (`tests/starter-generator.test.mjs`), including the default-revision
+  regression test above.
 
-What remains blocked until the browser adoption layer and #19 land:
+What this change does not qualify:
 
-- CI proving the external-project path end to end in a real browser
-  (Chromium/Firefox/WebKit), per the acceptance criteria in #124.
-- A rendered-pixel, resize/DPI, keyboard-focus, and startup-error test
-  of the generated `index.html` against `miniquad.mjs` and
-  `runtime.html`, because those files do not exist yet in the source
-  revision.
-- README integration in the main repository (owned by the parent
-  change; out of scope here).
+- A release-qualified, versioned dependency; issue #19 still owns
+  SemVer and release identity, and the `git`-pinned dependency above is
+  an interim, explicit, evaluation path, not a release process.
+- Mobile browsers or native (non-browser) targets.
+- Long-running memory reclamation; the browser suite above is a single
+  bounded run, not a soak test.
 
 ## Optional app-parameters surface
 

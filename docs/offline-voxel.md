@@ -260,4 +260,128 @@ Integration adds these checks to both browser CI lanes.
   check.
 
 This guide does not claim issue #29 is complete. MADR 0008 remains
-**Proposed**.
+**Proposed** at the time the WASM-only slice above was written. The
+section below documents the mode B (mixed WASM + server-side
+execution) work added afterward.
+
+## Mode B: mixed WASM + server-side execution
+
+* Date: 2026-11-11
+* Source reviewed: `Tigon32/miniquad`, branch `feat/voxel-mixed`,
+  latest commit `445b73b` (builds on the Opus design commit
+  `a3d7724f2ab702c2fc91f4d86e12792d2f5be62b`, itself built on
+  `f837a98d415262320a8c66ef9f8024d8f2faeab1`)
+* Related docs: `docs/architecture/voxel-protocol.md` (the VXP1 wire
+  contract this section implements against)
+
+This section documents the mode B vertical slice: a `std`-only
+loopback-authoritative native Rust server, a shared pure simulation
+core reused by both the offline and mixed examples, a bounded binary
+wire protocol, a mixed-mode WASM client (`examples/mixed.rs`) with a
+seven-segment HUD, and a host-side JS poller. It does **not** claim
+issue #29 is closed: see "Mode B open items" below for exactly what
+remains BLOCKED or NOT RUN.
+
+### Added crate structure
+
+| Module | Role |
+| --- | --- |
+| `src/sim.rs` | Pure, platform-independent simulation core: the fixed shared scene (`SCENE_SEED`, `SCENE_CHUNK_DIMS`, `SCENE_CHUNK_COORDS`), `Sim::apply` (command application with bounded validation), `Sim::load_snapshot` (full resync, all-or-nothing), `Sim::state_hash` (order-independent, deterministic). No `miniquad` or network dependency: reused unchanged natively (by `vx_server`) and in WASM (by `examples/mixed.rs`). |
+| `src/protocol.rs` | The VXP1 bounded binary wire codec: 24-byte little-endian frame header, `Hello`/`Inputs`/`Snapshot`/`Delta`/`Error` bodies, RLE chunk encoding, `ErrorCode` (`Version`/`World`/`Malformed`/`TooLarge`/`Stale`/`Gap`/`Rejected`). Encode/decode are pure functions over byte slices; no I/O. |
+| `src/bin/vx_server.rs` | The authoritative native server binary: `std`-only (no added dependency), one loopback TCP connection at a time, `Connection: close`, 2-second read/write timeouts, bounded request line (≤1KiB)/headers (≤8KiB, ≤32 lines)/body (≤1048 bytes, `Content-Length` required, `Transfer-Encoding` rejected). Default port **4230** (see "Port correction" below). Exposes `POST /vx/v1/sync` and `GET /health`. |
+| `src/hud.rs` | Pure seven-segment glyph-mask table and exact panel/cell geometry math (`compute_geometry`, `glyph_rect`, `chip_rect`, `chip_color`). No GPU calls; `examples/mixed.rs` turns its output into quads. |
+| `examples/mixed.rs` | The mixed-mode WASM client: all `vx_*` staging exports, dirty-chunk mesh rebuild driven by `Sim`, the HUD drawn last (depth-always, no depth-write, straight alpha, orthographic physical-pixel projection), and the Snapshot/Delta/Error inbound-frame handling described below. |
+| `web/voxel-host.mjs` | The host JS poller: one in-flight request at a time, a 2-second `AbortController` timeout, capped exponential backoff (250ms → 4s), and a `reportOnline()` contract (the WASM side only knows "a Snapshot/Delta applied"; the *host* is the one that knows the network round-trip itself succeeded, so it is the host's job to call `reportOnline()` after a successful decode — not something `vx_net_set_status` infers automatically from HTTP success alone). |
+
+### Port correction (evidence)
+
+`docs/architecture/voxel-protocol.md` originally specified a default
+port of 4174. Per explicit owner instruction (to avoid a conflict with
+the parent's own generated starter default), the default was corrected
+to **4230** throughout `vx_server.rs`'s `DEFAULT_PORT` constant, the
+protocol doc (see that doc's own "Correction" note), and this guide.
+`companions/voxel`'s own fixture/dev use is 4230 for the native
+authoritative server; any ephemeral test server used only by this
+agent's own tests used port 4231 to avoid colliding with a
+concurrently-running dev server on the same shared machine (see
+`tests/vx_server_integration.rs`, which binds `127.0.0.1:0` and reads
+back the OS-assigned port rather than hard-coding one, so this is not
+actually a fixed-port collision risk in the test suite itself).
+
+### Resync and fault-handling contract (as implemented)
+
+`examples/mixed.rs`'s `Stage::drain_network` implements the client
+side of the protocol's resync rules:
+
+- **Snapshot**: `Sim::load_snapshot` replaces `world`/`seed`/
+  `speed_milli`/`rev` atomically, from the frame header's `rev` (not
+  the snapshot body, which carries no `rev` field of its own).
+  Rejects (and leaves `Sim` untouched) on a chunk outside
+  `SCENE_CHUNK_COORDS`, mismatched `ChunkDims`, or a wrong voxel byte
+  count — see the three new `sim::tests::load_snapshot_*` tests.
+- **Delta**: discarded (clearing the client's `HAVE_SNAPSHOT` flag, so
+  the next `vx_net_build_request` call produces a `Hello`) when
+  `base_rev != Sim::rev()`. Also discarded the same way if, after
+  applying the delta's own commands, `Sim::rev()` disagrees with the
+  frame header's declared post-frame `rev` — a corrupted or
+  internally-inconsistent Delta is treated exactly like a stale one,
+  not silently trusted.
+- **Error**: `World`/`Gap`/`Stale` clear `HAVE_SNAPSHOT` (forcing a
+  Hello resync next request). `Version` leaves state untouched (the
+  host, not the WASM side, is responsible for permanently stopping
+  retries on a Version error — `vx_net_build_request` cannot refuse to
+  be called again from the WASM side alone). `Rejected`/`Malformed`/
+  `TooLarge` leave `world`/`rev` unchanged, matching "rejected edit
+  unchanged rev + host message."
+- The client never falls back into an offline/local world on any of
+  the above: clearing `HAVE_SNAPSHOT` always means "ask the server for
+  a fresh Hello," never "simulate locally instead."
+
+### Isolated block-mesh comparison (benchmark-only)
+
+`experiments/voxel-comparison/` is a separate, isolated Rust crate
+(own empty `[workspace]`) that pins `block-mesh = "=0.2.0"` (MIT OR
+Apache-2.0) to compare `miniquad-voxel::mesh::build_chunk_mesh`
+against `block_mesh::visible_block_faces` on an identical,
+equivalently-isolated one-chunk workload. **This dependency is never
+added to any production, core, or companion `Cargo.toml`** — see that
+crate's own `Cargo.toml` comment and
+`docs/performance-evidence/2026-11-11-voxel-block-mesh-comparison.md`
+for the full receipt (742 == 742 quads correctness match; native-only
+timing; no WASM or GPU measurement taken). `scripts/compare-voxel.mjs`
+and `tests/voxel-comparison.test.mjs` provide a Node-side orchestrator
+and tests for that crate's binary output.
+
+### Mode B tests run and results
+
+All commands below were run from `companions/voxel/` with
+`PATH=$HOME/.cargo/bin:$PATH` (required for the
+`wasm32-unknown-unknown` target on this machine), against the commits
+listed in the final handoff PASS/BLOCKED/NOT RUN matrix (not
+reproduced here to avoid drift as later commits land).
+
+| Command | Result |
+| --- | --- |
+| `cargo test --lib --bins --tests --examples` | **Passed** — 96 tests (75 lib + 13 `vx_server` bin + 8 real-TCP integration), 0 failed |
+| `cargo clippy --lib --bins --examples --all-features` | Clean except pre-existing `src/math.rs` `add`/`sub` naming warnings (predate this work; not touched) |
+| `cargo build --release --target wasm32-unknown-unknown --examples --features webgl2` | **Passed** — both `offline` and `mixed` examples compile to WASM with WebGL2 enabled |
+| `node --test tests/voxel-net.test.mjs` | **Passed** — 8/8, host JS poller (in-flight limit, 2s abort, backoff schedule, version-error stop, dispose idempotency, discarded-input counter) |
+| `cargo test` (in `experiments/voxel-comparison/`) | **Passed** — 4/4, including a real-terrain correctness assertion |
+| `node --test tests/voxel-comparison.test.mjs` | **Passed** — 5/5, including one real `cargo run --release --bin compare` execution |
+
+### Mode B open items
+
+- **No real-browser (Playwright) run of `examples/mixed.rs` has been
+  taken yet** at the time this section was written; the WASM build
+  compiles, but on-screen HUD/scene rendering and the host poller's
+  real `fetch` behavior against `vx_server` have not been visually
+  verified in Chromium/Firefox/WebKit. Treat this as **NOT RUN**, not
+  passed, until a dedicated browser-evidence commit updates this
+  section.
+- **No BDD Given/When/Then feature files exist in this crate's owned
+  scope** (the parent owns `features/**`); only a scenario-to-test
+  mapping is provided alongside the final handoff artifacts.
+- **No WASM-side timing/memory measurement** has been taken for mode
+  B; see the performance-evidence doc's "Interpretation and limits"
+  section for the native-only scope of the one measurement that does
+  exist.

@@ -30,6 +30,15 @@ function createFixture() {
     return {context,errors,deleted,bound,pointer,putIds,env:vm.runInContext("importObject.env",context)};
 }
 
+test("glDepthMask forwards disabled and enabled depth writes", () => {
+    const f = createFixture();
+    const calls = [];
+    f.context.gl.depthMask = (flag) => calls.push(flag);
+    f.env.glDepthMask(0);
+    f.env.glDepthMask(1);
+    assert.deepEqual(calls, [0, 1]);
+});
+
 test("glDeleteQueries uses the supplied pointer and deletes each live query once",()=>{
     const f=createFixture();
     vm.runInContext("GL.timerQueries[2]={name:2}; GL.timerQueries[5]={name:5};",f.context);

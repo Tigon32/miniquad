@@ -1622,12 +1622,7 @@ impl RenderingBackend for GlContext {
         if let Some(v) = depth {
             bits |= GL_DEPTH_BUFFER_BIT;
             unsafe {
-                // `glClear`'s depth-bit clear is gated by the current
-                // depth mask: if the previously applied pipeline left
-                // writes disabled (`depth_write: false`), a clear would
-                // otherwise silently no-op. Force the mask true for the
-                // clear, then restore the real current state so the
-                // next draw call still gets the pipeline's own mask.
+                // Depth clears also obey the depth-write mask.
                 glDepthMask(true as _);
                 glClearDepthf(v);
             }
@@ -1779,18 +1774,6 @@ impl RenderingBackend for GlContext {
     }
 }
 
-/// Whether `GL_DEPTH_TEST` must be enabled for a pipeline with the given
-/// depth-write flag and depth-comparison function.
-///
-/// A pipeline can legitimately want to *test* against the depth buffer
-/// (e.g. to be occluded by already-drawn geometry) without *writing* to
-/// it (so it doesn't corrupt the depth buffer for later draws, such as a
-/// translucent sprite). The two settings are independent in the public
-/// `PipelineParams` API (`depth_test: Comparison`, `depth_write: bool`,
-/// matching `src/graphics/metal.rs`'s independent `setDepthCompareFunction`/
-/// `setDepthWriteEnabled` calls) and must stay independent here: testing
-/// is needed whenever writing is requested, OR whenever the comparison
-/// function is not the default no-op `Comparison::Always`.
 fn needs_depth_test(depth_write: bool, depth_test: Comparison) -> bool {
     depth_write || depth_test != Comparison::Always
 }
@@ -1811,11 +1794,6 @@ mod depth_state_tests {
 
     #[test]
     fn depth_test_enabled_when_only_testing_not_writing() {
-        // The exact case that was silently broken before this fix:
-        // `examples/mixed.rs`'s sprite pipeline (`depth_test:
-        // LessOrEqual, depth_write: false`) must still get
-        // `GL_DEPTH_TEST` enabled so it can be occluded by the terrain,
-        // even though it must not write its own depth.
         assert!(needs_depth_test(false, Comparison::LessOrEqual));
     }
 

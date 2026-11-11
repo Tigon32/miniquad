@@ -70,9 +70,18 @@ Protocol errors use HTTP `200` with an `Error` frame. HTTP parser errors use `40
 | `vx_sprite_pixel() -> u32` | Sprite centre in canvas pixels as `x << 16 \| y`. |
 | `vx_release_gpu()`, `vx_resources_live() -> u32` | Explicit GPU release protocol. |
 
-The mailbox is a module `static` (`Mutex` or a WASM `thread_local`). `Stage` reads it in `update`. No export stores a pointer to `Stage`.
+The mailbox is a module `static` (`Mutex` or a WASM `thread_local`). `Stage` reads it in `update`.
+
+> Correction: `vx_release_gpu` must release GPU resources even while the host has the app paused, and a paused app never runs another `draw` call to service that release. So one export (`vx_release_gpu`) does store a `Stage` pointer, captured once in `main` right after `Box::new(Stage::new())` heap-allocates it (not inside `Stage::new()`, where `self` is still a stack temporary that later moves). The real invariant: no export stores a pointer to a `Stage` value that a move or aliasing could invalidate. WASM here is single threaded with no re-entrant exports, so this pointer is read (by `vx_release_gpu`) only when no other export is executing.
+
 During a disconnect, the client discards queued inputs and counts them. The world stays read-only. Before the first snapshot, the client draws only the clear colour and the HUD.
 The host retries after 250 ms × 2^n, at most 4 s. It uses `AbortController` with a 2 s limit for each request and polls each 100 ms.
+
+## Revision overflow
+
+`Sim::apply` checks `rev.checked_add(1)` before any other check or mutation. At `rev == u32::MAX`, every command (even an otherwise valid one) is rejected with `SimError::RevisionOverflow`, mapped to the wire `Error` frame's `ErrorCode::Rejected` (7) exactly like every other rejection. `rev` never wraps back to `0`: it stays monotonically increasing, or the `Sim` stops changing.
+
+The HUD's six-digit revision cell shows `------` before the first snapshot, the zero-padded decimal value for `rev` in `0..=999_999`, and `EEEEEE` for `rev >= 1_000_000` (`hud::classify_revision`). This is a **display** limit only, not a transport error: the host's semantic status text always carries the full, true `u32` revision (read via the WASM export's return value, reinterpreted unsigned with `>>> 0` on the JS side).
 
 ## Rendering and GPU resources
 

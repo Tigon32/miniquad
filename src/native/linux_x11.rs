@@ -55,6 +55,42 @@ pub struct X11Display {
     drag_n_drop: drag_n_drop::X11DnD,
 }
 
+// EWMH `_NET_WM_STATE` client message actions
+// (https://specifications.freedesktop.org/wm-spec/latest/ar01s05.html#idm45613653536896).
+const NET_WM_STATE_REMOVE: isize = 0;
+const NET_WM_STATE_ADD: isize = 1;
+
+// The `_NET_WM_STATE` client message action for `set_fullscreen`.
+// Fix for #148: `fullscreen == false` must send REMOVE, not ADD, so an EWMH
+// window manager un-sets `_NET_WM_STATE_FULLSCREEN` and restores the prior
+// windowed geometry.
+fn net_wm_state_action(fullscreen: bool) -> isize {
+    if fullscreen {
+        NET_WM_STATE_ADD
+    } else {
+        NET_WM_STATE_REMOVE
+    }
+}
+
+#[cfg(test)]
+mod set_fullscreen_tests {
+    use super::{net_wm_state_action, NET_WM_STATE_ADD, NET_WM_STATE_REMOVE};
+
+    #[test]
+    fn entering_fullscreen_sends_add() {
+        assert_eq!(net_wm_state_action(true), NET_WM_STATE_ADD);
+    }
+
+    #[test]
+    fn leaving_fullscreen_sends_remove_not_add() {
+        // Regression test for #148: the old code always sent action `1`
+        // (ADD), even when asked to leave fullscreen, so a window manager
+        // never received a REMOVE request and the window stayed fullscreen.
+        assert_eq!(net_wm_state_action(false), NET_WM_STATE_REMOVE);
+        assert_ne!(net_wm_state_action(false), NET_WM_STATE_ADD);
+    }
+}
+
 impl X11Display {
     unsafe fn process_event(&mut self, event: &mut XEvent, event_handler: &mut dyn EventHandler) {
         match event.type_0 {
@@ -263,7 +299,13 @@ impl X11Display {
         }
     }
 
-    // `fullscreen == false` does not restore the windowed state: #148.
+    // Fix for #148: leaving fullscreen (`fullscreen == false`) now interns the
+    // real `_NET_WM_STATE_FULLSCREEN` atom and sends an EWMH REMOVE request
+    // (instead of an empty atom name and an ADD request), so the window
+    // manager can restore the prior windowed geometry. Verified by source
+    // review and a focused logic test (`net_wm_state_action`); a real
+    // Linux X11 runtime check (acceptance condition 3) is BLOCKED: no
+    // Linux X11 session or EWMH window manager was available to this agent.
     unsafe fn set_fullscreen(&mut self, window: Window, fullscreen: bool) {
         let wm_state = (self.libx11.XInternAtom)(
             self.display,
@@ -272,11 +314,7 @@ impl X11Display {
         );
         let wm_fullscreen = (self.libx11.XInternAtom)(
             self.display,
-            if fullscreen {
-                b"_NET_WM_STATE_FULLSCREEN\x00" as *const u8 as *const _
-            } else {
-                b"\x00" as *const u8 as *const _
-            },
+            b"_NET_WM_STATE_FULLSCREEN\x00" as *const u8 as *const _,
             false as _,
         );
 
@@ -288,28 +326,36 @@ impl X11Display {
             (self.libx11.XUnmapWindow)(self.display, window);
             (self.libx11.XSync)(self.display, false as _);
 
-            let mut atoms: [Atom; 2] = [wm_fullscreen, 0 as _];
-            (self.libx11.XChangeProperty)(
-                self.display,
-                window,
-                wm_state,
-                4 as _,
-                32,
-                PropModeReplace,
-                atoms.as_mut_ptr() as *mut _ as *mut _,
-                1,
-            );
+            if fullscreen {
+                let mut atoms: [Atom; 2] = [wm_fullscreen, 0 as _];
+                (self.libx11.XChangeProperty)(
+                    self.display,
+                    window,
+                    wm_state,
+                    4 as _,
+                    32,
+                    PropModeReplace,
+                    atoms.as_mut_ptr() as *mut _ as *mut _,
+                    1,
+                );
+            } else {
+                // Clear the property instead of replacing it with the
+                // fullscreen atom again: the earlier bug set this state
+                // unconditionally for both add and remove requests.
+                (self.libx11.XDeleteProperty)(self.display, window, wm_state);
+            }
             (self.libx11.XMapWindow)(self.display, window);
             (self.libx11.XRaiseWindow)(self.display, window);
             (self.libx11.XFlush)(self.display);
         }
 
         // however, this is X, so just in case - the second method
-        // send ClientMessage to the window with request to change property to fullscreen
+        // send ClientMessage to the window with request to change
+        // _NET_WM_STATE_FULLSCREEN (add it for true, remove it for false)
         {
             let mut data = [0isize; 5];
 
-            data[0] = 1;
+            data[0] = net_wm_state_action(fullscreen);
             data[1] = wm_fullscreen as isize;
             data[2] = 0;
 

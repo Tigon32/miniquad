@@ -114,6 +114,26 @@
       "mode": "browser"
     },
     {
+      "id": "GPU-004",
+      "group": "gpu",
+      "given": "the optional drawing companion owns live GPU objects",
+      "when": "the application requests release twice",
+      "then": "all tracked objects are deleted exactly once and frames continue",
+      "testFile": "tests/browser/drawing.spec.mjs",
+      "testTitle": "releases its GPU resources exactly once on request",
+      "mode": "browser"
+    },
+    {
+      "id": "GPU-005",
+      "group": "gpu",
+      "given": "a downstream crate uses only the public drawing API",
+      "when": "its compiled WASM starts in a browser",
+      "then": "the canvas contains rendered geometry without runtime errors",
+      "testFile": "tests/browser/drawing.spec.mjs",
+      "testTitle": "renders a downstream crate through the public drawing API",
+      "mode": "browser"
+    },
+    {
       "id": "GPU-003",
       "group": "gpu",
       "given": "a canvas is resized",

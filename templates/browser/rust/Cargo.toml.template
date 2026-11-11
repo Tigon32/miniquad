@@ -1,0 +1,19 @@
+[package]
+name = "{{PACKAGE_NAME}}"
+version = "0.1.0"
+edition = "2018"
+publish = false
+
+[[bin]]
+name = "{{PACKAGE_NAME}}"
+path = "src/main.rs"
+
+[dependencies]
+miniquad = { {{MINIQUAD_DEPENDENCY}} }
+
+[profile.release]
+opt-level = "s"
+lto = true
+panic = "abort"
+codegen-units = 1
+strip = true

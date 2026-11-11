@@ -4,7 +4,11 @@ on:
     branches: [master]
     paths:
       - 'tests/browser/**'
-      - 'js/gl.js'
+      - 'js/**'
+      - 'companions/draw/**'
+      - 'companions/voxel/**'
+      - 'templates/browser/**'
+      - 'scripts/create-browser-project.mjs'
       - 'examples/offscreen.rs'
       - 'playwright.config.mjs'
       - 'package.json'
@@ -38,6 +42,13 @@ jobs:
           cache: npm
       - name: Install locked tools
         run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Build optional drawing and external consumer fixtures
+        run: |
+          cargo build --release --target wasm32-unknown-unknown --manifest-path companions/draw/Cargo.toml --example showcase
+          cargo build --release --target wasm32-unknown-unknown --manifest-path companions/voxel/Cargo.toml --example offline
+          node scripts/create-browser-project.mjs "$RUNNER_TEMP/miniquad-browser-starter" --source path --miniquad-path "$GITHUB_WORKSPACE" --name miniquad-browser-starter
+          node "$RUNNER_TEMP/miniquad-browser-starter/scripts/build.mjs"
+          echo "MINIQUAD_STARTER_PATH=$RUNNER_TEMP/miniquad-browser-starter" >> "$GITHUB_ENV"
       - name: Install pinned Playwright browser engines and host dependencies
         run: npx playwright install --with-deps chromium firefox webkit
       - name: Run Chromium headless and Firefox/WebKit with virtual display

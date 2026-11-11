@@ -97,6 +97,13 @@ test("a required export must exist before startup", async () => {
     assert.equal(fixture.calls.main, 0);
 });
 
+test("disposed embedded runtime cannot start a compiled module", async () => {
+    const fixture = createFixture();
+    vm.runInContext("globalThis.miniquad_disposed = true", fixture.context);
+    await assert.rejects(fixture.load(), /disposed during startup/);
+    assert.equal(fixture.calls.main, 0);
+});
+
 test("plugin registers imports before module validation", async () => {
     const fixture = createFixture({imports:[{module:"env",name:"custom_import",kind:"function"}]});
     vm.runInContext('miniquad_add_plugin({register_plugin(imports){ imports.env.custom_import = () => 42; }})', fixture.context);

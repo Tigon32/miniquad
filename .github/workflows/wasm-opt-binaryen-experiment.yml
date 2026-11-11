@@ -59,6 +59,13 @@ jobs:
         run: node scripts/compare-rust-wasm-opts.mjs
       - name: Install locked browser tooling
         run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Build unoptimized adoption fixtures for full-suite compatibility
+        run: |
+          cargo build --release --target wasm32-unknown-unknown --manifest-path companions/draw/Cargo.toml --example showcase
+          cargo build --release --target wasm32-unknown-unknown --manifest-path companions/voxel/Cargo.toml --example offline
+          node scripts/create-browser-project.mjs "$RUNNER_TEMP/miniquad-browser-starter" --source path --miniquad-path "$GITHUB_WORKSPACE" --name miniquad-browser-starter
+          node "$RUNNER_TEMP/miniquad-browser-starter/scripts/build.mjs"
+          echo "MINIQUAD_STARTER_PATH=$RUNNER_TEMP/miniquad-browser-starter" >> "$GITHUB_ENV"
       - name: Install browser dependencies
         run: npx playwright install --with-deps chromium firefox webkit
       - name: Replace browser fixtures with verified wasm-opt candidates

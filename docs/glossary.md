@@ -16,6 +16,8 @@ See [MADR 0003](adr/0003-use-asd-ste100-for-communication.md).
 | **Interface contract** | Rules that define the data, types, ownership, version, and behavior at a boundary. | Implementation detail |
 | **WebAssembly module (WASM)** | Rust code that is compiled into a module for a WASM runtime. | JavaScript bridge |
 | **Browser bridge** | The JavaScript file `js/gl.js`. It connects browser functions and events to WASM. | Game engine |
+| **Embedding host** | The web page that owns controls and a container for an optional Miniquad runtime frame. | Browser bridge |
+| **Runtime frame** | A same-origin iframe that owns one Miniquad application, its canvas, and its browser state. | Security boundary |
 | **WebGL** | The browser graphics API that sends drawing commands to the GPU. | WebAssembly |
 | **Graphics context** | The state and access that a graphics backend uses for GPU operations. | HTML canvas element |
 | **GPU buffer** | Memory on the GPU that holds data for drawing. | JavaScript ArrayBuffer |

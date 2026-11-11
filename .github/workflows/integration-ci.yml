@@ -61,6 +61,19 @@ jobs:
         run: cargo check --target wasm32-unknown-unknown --lib
       - name: Build WASM example
         run: cargo build --release --target wasm32-unknown-unknown --example quad --example offscreen
+      - name: Test and build optional drawing companion
+        run: |
+          cargo test --manifest-path companions/draw/Cargo.toml
+          cargo fmt --manifest-path companions/draw/Cargo.toml -- --check
+          cargo build --release --target wasm32-unknown-unknown --manifest-path companions/draw/Cargo.toml --example showcase
+      - name: Build a fresh external browser consumer
+        run: |
+          cargo test --manifest-path companions/voxel/Cargo.toml
+          cargo fmt --manifest-path companions/voxel/Cargo.toml -- --check
+          cargo build --release --target wasm32-unknown-unknown --manifest-path companions/voxel/Cargo.toml --example offline
+          node scripts/create-browser-project.mjs "$RUNNER_TEMP/miniquad-browser-starter" --source path --miniquad-path "$GITHUB_WORKSPACE" --name miniquad-browser-starter
+          node "$RUNNER_TEMP/miniquad-browser-starter/scripts/build.mjs"
+          echo "MINIQUAD_STARTER_PATH=$RUNNER_TEMP/miniquad-browser-starter" >> "$GITHUB_ENV"
       - name: Save Cargo package cache before browser checks
         if: steps.cargo-cache.outputs.cache-hit != 'true'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -88,7 +101,7 @@ jobs:
       - name: JavaScript syntax check
         run: node --check js/gl.js
       - name: Browser bridge regression tests
-        run: node --test tests/*.test.cjs
+        run: node --test tests/*.test.cjs tests/*.test.mjs
       - name: Install locked JavaScript lint tools
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: ESLint browser bridge

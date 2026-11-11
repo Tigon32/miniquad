@@ -4,6 +4,28 @@
  */
 export default [
   {
+    files: ["js/**/*.mjs"],
+    languageOptions: {
+      ecmaVersion: 2022,
+      sourceType: "module",
+      globals: {
+        window: "readonly",
+        document: "readonly",
+        console: "readonly",
+        URL: "readonly",
+        URLSearchParams: "readonly",
+        queueMicrotask: "readonly",
+        AbortController: "readonly",
+        AbortSignal: "readonly"
+      }
+    },
+    rules: {
+      "no-undef": "error",
+      "no-unreachable": "error",
+      "no-unsafe-finally": "error"
+    }
+  },
+  {
     files: ["js/**/*.js"],
     languageOptions: {
       ecmaVersion: 2022,

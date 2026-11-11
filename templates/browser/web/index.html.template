@@ -1,0 +1,249 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{{TITLE}}</title>
+  <style>
+    /* --miniquad-foreground / --miniquad-background are read by the host
+       preference adapter (createHostPreferences) via getComputedStyle on
+       <html>. Each block below only changes these two custom properties
+       plus the page chrome; the adapter (not this stylesheet) forwards the
+       values on to the running application through setParameters(). */
+    :root {
+      --miniquad-foreground: #ffffff;
+      --miniquad-background: #10101a;
+    }
+    @media (prefers-color-scheme: light) {
+      :root {
+        --miniquad-foreground: #10101a;
+        --miniquad-background: #f5f5f5;
+      }
+    }
+    @media (prefers-contrast: more) {
+      :root {
+        --miniquad-foreground: #ffffff;
+        --miniquad-background: #000000;
+      }
+    }
+    @media (forced-colors: active) {
+      :root {
+        --miniquad-foreground: #ffffff;
+        --miniquad-background: #000000;
+      }
+    }
+    html, body {
+      margin: 0;
+      padding: 0;
+      font-family: system-ui, sans-serif;
+      background: var(--miniquad-background);
+      color: var(--miniquad-foreground);
+    }
+    main {
+      max-width: 720px;
+      margin: 0 auto;
+      padding: 1rem;
+    }
+    #host {
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      background: #000;
+      border-radius: 4px;
+      overflow: hidden;
+    }
+    #status[data-state="error"] {
+      color: #ff6b6b;
+    }
+    fieldset {
+      border: 1px solid #333;
+      border-radius: 4px;
+      margin-top: 1rem;
+    }
+    label {
+      display: block;
+      margin: 0.5rem 0;
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>{{TITLE}}</h1>
+    <p id="status" role="status" aria-live="polite" data-state="loading">Starting&hellip;</p>
+    <div id="host"></div>
+    <form id="controls">
+      <fieldset>
+        <legend>Playback</legend>
+        <button type="button" id="pause" disabled>Pause</button>
+        <button type="button" id="resume" disabled>Resume</button>
+        <button type="button" id="focus-app" disabled>Focus</button>
+      </fieldset>
+      <fieldset id="parameters" disabled>
+        <legend>Parameters</legend>
+        <label>
+          Animation speed
+          <input type="range" id="speed" min="0" max="2" step="0.05" value="1" />
+        </label>
+        <label>
+          Foreground color
+          <input type="color" id="foreground" value="#ffffff" />
+        </label>
+        <label>
+          Background color
+          <input type="color" id="background" value="#10101a" />
+        </label>
+      </fieldset>
+    </form>
+  </main>
+  <script type="module">
+    import { mount } from "./miniquad.mjs";
+    import { createHostPreferences, parseHostURLState } from "./host-preferences.mjs";
+
+    const statusEl = document.getElementById("status");
+    const host = document.getElementById("host");
+    const pauseBtn = document.getElementById("pause");
+    const resumeBtn = document.getElementById("resume");
+    const focusBtn = document.getElementById("focus-app");
+    const parametersFieldset = document.getElementById("parameters");
+    const speedInput = document.getElementById("speed");
+    const foregroundInput = document.getElementById("foreground");
+    const backgroundInput = document.getElementById("background");
+
+    function setStatus(text, state) {
+      statusEl.textContent = text;
+      statusEl.dataset.state = state;
+    }
+
+    // onError for createHostPreferences: an invalid or rejected host value
+    // must stay visible, never fail silently.
+    function showHostPreferenceError(error) {
+      setStatus("Error: " + error.message, "error");
+    }
+
+    // Mirrors the real app.state ("running" / "paused") into the status
+    // region. Called once after ready, and again on every adapter
+    // notification (reduced-motion changes, overrides, palette refreshes).
+    function syncStatusFromAppState() {
+      if (app.state === "running") {
+        setStatus("Running", "running");
+      } else if (app.state === "paused") {
+        setStatus("Paused", "paused");
+      }
+    }
+
+    const app = mount({
+      container: host,
+      wasmURL: new URL("./app.wasm", import.meta.url),
+      title: "{{TITLE}}",
+      paused: window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+    });
+
+    let prefs = null;
+    const extraPaletteListeners = [];
+
+    app.ready
+      .then(() => {
+        pauseBtn.disabled = false;
+        resumeBtn.disabled = false;
+        focusBtn.disabled = false;
+        if (app.supportsParameters) {
+          parametersFieldset.disabled = false;
+        }
+
+        // A lost WebGL context is reported out-of-band on the mount
+        // handle's frame, not through the ready/rejected promise.
+        app.frame.addEventListener("miniquaderror", (event) => {
+          showHostPreferenceError(event.detail);
+        });
+
+        prefs = createHostPreferences({
+          element: document.documentElement,
+          application: app,
+          onError: showHostPreferenceError,
+        });
+        prefs.subscribe(syncStatusFromAppState);
+        syncStatusFromAppState();
+
+        // The adapter only re-reads the --miniquad-* palette on its own
+        // when prefers-color-scheme changes. prefers-contrast and
+        // forced-colors also recolor this page (see the <style> above), so
+        // this starter asks the adapter to refresh explicitly whenever one
+        // of those two media features changes.
+        for (const condition of [
+          "(prefers-contrast: more)",
+          "(prefers-contrast: less)",
+          "(prefers-contrast: custom)",
+          "(forced-colors: active)",
+        ]) {
+          const list = window.matchMedia(condition);
+          const refresh = () => prefs.refreshPalette();
+          if (typeof list.addEventListener === "function") {
+            list.addEventListener("change", refresh);
+            extraPaletteListeners.push(() => list.removeEventListener("change", refresh));
+          } else if (typeof list.addListener === "function") {
+            // Safari < 14 fallback.
+            list.addListener(refresh);
+            extraPaletteListeners.push(() => list.removeListener(refresh));
+          }
+        }
+
+        // This starter only honors the "speed" host URL state key. The
+        // adapter also recognizes scene/look/view/resolution for richer
+        // hosts, but this starter has no such scenes or views, so those
+        // keys (and their validation errors) are intentionally ignored
+        // here rather than implied to exist.
+        const { values } = parseHostURLState(window.location.search);
+        if (values.speed !== undefined) {
+          speedInput.value = String(values.speed);
+          prefs.setSpeed(values.speed);
+        }
+      })
+      .catch((error) => {
+        setStatus("Error: " + error.message, "error");
+      });
+
+    pauseBtn.addEventListener("click", () => {
+      prefs?.setMotionOverride("paused");
+    });
+    resumeBtn.addEventListener("click", () => {
+      prefs?.setMotionOverride("running");
+    });
+    focusBtn.addEventListener("click", () => {
+      app.focus();
+    });
+
+    function applySpeedInput() {
+      prefs?.setSpeed(Number(speedInput.value));
+    }
+    // Native range pickers reliably fire "input" while dragging, so this
+    // alone would be enough for a mouse/touch drag. "change" is bound too
+    // because some input methods (keyboard step, programmatic/automated
+    // value changes) only fire "change", never "input".
+    speedInput.addEventListener("input", applySpeedInput);
+    speedInput.addEventListener("change", applySpeedInput);
+
+    for (const [input, property] of [
+      [foregroundInput, "--miniquad-foreground"],
+      [backgroundInput, "--miniquad-background"],
+    ]) {
+      const applyColorInput = () => {
+        document.documentElement.style.setProperty(property, input.value);
+        prefs?.refreshPalette();
+      };
+      // Native <input type="color"> pickers vary: most browsers fire both
+      // "input" (live, while the picker is open) and "change" (on commit),
+      // but some automation drivers and some browsers only dispatch one of
+      // the two. Both are bound so a value change is never missed.
+      input.addEventListener("input", applyColorInput);
+      input.addEventListener("change", applyColorInput);
+    }
+
+    window.addEventListener("pagehide", () => {
+      for (const removeListener of extraPaletteListeners.splice(0)) {
+        removeListener();
+      }
+      prefs?.dispose();
+      app.dispose();
+    });
+  </script>
+</body>
+</html>

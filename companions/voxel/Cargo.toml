@@ -1,0 +1,21 @@
+[workspace]
+
+[package]
+name = "miniquad-voxel"
+version = "0.1.0"
+authors = ["Tigon32 contributors"]
+edition = "2021"
+rust-version = "1.70"
+license = "MIT OR Apache-2.0"
+description = """
+Optional bounded offline voxel terrain and visible-face meshing companion
+for Miniquad. Not part of the Miniquad core crate. See docs/offline-voxel.md.
+"""
+publish = false
+
+[dependencies]
+miniquad = { path = "../../" }
+
+[[example]]
+name = "offline"
+path = "examples/offline.rs"

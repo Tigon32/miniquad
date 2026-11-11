@@ -846,23 +846,30 @@ mod tests {
         for (a_coord, label) in [
             ((0, 0, 0), "origin"),
             ((-50, 30, -2), "negative"),
-            ((HEX_COORD_MAX - 1, 0, 0), "near bound"),
+            ((HEX_COORD_MAX - 1, HEX_COORD_MIN + 1, 0), "near bound"),
+            ((HEX_COORD_MIN + 1, HEX_COORD_MAX - 1, 0), "opposite bound"),
         ] {
             let a = cell(a_coord.0, a_coord.1, a_coord.2);
-            let b = a.neighbor(HexFace::PosQ).unwrap();
             let a_corners = a.corners();
-            let b_corners = b.corners();
-            let k = HexFace::PosQ.index();
-            let j = (k + 1) % 6;
-            let bk = HexFace::NegQ.index();
-            let bj = (bk + 1) % 6;
-            // A's PosQ quad uses corners [k, k+6, j+6, j]; B's NegQ quad
-            // (the shared face from B's side) must use the same two
-            // positions, in reverse order.
-            assert_eq!(a_corners[k], b_corners[bj], "{label}: bottom corner k");
-            assert_eq!(a_corners[j], b_corners[bk], "{label}: bottom corner j");
-            assert_eq!(a_corners[k + 6], b_corners[bj + 6], "{label}: top corner k");
-            assert_eq!(a_corners[j + 6], b_corners[bk + 6], "{label}: top corner j");
+            for face in HexFace::SIDES {
+                let b_corners = a.neighbor(face).unwrap().corners();
+                let k = face.index();
+                let j = (k + 1) % 6;
+                let bk = face.opposite().index();
+                let bj = (bk + 1) % 6;
+                assert_eq!(a_corners[k], b_corners[bj], "{label}: {face:?} bottom k");
+                assert_eq!(a_corners[j], b_corners[bk], "{label}: {face:?} bottom j");
+                assert_eq!(
+                    a_corners[k + 6],
+                    b_corners[bj + 6],
+                    "{label}: {face:?} top k"
+                );
+                assert_eq!(
+                    a_corners[j + 6],
+                    b_corners[bk + 6],
+                    "{label}: {face:?} top j"
+                );
+            }
         }
     }
 
@@ -916,6 +923,16 @@ mod tests {
         assert_eq!(out.vertices.len(), 36);
         assert_eq!(out.indices.len(), 60);
         assert_eq!(out.indices.len() / 3, 20);
+        for indices in out.indices.chunks_exact(3) {
+            let [a, b, c] = [
+                out.vertices[indices[0] as usize],
+                out.vertices[indices[1] as usize],
+                out.vertices[indices[2] as usize],
+            ];
+            assert_eq!(a.normal, b.normal);
+            assert_eq!(a.normal, c.normal);
+            assert_ccw_from_outside(a.pos, b.pos, c.pos, a.normal);
+        }
     }
 
     // --- Interior culling: solid 3x3x3 hex block ---------------------------
@@ -939,43 +956,9 @@ mod tests {
         let mut out = MeshBuffers::new();
         build_hex_chunk_mesh(&world, coord, &palette, &mut out).unwrap();
 
-        // Count exterior faces analytically: for each of the 27 cells,
-        // a face is exterior if its neighbor is outside [0,3) on the
-        // relevant axis (missing neighbor chunk, so treated not solid).
-        let mut expected_faces = 0usize;
-        for z in 0i32..3 {
-            for y in 0i32..3 {
-                for x in 0i32..3 {
-                    for face in HexFace::ALL {
-                        let (dq, dr, dl) = face.delta();
-                        let (nq, nr, nl) = (x + dq, z + dr, y + dl);
-                        if !(0..3).contains(&nq) || !(0..3).contains(&nr) || !(0..3).contains(&nl) {
-                            expected_faces += 1;
-                        }
-                    }
-                }
-            }
-        }
-        let expected_vertices: usize = expected_faces / 8 * 36; // sanity cross-check below
-        let _ = expected_vertices;
-
-        // Direct recomputation using face_vertex_count for a precise check.
-        let mut expected_vertex_total = 0usize;
-        for z in 0i32..3 {
-            for y in 0i32..3 {
-                for x in 0i32..3 {
-                    for face in HexFace::ALL {
-                        let (dq, dr, dl) = face.delta();
-                        let (nq, nr, nl) = (x + dq, z + dr, y + dl);
-                        if !(0..3).contains(&nq) || !(0..3).contains(&nr) || !(0..3).contains(&nl) {
-                            expected_vertex_total += face_vertex_count(face);
-                        }
-                    }
-                }
-            }
-        }
-        assert_eq!(out.vertices.len(), expected_vertex_total);
-        assert!(expected_faces > 0);
+        // 84 faces: 18 caps, 4*9 axial sides, and 2*15 diagonal sides.
+        assert_eq!(out.vertices.len(), 18 * 6 + 66 * 4);
+        assert_eq!(out.indices.len(), 18 * 12 + 66 * 6);
     }
 
     // --- Cross-chunk culling, including the diagonal corner ----------------
@@ -1068,6 +1051,50 @@ mod tests {
         let mut out = MeshBuffers::new();
         build_hex_chunk_mesh(&world, a, &palette, &mut out).unwrap();
         assert_eq!(out.vertices.len(), 36 - 4);
+    }
+
+    #[test]
+    fn every_lateral_chunk_boundary_culls_only_its_resident_neighbor() {
+        let dims = ChunkDims::new(4, 3, 4);
+        let coord = ChunkCoord::new(-1, -1, -1);
+        let palette = [[0.0; 4], [0.5, 0.5, 0.5, 1.0]];
+        for local in [
+            [0, 1, 1],
+            [3, 1, 1],
+            [1, 1, 0],
+            [1, 1, 3],
+            [0, 1, 0],
+            [3, 1, 0],
+            [0, 1, 3],
+            [3, 1, 3],
+        ] {
+            let own_cell = HexCell::from_chunk_local(coord, local, dims).unwrap();
+            for face in HexFace::SIDES {
+                let (neighbor_coord, neighbor_local) = own_cell
+                    .neighbor(face)
+                    .unwrap()
+                    .to_chunk_local(dims)
+                    .unwrap();
+                if neighbor_coord == coord {
+                    continue;
+                }
+                let mut world = World::new(dims, 2).unwrap();
+                let mut chunk = Chunk::new(dims).unwrap();
+                chunk.set(local[0], local[1], local[2], 1).unwrap();
+                world.insert(coord, chunk).unwrap();
+                let mut out = MeshBuffers::new();
+                build_hex_chunk_mesh(&world, coord, &palette, &mut out).unwrap();
+                assert_eq!(out.vertices.len(), 36, "{local:?}: {face:?}, missing");
+                let mut neighbor = Chunk::new(dims).unwrap();
+                neighbor
+                    .set(neighbor_local[0], neighbor_local[1], neighbor_local[2], 1)
+                    .unwrap();
+                world.insert(neighbor_coord, neighbor).unwrap();
+                build_hex_chunk_mesh(&world, coord, &palette, &mut out).unwrap();
+                assert_eq!(out.vertices.len(), 32, "{local:?}: {face:?}, resident");
+                assert_eq!(out.indices.len(), 54, "{local:?}: {face:?}, resident");
+            }
+        }
     }
 
     // --- Dirty chunk sets ---------------------------------------------------
@@ -1165,10 +1192,13 @@ mod tests {
         chunk.set(0, 0, 0, 1).unwrap();
         world.insert(coord, chunk).unwrap();
         let mut out = MeshBuffers::new();
+        build_hex_chunk_mesh(&world, coord, &[[0.0; 4], [1.0; 4]], &mut out).unwrap();
+        assert!(!out.vertices.is_empty());
         // Empty palette: material 1 has no entry.
         let err = build_hex_chunk_mesh(&world, coord, &[], &mut out).unwrap_err();
         assert_eq!(err, HexMeshError::UnknownMaterial(1));
         assert!(out.vertices.is_empty());
+        assert!(out.indices.is_empty());
     }
 
     #[test]
@@ -1270,8 +1300,14 @@ mod tests {
         let palette = [[0.0, 0.0, 0.0, 0.0], [0.5, 0.5, 0.5, 1.0]];
         let mut out = MeshBuffers::new();
         build_hex_chunk_mesh(&world, coord, &palette, &mut out).unwrap();
-        let first_len = out.vertices.len();
+        let first_vertices = out.vertices.clone();
+        let first_indices = out.indices.clone();
+        let first_vertex_ptr = out.vertices.as_ptr();
+        let first_index_ptr = out.indices.as_ptr();
         build_hex_chunk_mesh(&world, coord, &palette, &mut out).unwrap();
-        assert_eq!(out.vertices.len(), first_len);
+        assert_eq!(out.vertices, first_vertices);
+        assert_eq!(out.indices, first_indices);
+        assert_eq!(out.vertices.as_ptr(), first_vertex_ptr);
+        assert_eq!(out.indices.as_ptr(), first_index_ptr);
     }
 }

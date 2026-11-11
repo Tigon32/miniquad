@@ -64,6 +64,11 @@ This check does not prove technical meaning or ASD-STE100 compliance.
 
 ## Local checks
 
+Use [local CI](docs/local-ci.md) with `npm run ci:local` or
+`npm run ci:local:gh` before you push a reviewed checkpoint.
+Use focused tests while you edit. Do not use repeated GitHub pushes as the test loop.
+Keep the final hosted PR checks and protected `master` rules.
+
 Run only the checks that apply to the change.
 Record a missing tool as **blocked**.
 

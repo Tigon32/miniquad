@@ -46,7 +46,7 @@ The picking rules are in section 2. The browser example and its tests are in sec
 
 ## Effects
 
-* Good: one new module and one line in `lib.rs`. Cubic behavior and the dependency graph do not change.
+* Good: separate `hex` and `hex_pick` modules. Cubic behavior and the dependency graph do not change.
 * Good: diagonal-chunk neighbors (`(x+1, z-1)` and `(x-1, z+1)`) use the existing per-axis rule.
 * Bad: the fixed cell size and layer height cannot change at runtime. A future change needs a revision.
 * Bad: no greedy meshing, no texture atlas, no transparent hex materials, no smooth normals.
@@ -70,5 +70,18 @@ Record the selection in a new MADR or a revision, with codec and parity evidence
 
 ## Evidence status
 
-No hex implementation, test run, or browser run exists for this decision.
-The decision stays **Proposed** until the #130 tests pass with recorded commands.
+The pure geometry implementation exists at `0d03cebea542314f4312ed21de912a60dc626fe0`.
+The #130 integration adds checks for all six shared sides, every lateral chunk
+boundary, the emitted triangle winding, and the exact 84 exterior faces of a
+solid 3x3x3 block.
+On macOS arm64, `cargo test --manifest-path companions/voxel/Cargo.toml` passed
+67 tests. The companion WASM check and the 10 root library tests also passed.
+The PR records the exact source revision and full commands.
+No browser or network result is claimed here. The decision stays **Proposed**.
+
+The picking implementation follows section 2 of the contract.
+It uses an analytic `f64` lattice and a bounded cell walk.
+Regression tests cover descending rays through empty layers, exact vertex ties,
+coordinate bounds, and rays that leave the layer slab.
+A separate downstream crate uses only public items.
+This is the pure picking part of #131, not browser qualification.

@@ -6,6 +6,9 @@ on:
       - 'tests/browser/**'
       - 'js/**'
       - 'companions/draw/**'
+      - 'experiments/drawing-comparison/external-consumer/**'
+      - 'experiments/draw-starter-consumption/**'
+      - 'tests/starter-generator.test.mjs'
       - 'companions/voxel/**'
       - 'templates/browser/**'
       - 'scripts/create-browser-project.mjs'
@@ -29,6 +32,12 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Restore copied worktree metadata in the local container
+        if: ${{ env.ACT }}
+        run: node scripts/prepare-local-git.mjs
+      - name: Bootstrap Rustup in the local container
+        if: ${{ env.ACT }}
+        run: bash scripts/install-local-rust.sh
       - name: Install Rust WASM target
         run: |
           rustup toolchain install stable --profile minimal
@@ -39,18 +48,21 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
-          cache: npm
+          cache: ${{ !env.ACT && 'npm' || '' }}
       - name: Install locked tools
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: Build optional drawing and external consumer fixtures
         run: |
           cargo build --release --target wasm32-unknown-unknown --manifest-path companions/draw/Cargo.toml --example showcase
+          cargo build --release --locked --target wasm32-unknown-unknown --manifest-path experiments/drawing-comparison/external-consumer/Cargo.toml --example consume
           cargo build --release --target wasm32-unknown-unknown --manifest-path companions/voxel/Cargo.toml --example offline
           node scripts/create-browser-project.mjs "$RUNNER_TEMP/miniquad-browser-starter" --source path --miniquad-path "$GITHUB_WORKSPACE" --name miniquad-browser-starter
           node "$RUNNER_TEMP/miniquad-browser-starter/scripts/build.mjs"
           echo "MINIQUAD_STARTER_PATH=$RUNNER_TEMP/miniquad-browser-starter" >> "$GITHUB_ENV"
       - name: Install pinned Playwright browser engines and host dependencies
         run: npx playwright install --with-deps chromium firefox webkit
+      - name: Build a Git-pinned generated drawing consumer
+        run: node experiments/draw-starter-consumption/generate-fixture.mjs
       - name: Run Chromium headless and Firefox/WebKit with virtual display
         run: |
           status=0
@@ -58,8 +70,15 @@ jobs:
           xvfb-run -a env MINIQUAD_HEADFUL=1 MINIQUAD_BROWSER=firefox npm run test:browser || status=1
           xvfb-run -a env MINIQUAD_HEADFUL=1 MINIQUAD_BROWSER=webkit npm run test:browser || status=1
           exit "$status"
+      - name: Test the generated drawing consumer in three engines
+        run: |
+          status=0
+          MINIQUAD_BROWSER=chromium npx playwright test --config experiments/draw-starter-consumption/playwright.config.mjs || status=1
+          xvfb-run -a env MINIQUAD_HEADFUL=1 MINIQUAD_BROWSER=firefox npx playwright test --config experiments/draw-starter-consumption/playwright.config.mjs || status=1
+          xvfb-run -a env MINIQUAD_HEADFUL=1 MINIQUAD_BROWSER=webkit npx playwright test --config experiments/draw-starter-consumption/playwright.config.mjs || status=1
+          exit "$status"
       - name: Store traces when an engine fails
-        if: failure()
+        if: ${{ failure() && !env.ACT }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: three-engine-failures

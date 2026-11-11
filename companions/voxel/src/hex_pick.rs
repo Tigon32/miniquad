@@ -347,8 +347,9 @@ pub fn pick_hex(
     let mut steps: u32 = 0;
     let start_point = add3(ray.origin, scale3(ray.dir, t));
     let mut cell_q_r = {
-        let cell = hex_cell_at_xz(start_point[0], start_point[2], params.min_layer)
-            .map_err(|_| HexPickError::InvalidParams)?;
+        let Ok(cell) = hex_cell_at_xz(start_point[0], start_point[2], params.min_layer) else {
+            return Ok(None);
+        };
         (cell.q(), cell.r())
     };
 
@@ -667,6 +668,32 @@ mod tests {
     }
 
     #[test]
+    fn ray_from_projected_pixel_passes_through_the_world_point() {
+        let camera = OrbitCamera::new(crate::math::Vec3::new(0.0, 1.5, 0.0), 14.0, 0.6, 0.5);
+        for viewport in [[640.0, 360.0], [1280.0, 720.0]] {
+            let matrix = camera
+                .projection_matrix((viewport[0] / viewport[1]) as f32)
+                .mul(&camera.view_matrix());
+            for point in [[0.0, 1.5, 0.0], [3.0, 4.0, 2.0], [-1.5, 4.0, 0.0]] {
+                let clip: [f64; 4] = std::array::from_fn(|row| {
+                    matrix.0[row] as f64 * point[0]
+                        + matrix.0[4 + row] as f64 * point[1]
+                        + matrix.0[8 + row] as f64 * point[2]
+                        + matrix.0[12 + row] as f64
+                });
+                let pixel = [
+                    (clip[0] / clip[3] + 1.0) * viewport[0] * 0.5,
+                    (1.0 - clip[1] / clip[3]) * viewport[1] * 0.5,
+                ];
+                let ray = ray_from_pixel(&camera, pixel, viewport).unwrap();
+                let offset = sub3(point, ray.origin);
+                assert!(dot3(offset, ray.dir) > 0.0);
+                assert!(length3(cross3(offset, ray.dir)) < 1e-4);
+            }
+        }
+    }
+
+    #[test]
     fn hex_cell_at_xz_picks_the_origin_cell_at_its_center() {
         let cell = hex_cell_at_xz(0.0, 0.0, 0).unwrap();
         assert_eq!((cell.q(), cell.r()), (0, 0));
@@ -747,6 +774,27 @@ mod tests {
     }
 
     #[test]
+    fn oblique_rays_enter_the_boundary_layer_after_slab_clipping() {
+        let cell = HexCell::new(0, 0, 3).unwrap();
+        let world = world_with_cell(cell);
+        for direction in [[0.2, -1.0, 0.3], [0.7, -1.0, -0.4], [-0.3, -1.0, 0.8]] {
+            let dir = normalize3(direction).unwrap();
+            for distance in [1.0, 3.0, 7.0, 9.0, 12.0] {
+                let ray = HexRay {
+                    origin: sub3([0.0, 4.0, 0.0], scale3(dir, distance)),
+                    dir,
+                };
+                let hit = pick_hex(&world, &ray, &pick_params())
+                    .unwrap()
+                    .unwrap_or_else(|| panic!("missed top at {direction:?}, distance {distance}"));
+                assert_eq!(hit.cell, cell);
+                assert_eq!(hit.face, Some(HexFace::Top));
+                assert!((hit.distance - distance).abs() < 1e-9);
+            }
+        }
+    }
+
+    #[test]
     fn invalid_pick_params_are_rejected() {
         let world = World::new(crate::chunk::ChunkDims::new(4, 4, 4), 4).unwrap();
         let ray = HexRay {
@@ -819,5 +867,18 @@ mod tests {
             max_layer: 3,
         };
         assert_eq!(pick_hex(&world, &ray, &params).unwrap(), None);
+    }
+
+    #[test]
+    fn a_valid_ray_outside_the_coordinate_bound_gives_no_hit() {
+        let world = world_with_cell(HexCell::new(0, 0, 1).unwrap());
+        for q in [crate::hex::HEX_COORD_MIN - 1, crate::hex::HEX_COORD_MAX + 1] {
+            let [x, z] = column_center(q, 0);
+            let ray = HexRay {
+                origin: [x, 10.0, z],
+                dir: [0.0, -1.0, 0.0],
+            };
+            assert_eq!(pick_hex(&world, &ray, &pick_params()), Ok(None));
+        }
     }
 }

@@ -951,6 +951,9 @@ var importObject = {
         glDepthFunc: function (func) {
             gl.depthFunc(func);
         },
+        glDepthMask: function (flag) {
+            gl.depthMask(flag);
+        },
         glBlendFuncSeparate: function (sfactorRGB, dfactorRGB, sfactorAlpha, dfactorAlpha) {
             gl.blendFuncSeparate(sfactorRGB, dfactorRGB, sfactorAlpha, dfactorAlpha);
         },

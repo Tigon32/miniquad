@@ -72,12 +72,16 @@ Each test record must give the GPU, driver, and display server.
 | Safari 26+ | iOS/iPadOS 26+, physical device | TARGETED (manual) | Shipped in Safari 26 | Not tested |
 | Chrome | Android 12+, physical device | TARGETED (manual) | ARM, Qualcomm, Intel GPUs since 121 | Not tested |
 
-**Version window:** a browser row covers the **current stable** major and the **previous stable** major.
-Vendors fix security faults only in the current stable release.
-The previous major covers the staged automatic update.
-Older majors are UNSUPPORTED.
-Each test record gives the exact browser version, the OS version, and the adapter information.
+**Consumer version window:** a browser row covers the **current, security-patched stable** release.
+A previous stable major can be in scope only as a **transition exception** while the vendor still supplies security updates for it.
+The project does not support a browser build that no longer gets vendor security updates.
+Each transition exception needs the fields in [Exceptions](#exceptions), including an applicability review of open browser advisories.
+Extended or ESR channels exist. They are out of the initial scope and need a separate policy decision.
 For Safari, the window is the Safari version on each included OS major, at its latest patch.
+
+**CI browser proof is separate:** a CI job can use an exact, locked browser build (for example a Playwright revision) to make tests repeatable.
+That locked build is test evidence for its exact version only. It does not extend the consumer window.
+Each test record gives the exact browser version, the OS version, and the adapter information.
 
 **Test tools are not platforms:**
 
@@ -91,12 +95,12 @@ For Safari, the window is the Safari version on each included OS major, at its l
 | --- | --- | --- | --- |
 | Apple OpenGL (`AppleGfxApi::OpenGl`, default) | `src/conf.rs` lines 76–89 | LEGACY | Metal passes #142–#144 on real Apple silicon, then one deprecation release |
 | Apple Metal (`AppleGfxApi::Metal`) | `src/graphics/metal.rs` | TARGETED | Must pass #142–#144 before it can be the default |
-| iOS OpenGL ES | `src/native/ios.rs` | LEGACY | Keep or remove decision for iOS native in Stage 1 |
+| iOS OpenGL ES | `src/native/ios.rs` | LEGACY | Classify step for iOS native (Flow A or B) |
 | WebGL1 (`WebGLVersion::WebGL1`, default) | `src/conf.rs` lines 91–103, `js/gl.js` lines 36–38 | LEGACY | WebGL2 has equal tested behavior |
 | WebGL2 (`WebGLVersion::WebGL2`) | `src/conf.rs`, `js/gl.js` line 102 | LEGACY (explicit selector during transition) | WebGPU gate below |
 | WebGPU | MADR 0015 proof ([#154](https://github.com/Tigon32/miniquad/issues/154)) | TARGETED | — |
-| Linux GLX fallback (`LinuxX11Gl`) | `src/conf.rs` lines 44–57 | Stage 1 decision | EGL passes on each TARGETED distribution |
-| Linux X11 default (`LinuxBackend::X11Only`) | `src/conf.rs` lines 59–74 | Stage 1 decision | Wayland passes [#152](https://github.com/Tigon32/miniquad/issues/152) and a qualified run |
+| Linux GLX fallback (`LinuxX11Gl`) | `src/conf.rs` lines 44–57 | Classify step | EGL passes on each TARGETED distribution |
+| Linux X11 default (`LinuxBackend::X11Only`) | `src/conf.rs` lines 59–74 | Classify step | Wayland passes [#152](https://github.com/Tigon32/miniquad/issues/152) and a qualified run |
 | Windows WGL OpenGL | `src/native/windows.rs` | TARGETED | Later modern-API decision |
 
 ### WebGL removal gate
@@ -104,10 +108,12 @@ For Safari, the window is the Safari version on each included OS major, at its l
 MADR 0015 keeps the current default during its proof and forbids an automatic WebGL fallback.
 Remove the WebGL selector and the WebGL code in `js/gl.js` only when **all** conditions are true:
 
-1. WebGPU passes the parity tests for the public rendering API.
-2. WebGPU is QUALIFIED on each QUALIFIED browser row on real hardware.
-3. One versioned release has WebGPU as default and WebGL as a deprecated explicit selector, with migration notes.
-4. No open P1 WebGPU regression exists.
+1. A PR freezes the **post-removal browser matrix**: each browser, OS, and CPU row that stays TARGETED or QUALIFIED after the removal.
+2. WebGPU passes the parity tests for the public rendering API.
+3. WebGPU is QUALIFIED on real hardware on **every** row in that frozen matrix.
+4. Each row that the removal drops from TARGETED or QUALIFIED has its own versioned policy decision. A row that is not tested is not dropped by default.
+5. One versioned release has WebGPU as default and WebGL as a deprecated explicit selector, with migration notes.
+6. No open P1 WebGPU regression exists.
 
 The trigger is these criteria, not a date.
 After removal, a browser without a WebGPU adapter gets an explicit unsupported error.
@@ -115,74 +121,93 @@ Do not keep a permanent legacy default or selector.
 
 ## Legacy removal checklist
 
-Do each stage in order. Each item group gets one bounded PR.
-Do not delete production code before Stages 1–3 pass for that group.
+Each item group gets its own bounded PR and its own flow. Groups do not wait for each other.
 This plan applies to platform claims and legacy code.
 It does not block pure geometry, protocol, editorial, or safety fixes.
 Do not close a safety issue because its platform can be removed later. Close it only when the fix passes or the code is removed.
 
-### Stage 0 — Policy
+### Common steps for each item
 
-- [ ] Owner accepts, changes, or rejects MADR 0016.
-- [ ] Record the decision in the ADR index.
+- [ ] **Policy:** the owner has accepted MADR 0016, or a later policy decision covers the item.
+- [ ] **Inventory:** record the source anchors, `cfg` branches, dependencies, CI jobs, tests, and documents.
+- [ ] **Classify:** mark the item **Keep** (supported compatibility) or **Remove** (dead legacy). Give the reason.
+- [ ] **Select the flow:** Flow A or Flow B below.
+- [ ] Link the item to its open issue and to [#156](https://github.com/Tigon32/miniquad/issues/156).
 
-### Stage 1 — Inventory and Keep/Remove decision
+| Group | Items to classify | Flow |
+| --- | --- | --- |
+| OS and CPU branches | tvOS `cfg` branches (`Cargo.toml`, `src/native.rs`, `src/lib.rs`, `src/graphics/metal.rs`, `src/native/apple/frameworks.rs`); iOS native; Android native and `ndk-sys = "0.2"`; 32-bit Arm | A |
+| Graphics paths | Apple OpenGL; iOS GLES; WebGL1; WebGL1 depth-texture extension path (`js/gl.js` lines 99 and 777); WebGL2; GLX fallback; GLSL `#version 100` guidance (`src/graphics.rs` line 1104) | B |
+| CI targets | `rust.yml`: `armv7-unknown-linux-gnueabihf`, `x86_64-apple-darwin`, `x86_64-apple-ios`; moving labels `ubuntu-latest`, `macos-latest`, `windows-latest`; `windows-file-drop-ci.yml`: `windows-2022` | A (labels: direct change) |
+| Dependencies | `winapi = "0.3"` (evaluate a maintained Windows binding); `objc-rs 0.2`; `ndk-sys 0.2` | B for a binding change; A when its platform goes |
+| Documents | README "Platform targets" upstream list; claims of "WebGL 1 - tested on iOS Safari" | Direct editorial change |
 
-- [ ] List each item below with its source anchor, dependency, CI job, test, and document.
-- [ ] Mark each item **Keep** (supported compatibility) or **Remove** (dead legacy). Give the reason.
-- [ ] Link each item to its open issue.
+### Flow A — Remove a platform with no replacement
 
-| Group | Items to classify |
-| --- | --- |
-| OS and CPU branches | tvOS `cfg` branches (`Cargo.toml`, `src/native.rs`, `src/lib.rs`, `src/graphics/metal.rs`, `src/native/apple/frameworks.rs`); iOS native; Android native and `ndk-sys = "0.2"`; 32-bit Arm |
-| Graphics paths | Apple OpenGL; iOS GLES; WebGL1; WebGL1 depth-texture extension path (`js/gl.js` lines 99 and 777); GLX fallback; GLSL `#version 100` guidance (`src/graphics.rs` line 1104) |
-| CI targets | `rust.yml`: `armv7-unknown-linux-gnueabihf`, `x86_64-apple-darwin`, `x86_64-apple-ios`; moving labels `ubuntu-latest`, `macos-latest`, `windows-latest`; `windows-file-drop-ci.yml`: `windows-2022` |
-| Dependencies | `winapi = "0.3"` (evaluate a maintained Windows binding); `objc-rs 0.2`; `ndk-sys 0.2` |
-| Documents | README "Platform targets" upstream list; claims of "WebGL 1 - tested on iOS Safari" |
+Use this flow when the project intentionally stops supporting an OS, CPU, or target.
 
-### Stage 2 — Low-risk removals (no replacement needed)
+- [ ] Record a versioned policy decision for the dropped row. Dropping a public OS or CPU is a compatibility change, also when no API item changes.
+- [ ] Give migration notes: the last version that contained the code and the supported alternatives.
+- [ ] Delete the code, `cfg` branches, dependencies, CI jobs, tests, and documents in one PR.
+- [ ] Bump the version as a compatibility change under the [#19](https://github.com/Tigon32/miniquad/issues/19) SemVer decision.
 
-- [ ] Remove CI targets for UNSUPPORTED platforms (`armv7`, `x86_64-apple-darwin`, `x86_64-apple-ios`) after Stage 1 marks them Remove.
+Acceptance: required CI and the gates for the remaining matrix pass; no orphan dependency, `cfg`, test, or document remains.
+
+### Flow B — Replace a backend or path
+
+Use this flow when a modern path replaces a legacy path on platforms that stay supported.
+
+1. **Replacement proof:** the replacement passes on every retained row that used the legacy path.
+   - [ ] Metal: #142, #143, #144 closed with real Apple silicon evidence.
+   - [ ] WebGL2 has tested parity with WebGL1 for the public API.
+   - [ ] WebGPU: MADR 0015 proof and parity tests ([#154](https://github.com/Tigon32/miniquad/issues/154)), then the [WebGL removal gate](#webgl-removal-gate).
+   - [ ] Linux: EGL and Wayland runs on each TARGETED distribution.
+   No software-adapter result counts as hardware evidence.
+2. **Deprecation release:**
+   - [ ] One versioned release changes the default to the proved replacement.
+   - [ ] The old selector remains only as an explicit, deprecated value with a clear deprecation message.
+   - [ ] Migration notes give the old item, the new item, and the code change.
+   - [ ] An unsupported configuration gets an explicit error, not a silent backend change.
+3. **Removal:**
+   - [ ] Delete the selector, enum variants, code paths, dependencies, tests, and documents.
+   - [ ] Bump the version as a breaking change under the #19 SemVer decision.
+   - [ ] Record the removal in the change log with the MADR and issue link.
+
+Acceptance: required CI and the qualification gates for the remaining matrix pass; no permanent legacy default or selector remains.
+
+### Direct changes (no flow)
+
 - [ ] Replace moving runner labels with explicit images.
-- [ ] Add TARGETED CI targets that have no job: `aarch64-apple-darwin`, `aarch64-pc-windows-msvc`, `aarch64-unknown-linux-gnu` (compile).
+- [ ] Add compile CI for TARGETED targets that have no job: `aarch64-apple-darwin`, `aarch64-pc-windows-msvc`, `aarch64-unknown-linux-gnu`.
 - [ ] Replace the README upstream platform list with a link to this guide.
-- [ ] Remove tvOS branches if marked Remove. tvOS has no test.
 
-Acceptance: the remaining matrix compiles; `node scripts/check-docs.mjs` passes; no public API change.
+Acceptance: `node scripts/check-docs.mjs` passes; the changed CI jobs run; no public API change.
 
-### Stage 3 — Replacement proof
+## Exceptions
 
-- [ ] Metal: #142, #143, #144 closed with real Apple silicon evidence.
-- [ ] WebGL2 has tested parity with WebGL1 for the public API.
-- [ ] WebGPU: MADR 0015 proof and parity tests ([#154](https://github.com/Tigon32/miniquad/issues/154)).
-- [ ] Linux: EGL and Wayland qualified runs on each TARGETED distribution.
+An exception keeps an item outside the policy for a limited time. Follow [MADR 0007](adr/0007-use-supported-and-secure-toolchains.md).
+Record each exception in [#156](https://github.com/Tigon32/miniquad/issues/156) or its linked issue with these fields:
 
-Acceptance: evidence records on the applicable OS, CPU, browser, and GPU. No software-adapter result as hardware evidence.
+| Field | Content |
+| --- | --- |
+| Item | The platform, browser version, backend, or dependency |
+| Reason | Why the policy cannot apply now |
+| Owner | A named person |
+| Risk | Applicable advisories and their review result |
+| Review date | The next check |
+| Expiry | The version or date when the exception ends |
 
-### Stage 4 — Deprecation release
-
-- [ ] One versioned release ([#19](https://github.com/Tigon32/miniquad/issues/19)) changes the defaults to the proved replacements.
-- [ ] Old selectors remain only as explicit, deprecated values. They log or return a clear deprecation message.
-- [ ] Migration notes give the old item, the new item, and the code change.
-- [ ] An UNSUPPORTED platform gets an explicit error, not a silent backend change.
-
-### Stage 5 — Removal
-
-- [ ] Delete the deprecated selectors, enum variants, code paths, `cfg` branches, dependencies, tests, and documents.
-- [ ] Bump the version as a breaking change under the #19 SemVer decision.
-- [ ] Record each removal in the change log with the MADR and issue link.
-
-Acceptance: required CI and the qualification gates for the remaining matrix pass; no orphan dependency, `cfg`, test, or document remains.
+An exception without an owner or expiry is not valid.
 
 ## Support window and update cadence
 
 * **macOS:** the two newest majors in the Apple security release list. Apple publishes no end date. Review at each new major (usually September).
 * **Windows 11:** versions that Microsoft lists in Home and Pro servicing. Review at each annual version and at each end date.
 * **Linux:** Ubuntu LTS releases in standard support and the current Debian stable. Review at each new LTS or Debian stable.
-* **Browsers:** current and previous stable major. Review the WebGPU state at each policy review.
+* **Browsers:** current security-patched stable. Prior major only as a bounded exception. Review the WebGPU state at each policy review.
 * **Policy review:** before each release, at a new OS major, and at least each quarter.
   A review can change the matrix only through a PR that updates this guide.
-  Removing a TARGETED or QUALIFIED row needs one deprecation release.
+  Removing a TARGETED or QUALIFIED row needs a versioned policy decision (Flow A).
 
 ## Security response
 
@@ -211,7 +236,7 @@ A row becomes QUALIFIED for a release candidate only with all of these:
 * [Windows 11 release information](https://learn.microsoft.com/en-us/windows/release-health/windows11-release-information): 26H2, 26H1, 25H2 in Home/Pro servicing; 24H2 Home/Pro at end of updates.
 * [Windows 10 Home and Pro lifecycle](https://learn.microsoft.com/en-us/lifecycle/products/windows-10-home-and-pro): support ended 2025-10-14.
 * [Debian releases](https://www.debian.org/releases/): Debian 13 is stable; five-year life cycle.
-* [Ubuntu release cycle](https://ubuntu.com/about/release-cycle): the page did not load in this check. Dates came from [endoflife.date](https://endoflife.date/ubuntu) (secondary): 24.04 standard support to 2029-05-31, 26.04 to 2031-05-29. Verify before acceptance.
+* [Ubuntu release cycle](https://ubuntu.com/about/release-cycle): the official page did not load in two separate checks. Dates came from [endoflife.date](https://endoflife.date/ubuntu) (secondary): 24.04 standard support to 2029-05-31, 26.04 to 2031-05-29. These dates are not verified from the official source.
 * Glibc: [Ubuntu noble libc6](https://packages.ubuntu.com/noble/libc6) `2.39`, [Ubuntu resolute libc6](https://packages.ubuntu.com/resolute/libc6) `2.43`, [Debian trixie libc6](https://packages.debian.org/trixie/libc6) `2.41`, [Debian bookworm libc6](https://packages.debian.org/bookworm/libc6) `2.36`.
 * [gpuweb implementation status](https://github.com/gpuweb/gpuweb/wiki/Implementation-Status) (edited 2026-10-02).
 * [Chromium Dash](https://chromiumdash.appspot.com/releases): Chrome stable 157 on Mac. [Firefox versions](https://product-details.mozilla.org/1.0/firefox_versions.json): 160.0, ESR 153.7.0.

@@ -76,8 +76,8 @@ Do not report a TARGETED platform as QUALIFIED.
 * **macOS:** the two newest macOS majors that receive Apple security updates, on Apple silicon (`aarch64-apple-darwin`). On 2026-11-11 this is macOS 27 and macOS 26. Intel Macs are UNSUPPORTED.
 * **Windows:** Windows 11 versions in Microsoft servicing for Home and Pro editions, x64. ARM64 is TARGETED. Windows 10 is UNSUPPORTED.
 * **Linux native:** glibc distributions in standard security support, x86_64 and aarch64: Ubuntu 24.04 LTS, Ubuntu 26.04 LTS, and Debian 13. Glibc floor: 2.39. A supported OS does not guarantee a supported GPU driver or backend.
-* **Browsers:** current stable and previous stable major of Chrome, Edge, and Firefox. Safari 26 or later on a supported macOS or iOS release. WebGPU support depends on the browser, OS, and adapter.
-* **iOS and Android native:** UNSUPPORTED until an owner supplies device tests. The code stays only until the Stage 1 keep or remove decision.
+* **Browsers:** the current, security-patched stable release of Chrome, Edge, and Firefox. A previous major is allowed only as a bounded transition exception while the vendor still patches it. Safari 26 or later on a supported macOS or iOS release. ESR and extended channels are out of the initial scope. A locked CI browser build is test evidence for its exact version only. WebGPU support depends on the browser, OS, and adapter.
+* **iOS and Android native:** UNSUPPORTED until an owner supplies device tests. The code stays only until its Keep or Remove classification.
 
 ### Apple graphics
 
@@ -96,7 +96,9 @@ This decision adds a removal plan for WebGL:
 2. **WebGL2** stays as an explicit, labeled selector only during the WebGPU transition.
 3. Remove the WebGL selector and `js/gl.js` WebGL code when **all** conditions are true:
    * WebGPU passes the parity tests for the public rendering API.
-   * WebGPU is QUALIFIED on each QUALIFIED browser row on real hardware.
+   * A PR freezes the post-removal browser matrix: each browser, OS, and CPU row that stays TARGETED or QUALIFIED.
+   * WebGPU is QUALIFIED on real hardware on **every** row in that frozen matrix.
+   * Each row that the removal drops has its own versioned policy decision. A row that is not tested is not dropped by default.
    * One versioned release contains WebGPU as the default and WebGL as a deprecated explicit selector, with migration notes.
    * No open P1 WebGPU regression exists.
 4. Do not use a calendar date alone as the removal trigger.
@@ -104,14 +106,24 @@ This decision adds a removal plan for WebGL:
 
 ### Legacy removal rule
 
-Each legacy item goes through these stages. The guide lists the items.
+The guide lists the items. Each item has its own bounded PR and does not wait for other items.
+First, record the inventory and classify the item as **Keep** (intentional supported compatibility) or **Remove** (dead legacy).
+Then use one of two flows:
 
-1. **Inventory:** list code, `cfg` branches, dependencies, CI jobs, tests, and documents.
-2. **Decision:** mark each item **Keep** (intentional supported compatibility) or **Remove** (dead legacy).
-3. **Replacement proof:** prove the replacement on the applicable platform before removal.
-4. **Deprecation:** one versioned release with migration notes and an explicit warning or error. No silent change of backend.
-5. **Removal:** delete code, configuration, dependencies, tests, and documents in one bounded PR for each item group.
-6. **Verification:** run the gates for the remaining matrix. Record the removed items in the change log.
+* **Flow A — remove a platform with no replacement.** A versioned policy decision drops the OS, CPU, or target.
+  Dropping a public OS or CPU is a compatibility change, also when no API item changes.
+  Give migration notes. Then delete the code, configuration, dependencies, tests, and documents.
+* **Flow B — replace a backend or path.** Prove the replacement on every retained row that used the old path.
+  Release one version with the new default and the old selector as an explicit deprecated value, with migration notes.
+  Then delete the selector and the old path. No silent change of backend.
+
+Both flows end with the gates for the remaining matrix and a change log entry.
+
+### Exceptions
+
+An exception keeps an item outside this policy for a limited time, as in MADR 0007.
+Each exception records the item, reason, owner, applicable advisory review, review date, and expiry.
+An exception without an owner or expiry is not valid.
 
 Do not keep an item only because an old consumer could use it.
 Do not keep a hidden fallback or a permanent legacy default.
@@ -134,7 +146,7 @@ A removal of a public API item is a breaking change. It follows the SemVer decis
 ## Confirmation
 
 1. The owner reviews and accepts or changes this proposal.
-2. Stage 1 inventory PR records Keep or Remove for each item in the guide.
+2. An inventory PR records Keep or Remove and Flow A or B for each item in the guide.
 3. Each removal PR links this MADR, #156, and its replacement evidence.
 4. A policy review runs at each new OS major or browser WebGPU change, and before each release.
 

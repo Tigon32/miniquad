@@ -45,11 +45,8 @@ static NET_IN_BUF: Mutex<[u8; NET_BUF_LEN]> = Mutex::new([0; NET_BUF_LEN]);
 static NET_OUT_BUF: Mutex<[u8; NET_BUF_LEN]> = Mutex::new([0; NET_BUF_LEN]);
 
 /// One decoded inbound frame, applied by `Stage::update`.
-#[allow(dead_code)] // `base_rev`/`rev`/`ErrorCode` are read once `apply_snapshot`
-// gains the `Sim::load_snapshot` seam described in its doc comment below;
-// kept here so the wire-accurate shape doesn't need to change later.
 enum Inbound {
-    Snapshot(protocol::Snapshot),
+    Snapshot { rev: u32, snapshot: protocol::Snapshot },
     Delta { base_rev: u32, rev: u32, commands: Vec<Command> },
     Error(protocol::ErrorCode),
 }
@@ -131,7 +128,7 @@ pub extern "C" fn vx_net_in_commit(len: u32) -> i32 {
     };
     let decoded = match header.kind {
         protocol::Kind::Snapshot => match protocol::decode_snapshot(body) {
-            Ok(snapshot) => Inbound::Snapshot(snapshot),
+            Ok(snapshot) => Inbound::Snapshot { rev: header.rev, snapshot },
             Err(_) => return 1,
         },
         protocol::Kind::Delta => match protocol::decode_delta(body) {
@@ -575,28 +572,61 @@ impl Stage {
         if let Some(inbound) = mailbox.take() {
             let mut sim_guard = SIM.lock().unwrap();
             match inbound {
-                Inbound::Snapshot(snapshot) => {
+                Inbound::Snapshot { rev, snapshot } => {
                     if let Some(sim) = sim_guard.as_mut() {
-                        apply_snapshot(sim, &snapshot);
+                        apply_snapshot(sim, rev, &snapshot);
                     }
                     HAVE_SNAPSHOT.store(true, Ordering::Relaxed);
                     self.dirty = true;
                 }
-                Inbound::Delta { commands, .. } => {
+                Inbound::Delta { base_rev, rev, commands } => {
                     if let Some(sim) = sim_guard.as_mut() {
-                        for command in commands {
-                            let _ = sim.apply(command);
+                        if base_rev == sim.rev() {
+                            for command in commands {
+                                let _ = sim.apply(command);
+                            }
+                            self.dirty = true;
+                            if sim.rev() != rev {
+                                // The header's declared post-frame
+                                // revision disagrees with what
+                                // applying its own commands produced:
+                                // treat this exactly like any other
+                                // resync trigger rather than silently
+                                // trusting a corrupted/inconsistent
+                                // Delta.
+                                HAVE_SNAPSHOT.store(false, Ordering::Relaxed);
+                            }
+                        } else {
+                            // "It discards a Delta with base_rev != rev
+                            // and sends Hello." The client itself does
+                            // not send requests; clearing HAVE_SNAPSHOT
+                            // makes the next vx_net_build_request call
+                            // build a Hello instead of further Inputs.
+                            HAVE_SNAPSHOT.store(false, Ordering::Relaxed);
                         }
                     }
-                    self.dirty = true;
                 }
-                Inbound::Error(_) => {
-                    // World/restart/gap/stale resync is the host's
-                    // job (it sends a fresh Hello); the client side
-                    // just stops treating the world as writable until
-                    // the next Snapshot. Nothing to roll back here:
-                    // Sim is never locally mutated speculatively in
-                    // mixed mode (see vx_input queuing instead).
+                Inbound::Error(code) => {
+                    use protocol::ErrorCode;
+                    match code {
+                        ErrorCode::World | ErrorCode::Gap | ErrorCode::Stale => {
+                            // "World/restart/gap/stale => Hello resync."
+                            HAVE_SNAPSHOT.store(false, Ordering::Relaxed);
+                        }
+                        ErrorCode::Version => {
+                            // "Version => stop": no retry, no resync.
+                            // The host-side poller already stops
+                            // polling on a version error; nothing to
+                            // change in Sim.
+                        }
+                        ErrorCode::Rejected | ErrorCode::Malformed | ErrorCode::TooLarge => {
+                            // Rejected/malformed/too-large: the world
+                            // stays exactly as it was (rev unchanged,
+                            // never a speculative local write to roll
+                            // back), matching "rejected edit unchanged
+                            // rev + host message".
+                        }
+                    }
                 }
             }
             drop(sim_guard);
@@ -639,23 +669,26 @@ impl Stage {
     }
 }
 
-/// Applies a decoded `Snapshot` by rebuilding `Sim`'s world to match
-/// it exactly (full resync), then bumping `rev` to the snapshot's
-/// declared revision via a zero-cost path: `Sim` has no direct
-/// "set state" constructor, so this replaces only the two scene
-/// chunks' voxel contents and leaves seed/scene layout fixed, which is
-/// the only thing a `Snapshot` for this fixed scene can change.
-fn apply_snapshot(sim: &mut Sim, _snapshot: &protocol::Snapshot) {
-    // NOTE: a full implementation needs a `Sim::replace_chunk`/`Sim::set_rev`
-    // seam that does not exist yet in `sim.rs` (it only exposes
-    // `apply(Command)`, which increments `rev` by exactly 1 per call
-    // and cannot set it to an arbitrary snapshot revision). Wiring
-    // this fully requires a small, additive `sim.rs` API change
-    // (e.g. `Sim::load_snapshot(chunks, rev, speed_milli)`), which is
-    // outside this file's ownership boundary callers should not widen
-    // silently. This is tracked as a known gap in the handoff report
-    // rather than papered over with an incorrect rev value.
-    let _ = sim;
+/// Applies a decoded `Snapshot` as a full resync: replaces `Sim`'s
+/// world, seed, speed, and revision with the snapshot's content via
+/// `Sim::load_snapshot`. On a decode/shape mismatch, leaves `Sim`
+/// untouched (the next request will still carry the old `rev`, and
+/// the server will resend a `Snapshot` rather than a useless `Delta`).
+fn apply_snapshot(sim: &mut Sim, rev: u32, snapshot: &protocol::Snapshot) {
+    let chunks: Vec<(miniquad_voxel::world::ChunkCoord, u8, u8, u8, &[u8])> = snapshot
+        .chunks
+        .iter()
+        .map(|c| {
+            (
+                miniquad_voxel::world::ChunkCoord::new(c.cx as i32, c.cy as i32, c.cz as i32),
+                c.dx,
+                c.dy,
+                c.dz,
+                c.voxels.as_slice(),
+            )
+        })
+        .collect();
+    let _ = sim.load_snapshot(snapshot.seed, snapshot.speed_milli, rev, &chunks);
 }
 
 const ARROW_KEY_STEP: f32 = 0.03;

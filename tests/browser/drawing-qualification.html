@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Drawing companion qualification (issue #123)</title>
+</head>
+<body>
+  <!-- Deliberately plain: the test drives DPR, resize, release, and GPU
+       resource-count checks from tests/browser/drawing.spec.mjs via
+       page.evaluate against this single scene container, mounted with
+       the repository's own, unmodified js/miniquad.mjs. This fixture
+       adds no instrumentation of its own: Playwright's own
+       `page.addInitScript` installs the WebGL create/delete counters
+       before any iframe script runs, so this file stays a plain host
+       page, not a copy of the companion's or bridge's implementation. -->
+  <div id="scene" style="width: 480px; height: 320px"></div>
+</body>
+</html>

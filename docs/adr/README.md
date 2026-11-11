@@ -18,6 +18,7 @@ The documents are **STE-aligned drafts**. We have not completed a full ASD-STE10
 * [0009 — Keep browser adoption tools outside the core library](0009-optional-browser-adoption-layer.md) — **Proposed**
 * [0011 — Add optional hexagonal-prism voxels beside cubic voxels](0011-optional-hexagonal-prism-topology.md) — **Proposed**
 * [0015 — Prove the WebGPU integration before selecting its implementation](0015-proof-gated-webgpu-migration.md) — **Proposed**
+* [0016 — Support a bounded set of modern, security-maintained platforms](0016-modern-platform-support-policy.md) — **Proposed**
 
 ## Write a new decision
 

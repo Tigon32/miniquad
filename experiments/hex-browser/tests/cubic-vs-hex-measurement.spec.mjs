@@ -7,15 +7,11 @@
 // Record real numbers, with any unavailable value left `null` with a
 // stated reason -- never fabricated.
 //
-// This spec supersedes `hex-offline.spec.mjs`'s "honest measurements"
-// case's `cubicComparison: { available: false, ... }` finding: that
-// finding assumed a cubic baseline could only come from the parent-
-// owned port 4173/4174 server. It does not have to: the cubic
-// `offline` example already lives in this same worktree
-// (`companions/voxel/examples/offline.rs`), so this harness can build
-// and serve its opt-in equal-cell fixture privately on port 4290,
-// exactly like the hex fixtures. The feature does not change the
-// default cubic example's dimensions or coordinates.
+// This spec supplies the equal-cell comparison referenced by
+// `hex-offline.spec.mjs`'s "honest measurements" record. The cubic
+// fixture uses an opt-in feature and runs on the same private port 4290
+// harness as the hex fixtures. The default cubic example's dimensions
+// and coordinates do not change.
 //
 // Honesty notes:
 //   - Frame-interval samples are measured for real in both engines'

@@ -690,7 +690,7 @@ test.describe("offline hex-voxel scene: honest measurements", () => {
             cubicComparison: {
                 available: true,
                 reason:
-                    "an alternating measurement of the actual cubic and hex examples is recorded by cubic-vs-hex-measurement.spec.mjs in this same private port-4290 tree. The cell counts differ; the receipt reports the exact dimensions and does not claim an equal-workload performance comparison.",
+                    "cubic-vs-hex-measurement.spec.mjs records an equal-cell fixture with 512 grid cells and 383 solid cells per scene; the default cubic example stays unchanged.",
                 seeArtifact: "cubic-vs-hex-<project>.json"
             },
             gpuMetricsUnavailable: {

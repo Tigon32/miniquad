@@ -1,165 +1,149 @@
-# Cubic vs hex: paired measurement receipt
+# Cubic vs hex: equal-cell measurement receipt
 
-Issue #131, "measurement" acceptance item. STE-aligned draft; full ASD-STE100
-dictionary review not done.
+Issue #131, measurement acceptance. **STE-aligned draft.** Full
+ASD-STE100 dictionary review not done.
 
-**Status: partial.** The required equal-cell workload is not met. This receipt
-measures the current examples with their actual configurations. Do not read the
-results as a direct performance comparison or a speed claim. The browser run
-uses 20 alternating page loads per engine, or 10 samples per scene. It does not
-meet the requested 20 paired runs.
-The measurements were collected at `a98966a350e64f7de6bc10dc0086e938366f62ed`,
-before this branch merged `origin/master` at
-`80e03a6f11624095a4d05abc3fd66a12713f99de` and the later master update
-`b83f88f9a4a834637e40fd4a6335ff27761cffa7`. They were not rerun on the merged
-source revision. A fresh measurement-fixture build is blocked on the host:
-`node experiments/hex-browser/build-fixtures.mjs` fails because the
-`wasm32-unknown-unknown` target is not installed; `rustup` is unavailable.
-`npm run ci:local` passed on the merged source, but it runs the root Chromium
-smoke lane and does not build or run this experiment's measurement fixture.
+**Measurement status: complete.** The test ran 20 alternating pairs in
+Chromium, Firefox, and WebKit. It used equal cell inputs. The measured
+geometry differs by topology. Do not read these results as a speed claim.
+Issue #131 stays open until the PR review and merge flow finish.
 
 ## Source and conditions
 
-- Measurement source SHA: `a98966a350e64f7de6bc10dc0086e938366f62ed` (branch `feat/hex-browser`).
-- Hex example source SHA before the measurement fixture:
-  `b76bb0f4cc25cd185b7bf2559e862bbe37128f01`.
-- Host: Darwin 25.6.0, macOS 26.7.1, Apple M3 Pro (arm64).
-- Compiler: `rustc 1.99.0 (b940084d7 2026-09-28) (Homebrew)`.
-- Test commands:
-  - `node experiments/hex-browser/build-fixtures.mjs`
-  - `npx playwright test --config=experiments/hex-browser/playwright.config.mjs --project=<chromium|firefox|webkit> --grep "paired/alternating"`
-  - (uses `cargo run --release --example measure_mesh` internally; `companions/voxel/examples/measure_mesh.rs`)
-- Test file: `experiments/hex-browser/tests/cubic-vs-hex-measurement.spec.mjs`.
-- Canvas: 640x360 CSS pixels, device pixel ratio 1, both scenes, all three engines.
-- World seed: `20261111`, 2 resident chunks (`MAX_RESIDENT_CHUNKS = 4`), both scenes.
-- Browser runs per engine: 20 alternating page loads (hex, cubic, hex, cubic, ...).
-  This is 10 samples per scene, not 20 pairs. The cell counts differ because the examples use
-  different chunk dimensions; this is not an equal-cell workload.
-- The cubic baseline is the UNCHANGED `companions/voxel/examples/offline.rs`,
-  built and served privately on this harness's own port 4290 (see
-  `build-fixtures.mjs`'s `buildCubicMeasurementFixture` and
-  `cubic-measurement.html`). It is never read as a module or edited, and the
-  root-owned port 4173/4174 harness (`tests/browser/serve.mjs`,
-  `tests/browser/starter.spec.mjs`) is never touched.
+- Source: `590764f906432d2fc6b7a01374ec0ae52266c919`, branch
+  `feat/hex-browser`.
+- Host: macOS 26.7.1, Darwin 25.6.0, arm64, Apple M3 Pro.
+- Toolchain: `rustc 1.99.1 (58cf8f9c3 2026-10-13)`, `cargo 1.99.0`,
+  Node.js `v26.10.0`, Playwright `1.56.1`.
+- Browser versions: Chromium `141.0.7390.37`, Firefox `142.0.1`,
+  WebKit `26.0`.
+- Build target: `wasm32-unknown-unknown`, release profile.
+- Both scenes used WebGL1, a 640x360 CSS canvas, DPR 1, seed `20261111`,
+  and two resident chunks.
+- Both measurement scenes used `ChunkDims(8, 4, 8)` and chunk coordinates
+  `(-1, 0, 0)` and `(0, 0, 0)`.
+- The cubic fixture used the opt-in `measurement-equal-cells` feature.
+  The default cubic example stays at `8x12x8` and coordinates
+  `(0, 0, 0)` and `(1, 0, 0)`.
+- Both scenes had 512 grid cells and 383 solid cells. Their mesh
+  topologies differ, so their vertex and index counts differ.
+- The test ran 40 page loads per engine: 20 per scene and 20 alternating
+  pairs. Each run sampled 60 animation-frame intervals and dropped the
+  first sample. The test reports each run's p95 and p99, then the
+  minimum, mean, and maximum of 20 run results.
+- `js/gl.js`: 79,921 bytes, gzip 17,920 bytes, SHA-256
+  `619ec1a0f38008a682677b055b617c2da687908ff6b2130e3d61c68b0af83ca7`.
+- The build emitted a `rust-objcopy` warning because `libLLVM.dylib` is
+  missing. All fixture builds exited successfully.
 
-## Known, real differences (not forced to match)
+The fixture build command was:
 
-- `ChunkDims`: cubic `(8, 12, 8)`, hex `(8, 4, 8)`. Both share the same 8x8
-  X/Z footprint and chunk coordinates (`(0,0,0)`/`(1,0,0)` cubic,
-  `(-1,0,0)`/`(0,0,0)` hex), but the hex scene has fewer Y layers. This is a
-  real property of each example, not a test artifact, so solid-cell and
-  vertex/index counts are expected to differ and are reported as-is.
-- Neither example exports a build-time probe (adding one to `offline.rs` is
-  against the issue's "stays unchanged" rule), so no in-browser/WASM
-  build-time claim is made for either scene. The build-time numbers below are
-  from a native (non-browser) host binary, clearly labeled as such.
+```sh
+RUSTC="$(rustup which rustc)" node experiments/hex-browser/build-fixtures.mjs
+```
 
-## Exact, deterministic mesh data (native host, not browser-measured)
+The browser measurement command ran the spec in one Playwright invocation
+so that all three engine results were retained:
 
-From `cargo run --release --example measure_mesh` (asserted internally to be
-identical across all 20 of its own alternating runs, and reproduced
-identically by every engine's run of the Playwright spec below):
+```sh
+RUSTC="$(rustup which rustc)" ./node_modules/.bin/playwright test \
+  --config=experiments/hex-browser/playwright.config.mjs \
+  experiments/hex-browser/tests/cubic-vs-hex-measurement.spec.mjs
+```
 
-| Scene | Vertices | Indices |
-| --- | --- | --- |
-| cubic | 5552 | 8328 |
-| hex | 3888 | 6600 |
+## Mesh data
 
-Native mesh-build time (nanoseconds, same host, 20 alternating runs; this is
-host build time, not an in-browser measurement):
+The native helper ran 20 alternating builds per scene in each browser test
+process. It asserted that cell counts and mesh counts stayed deterministic.
+Build times are host CPU time, not browser or WASM build time.
 
-| Scene | min | mean | p95 | p99 | max |
-| --- | --- | --- | --- | --- | --- |
-| cubic | ~73,600–74,200 | ~85,500–109,500 | ~103,500–225,900 | ~153,600–259,900 | ~153,600–259,900 |
-| hex | ~73,700–73,800 | ~82,700–100,200 | ~106,900–227,900 | ~107,500–230,800 | ~107,500–230,800 |
+| Engine | Scene | Grid cells | Solid cells | Vertices | Indices | Build min ns | Mean ns | p95 ns | p99 ns | Max ns |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| Chromium | cubic | 512 | 383 | 2392 | 3588 | 33625 | 41054 | 52292 | 99917 | 99917 |
+| Chromium | hex | 512 | 383 | 3888 | 6600 | 74333 | 81568 | 103917 | 136209 | 136209 |
+| Firefox | cubic | 512 | 383 | 2392 | 3588 | 33458 | 40052 | 40917 | 121125 | 121125 |
+| Firefox | hex | 512 | 383 | 3888 | 6600 | 74625 | 80283 | 101750 | 109625 | 109625 |
+| WebKit | cubic | 512 | 383 | 2392 | 3588 | 33875 | 75716 | 115458 | 119333 | 119333 |
+| WebKit | hex | 512 | 383 | 3888 | 6600 | 74667 | 161968 | 225208 | 266375 | 266375 |
 
-(Ranges above span the three per-engine Node processes that invoked the same
-native binary; see the per-engine JSON artifacts under
-`test-results/hex-browser/measurements/cubic-vs-hex-<project>.json`,
-gitignored, for exact single-run figures.)
+These are native CPU measurements. Neither scene exports a browser mesh-build
+probe. No browser build-time result is claimed.
 
-## WASM and JS byte sizes (identical across all three engines, same build)
+## WASM and JavaScript sizes
 
 | Asset | Raw bytes | Gzip bytes |
-| --- | --- | --- |
-| cubic WASM (`offline.wasm`, WebGL1) | 220,817 | 68,995 |
-| hex WASM (`offline_hex.wasm`, WebGL1) | 241,622 | 76,385 |
-| `js/gl.js` (shared by both scenes) | 78,360 | 17,478 |
+| --- | ---: | ---: |
+| Cubic measurement WASM | 221296 | 69000 |
+| Hex WASM | 242086 | 76420 |
+| Shared `js/gl.js` | 79921 | 17920 |
+| Cubic WASM plus JS | 301217 | 86920 |
+| Hex WASM plus JS | 322007 | 94340 |
 
-## Real browser-measured frame-interval percentiles (ms)
+The combined gzip value is the sum of the separately measured WASM and
+JavaScript gzip sizes. The test measured WebGL1 WASM sizes.
 
-20 alternating page loads per engine; 10 runs land on each scene. Each run
-samples 60 `requestAnimationFrame` intervals (first sample dropped) and
-computes that run's own p95/p99; the table below is the range and mean of
-those 10 per-scene p95/p99 values, not a single sample.
+## Frame intervals
 
-### Chromium 141.0.7390.37 (ANGLE/SwiftShader, confirmed software; see GPU note)
+Values are milliseconds. Each min, mean, and max is over 20 run-level
+percentiles for that scene. Means are rounded to three decimal places.
 
-| Scene | p95 min | p95 mean | p95 max | p99 min | p99 mean | p99 max |
-| --- | --- | --- | --- | --- | --- | --- |
-| cubic | 19.8 | 29.34 | 89.0 | 20.3 | 40.88 | 162.7 |
-| hex | 19.4 | 25.16 | 36.4 | 20.3 | 30.06 | 49.2 |
+| Engine | Scene | p95 min | p95 mean | p95 max | p99 min | p99 mean | p99 max |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| Chromium | cubic | 17.50 | 21.945 | 39.00 | 18.00 | 28.665 | 71.80 |
+| Chromium | hex | 16.90 | 27.830 | 70.50 | 18.20 | 36.635 | 82.90 |
+| Firefox | cubic | 9.00 | 10.300 | 16.00 | 10.00 | 11.850 | 20.00 |
+| Firefox | hex | 9.00 | 10.350 | 17.00 | 10.00 | 11.750 | 24.00 |
+| WebKit | cubic | 18.00 | 19.600 | 24.00 | 18.00 | 23.250 | 74.00 |
+| WebKit | hex | 18.00 | 19.500 | 23.00 | 18.00 | 25.000 | 71.00 |
 
-### Firefox 142.0.1
+The host was shared and the browsers ran headless. Some p99 ranges are wide.
+This is not a controlled performance benchmark. No speed or performance
+promotion claim is made.
 
-| Scene | p95 min | p95 mean | p95 max | p99 min | p99 mean | p99 max |
-| --- | --- | --- | --- | --- | --- | --- |
-| cubic | 9 | 9.70 | 10 | 10 | 10.50 | 13 |
-| hex | 9 | 10.80 | 23 | 9 | 11.60 | 24 |
+## WebGL and GPU limits
 
-### WebKit 26.0 (desktop, macOS; not iOS Safari)
+| Engine | WebGL version | Renderer string | Result |
+| --- | --- | --- | --- |
+| Chromium | WebGL 1.0 | ANGLE / Vulkan / SwiftShader | Software renderer, confirmed by the harness launch flags |
+| Firefox | WebGL 1.0 | `Apple M1, or similar` | Masked or generic. The physical GPU is not confirmed. |
+| WebKit | WebGL 1.0 | `Apple GPU` | Generic renderer string. The physical GPU is not confirmed. |
 
-| Scene | p95 min | p95 mean | p95 max | p99 min | p99 mean | p99 max |
-| --- | --- | --- | --- | --- | --- | --- |
-| cubic | 18 | 19.6 | 22 | 18 | 21.80 | 37 |
-| hex | 18 | 19.6 | 22.0 | 18 | 23.30 | 36 |
+WebGL does not provide a portable VRAM query. VRAM and driver-memory values
+are `null`, not estimated. The WebKit run is desktop WebKit, not iOS Safari.
+Mobile browsers and a dedicated hardware benchmark were not tested.
 
-No performance-promotion claim ("cubic/hex is faster/better") is made from
-this data: this is a shared, non-dedicated host running headless browsers
-under test-harness load, not a controlled performance-benchmarking
-environment, and the two scenes render different geometry (see "known, real
-differences" above).
+## Test results
 
-## GPU identity (honest, not fabricated)
+- `cargo test` in `companions/voxel`: passed, 88 tests.
+- `cargo check --release --example offline`: passed; default cubic profile.
+- `cargo check --release --example offline --features measurement-equal-cells`:
+  passed.
+- `cargo build --release --target wasm32-unknown-unknown --example offline`:
+  passed; default cubic profile.
+- `node --test tests/*.test.cjs`: passed, 85 tests.
+- `npm run lint:js`: passed.
+- The private fixture build: passed for hex WebGL1, hex WebGL2, and the
+  cubic equal-cell profile.
+- The measurement spec: passed, 3 tests, one per engine.
+- `hex-offline.spec.mjs`: passed, 54 tests across Chromium, Firefox, and
+  WebKit. This includes WebGL1/2 selection, picking, silhouettes, seams,
+  DPR, occlusion, release, and downstream builds.
+- `hex-offline.spec.mjs --grep "honest measurements"`: passed, 3 tests across
+  Chromium, Firefox, and WebKit.
+- `npm run ci:local`: passed on the Linux/arm64 local runner at source
+  `590764f906432d2fc6b7a01374ec0ae52266c919`.
+- `node scripts/check-docs.mjs`: passed.
 
-A one-off renderer/vendor probe (not part of the committed spec, run and
-discarded) reports:
-
-| Engine | `UNMASKED_RENDERER_WEBGL` | Note |
-| --- | --- | --- |
-| Chromium | `ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device ...), SwiftShader driver)` | confirmed software rendering (SwiftShader), per this harness's own `--use-angle=swiftshader` launch flag |
-| Firefox | `Apple M1, or similar` | Firefox returns a masked/generic string; this is NOT confirmed as software-only, and NOT confirmed as this host's real M3 Pro GPU either |
-| WebKit | `Apple GPU` | generic string; likely the host's real GPU via macOS's native WebKit GPU backend, not independently confirmed |
-
-No VRAM, driver-memory, or other GPU resource-usage value is measured or
-estimated for any engine; `gpuMetricsUnavailable.vramBytes` is `null` with a
-stated reason in every JSON artifact (WebGL has no portable query for it).
-
-## Scope not covered by this receipt
-
-- iOS Safari, Android Chrome, and any other mobile/real-device engine: not
-  installed/available in this environment: **blocked**, not claimed.
-- A controlled, dedicated-hardware performance benchmark: this host is shared
-  with other users/agents and the browsers ran headless under a test
-  harness; the frame-interval numbers above are real measurements taken
-  under those real (not idealized) conditions, and are reported as such,
-  not as a performance claim.
+The raw per-engine JSON records were saved outside the repository. The test
+can save records with `HEX_BROWSER_ARTIFACT_DIR`; otherwise it writes to the
+gitignored `test-results/hex-browser/measurements` directory.
 
 ## Reproduction
 
-```sh
-export PATH="$HOME/.cargo/bin:$PATH"   # rustup toolchain with wasm32 target
-node experiments/hex-browser/build-fixtures.mjs
-npx playwright test --config=experiments/hex-browser/playwright.config.mjs \
-  --project=chromium --grep "paired/alternating"
-npx playwright test --config=experiments/hex-browser/playwright.config.mjs \
-  --project=firefox --grep "paired/alternating"
-npx playwright test --config=experiments/hex-browser/playwright.config.mjs \
-  --project=webkit --grep "paired/alternating"
-```
+Use a Rust compiler with the `wasm32-unknown-unknown` target. Run the fixture
+build command above, then run the measurement command above. The Playwright
+spec records the source SHA, browser version, OS, WebGL version and renderer,
+cell counts, mesh counts, byte sizes, and frame-interval ranges.
 
-Each run writes
-`test-results/hex-browser/measurements/cubic-vs-hex-<project>.json`
-(gitignored; Playwright clears its `test-results/` output directory at the
-start of every invocation, so copy a run's JSON elsewhere before running
-another Playwright command if it must be kept).
+**Scope:** This receipt completes the measurement item for issue #131. It
+does not close the issue or claim that desktop WebKit tests iOS Safari.

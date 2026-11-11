@@ -72,7 +72,9 @@ Rule when `major` is `1` or more: a breaking result increases `major`. Otherwise
 
 For `0.5.0-tigon32.1.rc.1`, the previous core is the upstream `0.4.11`.
 `browserProtocolBreaking` is `true`: the bridge protocol changed from version 2 to version 3.
-`rustApiBreaking` is `false` from the observed source diff. The reviewer must confirm it.
+`rustApiBreaking` is `false` from the observed source diff. The candidate reviewer must confirm it.
+The core `0.5.0` is a **proposed** breaking-ABI decision. It does not change the crate name or `Cargo.toml`.
+The candidate can use it. A `.release` publication needs owner approval of it (section 15).
 
 A later candidate with the same core increases `R`.
 A later candidate with a different core starts at `F+1` and `rc.1`.
@@ -150,8 +152,8 @@ Reuse `compressionReport` and `percentile` from `scripts/profile-browser.mjs` if
 | `median(values)` | Mean of the two middle values when the count is even |
 | `nearestRank(sorted, p)` | Value at 1-based rank `ceil(p * n)` |
 | `medianConfidenceRanks(n, alpha = 0.05)` | Largest `k` with `P(Binomial(n, 0.5) <= k - 1) <= alpha / 2`. Returns `{low: k, high: n - k + 1, coverage}`. For `n = 20`: `{low: 6, high: 15}`, coverage about 0.9586 |
-| `observedStep(values)` | Smallest positive difference between two distinct values. `null` if fewer than two distinct values |
-| `evaluateMetric({baseline, candidate})` | Section 7.5 |
+| `clockResolution(samples)` | Input: arrays of consecutive `performance.now()` readings from section 7.3. Returns the smallest positive difference between consecutive readings, or `null` if no positive difference exists. Never returns `0` |
+| `evaluateMetric({baseline, candidate, resolution})` | Section 7.5. `resolution` is a positive number or `null` |
 | `createReleaseServer({packages})` | Section 6.1. Returns `{url, deploy(name), close()}` |
 
 ## 4. Paths and safety rules
@@ -160,7 +162,7 @@ Reuse `compressionReport` and `percentile` from `scripts/profile-browser.mjs` if
 * `--out` must not exist. The tool creates it. The tool fails if `--out` is inside a Git working tree or inside a system temporary directory.
 * The tool writes each file with the `wx` flag. It never overwrites.
 * The tool never deletes a file or a directory. The operator removes old work directories manually.
-* The tool never writes `--repo`, `--out`, the home directory, or the user name into a payload file.
+* The tool never writes the absolute paths `--repo`, `--out`, the home directory, or `CARGO_HOME` into a payload file.
   Console output can show them.
 * The tool never reads or writes a token. `collect-ci` uses the `gh` CLI and records only public run data.
 * The Git dependency URL is `https://github.com/Tigon32/miniquad.git`. The tool rejects any other URL and any URL that contains `@`.
@@ -171,13 +173,26 @@ Reuse `compressionReport` and `percentile` from `scripts/profile-browser.mjs` if
 
 ```sh
 node scripts/release-candidate.mjs prepare \
-  --sha <40-hex> --label <label> --role <baseline|candidate> \
+  --sha <40-hex> --role <baseline|candidate> \
+  [--label <label>] [--reference <bootstrap-reference|qualified-release>] \
   --repo <absolute clone path> --out <absolute new directory> [--lockfile <absolute Cargo.lock>]
 ```
 
+Role rules:
+
+| Role | `--label` | `--reference` |
+| --- | --- | --- |
+| `candidate` | Required. A valid `rc` label | Not permitted |
+| `baseline` with `bootstrap-reference` | Not permitted | Required |
+| `baseline` with `qualified-release` | Required. The label of that earlier `.release`. Its tag must point to `--sha` | Required |
+
+A baseline package never receives the candidate label.
+For the first candidate, the baseline package has `label: null` and `reference: "bootstrap-reference"`.
+It does not state that `f837a98` has a `0.5.0` label or a tag.
+
 Steps, in this order. Stop at the first failure.
 
-1. Validate `--sha` as 40 lowercase hexadecimal characters. Validate `--label`.
+1. Validate `--sha` as 40 lowercase hexadecimal characters. Validate `--role`, `--label`, and `--reference` with the role rules.
 2. Require `git -C <repo> cat-file -e <sha>^{commit}`.
 3. Require `git -C <repo> merge-base --is-ancestor <sha> refs/remotes/origin/master`. Record the SHA of `refs/remotes/origin/master`. The operator runs `git fetch origin master` before this step.
 4. Require that `Cargo.toml` at `<sha>` has `name = "miniquad"` and `version = "0.4.11"`. Require that `js/gl.js` at `<sha>` contains `const version = 3;`.
@@ -234,6 +249,7 @@ Canonical form, sorted by `file`, written as `JSON.stringify(value, null, 2)` pl
   "schema": "miniquad-release-payload/1",
   "label": "0.5.0-tigon32.1.rc.1",
   "role": "candidate",
+  "reference": null,
   "source": {"repository": "https://github.com/Tigon32/miniquad", "sha": "<40-hex>"},
   "abiVersion": 3,
   "files": [{"file": "app.wasm", "sha256": "<hex>", "bytes": 0, "sourcePath": null}]
@@ -242,6 +258,8 @@ Canonical form, sorted by `file`, written as `JSON.stringify(value, null, 2)` pl
 
 `generatedAt` and `updatedAt` go only to `receipts/build-timing.json`.
 The canonical manifest replaces `MANIFEST.json` in `payload/`.
+For a bootstrap baseline, `label` is `null` and `reference` is `"bootstrap-reference"`.
+For a candidate, `reference` is `null`.
 
 ### 5.4 Leak scan
 
@@ -250,14 +268,16 @@ Fail on any finding.
 
 | Rule ID | Match |
 | --- | --- |
-| `local-string` | Any operator-specific string: `--repo`, `--out`, home directory, `CARGO_HOME`, and the user name when it has three or more characters |
-| `unix-home` | `/Users/<name>/` or `/home/<name>/` |
+| `local-path` | One of the absolute paths `--repo`, `--out`, home directory, and `CARGO_HOME`, followed by `/` or `\\`. Do not scan for a path that is `/` or shorter than 4 characters |
+| `unix-home` | `/Users/<name>/`, `/home/<name>/`, or `/root/`, where `<name>` is one or more characters other than `/` |
 | `windows-home` | `<drive>:\Users\` with either slash direction |
 | `file-url` | `file:` followed by `//` |
 | `credential-url` | `http` or `https` URL with user information before `@` |
 | `token` | `ghp_`, `gho_`, `ghu_`, `ghs_`, `ghr_`, or `github_pat_` followed by 20 or more word characters |
 
 A finding records the file, the rule ID, and the byte offset. It does not record the matched text.
+Do not scan for a user name as a bare word. Words such as `root` in `:root` or `runner` can be valid content.
+Scan only for full path prefixes, standard user directory patterns, URLs, and token patterns.
 
 ### 5.5 Package layout
 
@@ -274,7 +294,7 @@ A finding records the file, the rule ID, and the byte offset. It does not record
 
 | Field | Value |
 | --- | --- |
-| `label`, `role` | From the command |
+| `label`, `role`, `reference` | From the command; `label` is `null` for a bootstrap baseline |
 | `assetSource.sha` | `--sha` |
 | `assetSource.originMasterSha` | SHA of `refs/remotes/origin/master` at step 3 |
 | `assetSource.generatorSha256` | SHA-256 of `scripts/create-browser-project.mjs` at `--sha` |
@@ -382,6 +402,7 @@ An init script records times in the top document with `performance.now()`. Time 
 | `warmFrameIntervalP50Ms` | As above, p50 | No, report only |
 | `wasmMemoryBytes` | `miniquadRuntime.exports.memory.buffer.byteLength` after the frame interval samples | No, report only |
 | `webglRenderer` | `UNMASKED_RENDERER_WEBGL` when available, else `null` | No, report only |
+| `clockSamples` | After each warm sample, in the top document and in the runtime frame: call `performance.now()` in a loop for 50 ms and keep each reading that differs from the previous reading, up to 2000 readings | Input to the timer floor in section 7.5 |
 | GPU memory, JavaScript heap, input latency, first visible pixel, network latency | `null` with reason `not measured: no portable API in this profile` | No |
 
 ### 7.4 `measure` command and pairing
@@ -406,18 +427,24 @@ node scripts/release-browser.mjs measure --baseline <package> --candidate <packa
 Let `B` be the baseline samples and `C` be the candidate samples.
 
 1. If `B` or `C` has fewer than 20 valid values, the result is `INCONCLUSIVE`.
-2. `step = observedStep(B ∪ C)`. Use `0` if it is `null`, and record `stepObserved: false`.
-3. `budget = nearestRank(sorted(B), 0.90) + step`.
-4. `m = median(C)`. `{low, high} = medianConfidenceRanks(|C|)`. `ciLow = sorted(C)[low - 1]`, `ciHigh = sorted(C)[high - 1]`.
-5. If `m <= budget`, the result is `PASS`.
-6. Else if `ciLow > budget`, the result is `FAIL`.
-7. Else the result is `INCONCLUSIVE`.
+2. `resolution` is the largest `clockResolution` value of all baseline and candidate runs of this engine in this session.
+   If any run gives `null`, the result is `INCONCLUSIVE`. Do not use `0`, a constant, or the sample spread instead.
+3. `limit = nearestRank(sorted(B), 0.90) + resolution`.
+4. `{low, high} = medianConfidenceRanks(|C|)`. `ciLow = sorted(C)[low - 1]`, `ciHigh = sorted(C)[high - 1]`.
+5. If `ciHigh <= limit`, the result is `PASS`.
+6. Else if `ciLow > limit`, the result is `FAIL`.
+7. Else the result is `INCONCLUSIVE`. This includes a median at or below `limit` with `ciHigh` above `limit`.
 
+The `resolution` term covers the quantization of the measured clock.
+It does not cover the one-frame poll quantization of `coldStartupToFirstFrameMs`. That quantization applies to both arms in the same way.
 Also report `median(B)`, `median(C) - median(B)`, and the percent change. They do not change the result.
 
 The session result is `PASS` only if all gated metrics in all engines pass.
 It is `FAIL` if one metric fails. Otherwise it is `INCONCLUSIVE`.
-A new session is a new workflow run. Keep all runs. If any retained run for the candidate has `FAIL`, the gate result is `FAILED`.
+A new session is a new workflow run. Keep all runs. Do not exceed three reference runs for one candidate label.
+The regression result is `PASS` only if the newest run is `PASS` and no run is `FAIL`.
+If any retained run for the candidate has `FAIL`, the gate result is `FAILED`.
+After three runs without `PASS`, make a new candidate label.
 
 **Meaning:** the guard detects a candidate whose typical value is above the upper baseline range in the same job.
 It is a relative regression limit for one reference profile.
@@ -484,26 +511,44 @@ A skipped, cancelled, pending, or absent job is not a pass.
 | `packages` | Canonical manifest SHA-256 for baseline and candidate; `reproducible: true` from `compare` |
 | `ci` | Output of `collect-ci` |
 | `drill` | `{reference, local}`. Each has the result, the profile, and the SHA-256 of `drill.json` |
-| `regression` | `{profileId, runId, result, metrics}`. The profile is `gha-ubuntu-24.04-x64-pw1.56.1` |
+| `regression` | `{profileId, runs: [{runId, result}], result, metrics}`. The profile is `gha-ubuntu-24.04-x64-pw1.56.1`. All runs for the label are listed |
 | `sizes` | Totals and deltas from section 7.6 |
 | `security` | Workflow run, open applicable findings, and approved risk decisions |
 | `changelog` | `CHANGELOG.md` at `candidateSha` has the heading `## <label>` |
 | `native` | Windows, Linux, macOS, Android, iOS, and other native targets: each `unqualified`, or a link to a separate evidence record |
 | `limits` | Section 12 limits, at least |
-| `review` | `{reviewer, reference, date, sizeIncreaseAccepted, sizeIncreaseReason, waivers}` |
+| `review` | `{reviewerKind, reviewer, method, reference, date, sizeIncreaseAccepted, sizeIncreaseReason, waivers, ownerApproval}`. Section 9.4 |
 
 ### 9.3 `evaluateGate` rules
 
 Evaluate all rules. Return all reasons.
 
 * `FAILED` if any of these is true: the drill result is `FAIL`; a retained regression run is `FAIL`; a required CI job has conclusion `failure`; `compare` failed; a payload leak finding exists.
-* Else `BLOCKED` if any of these is true: a field is missing or invalid; a CI job is absent or not `success`; the drill result is missing for the reference profile or the local exercise; the regression result is not `PASS`; the profile ID is different; `compatibility.derivedCore` differs from the label core; `cargoPackage` differs; the change log heading is missing; a native target is not `unqualified` and has no evidence link; `review.reviewer` or `review.reference` is empty; the size increased without acceptance; a waiver exists; `baseline.kind` is `bootstrap-reference` while a `tigon32-miniquad-v*.release` tag exists; `baseline.kind` is `qualified-release` and the baseline tag does not point to `baseline.sha`.
+* Else `BLOCKED` if any of these is true: a field is missing or invalid; a CI job is absent or not `success`; the drill result is missing for the reference profile or the local exercise; the regression result is not `PASS`; the profile ID is different; `compatibility.derivedCore` differs from the label core; `cargoPackage` differs; the change log heading is missing; a native target is not `unqualified` and has no evidence link; `review.reviewerKind`, `review.reviewer`, `review.method`, or `review.reference` is empty or invalid; `review.ownerApproval` is not `false`; the size increased without acceptance; a waiver exists; `baseline.kind` is `bootstrap-reference` while a `tigon32-miniquad-v*.release` tag exists; `baseline.kind` is `qualified-release` and the baseline tag does not point to `baseline.sha`.
 * Else `QUALIFIED-CANDIDATE`.
 
 `QUALIFIED-CANDIDATE` means that this candidate passed the listed checks in the listed profile and engines.
 It does not mean released, stable, or approved for publication.
 A waiver is recorded with check, scope, risk, owner, and expiry. A waiver keeps the result `BLOCKED`.
-The reviewer is a person. An agent cannot be the reviewer. The reviewer can be the repository owner.
+### 9.4 Candidate review and owner approval
+
+The candidate review and the owner approval are different records.
+
+| Field | Rule |
+| --- | --- |
+| `reviewerKind` | `person` or `automated` |
+| `reviewer` | For `person`, the GitHub login. For `automated`, the agent or tool name and model, for example `GitHub Copilot (automated agent)`. Never write a person's login for an automated review |
+| `method` | For `automated`, the exact commands, the tool SHA, and the input files that the review checked. For `person`, a short statement of what the person checked |
+| `reference` | URL of the PR comment or review that contains the decision |
+| `ownerApproval` | Must be `false` in a candidate gate record |
+
+An automated reviewer can give `QUALIFIED-CANDIDATE` when all technical, security, CI, browser, rollback, and regression rules pass.
+An automated review must not say that the owner approved, reviewed, or released the candidate.
+A candidate result or a rehearsal is never a release approval.
+
+A `.release` tag or any stable publication needs a separate record with explicit approval by the human owner `Tigon32`.
+That record links a comment or review by `Tigon32` that names the label and the candidate SHA.
+This contract does not define that record. A later decision must define it.
 
 ## 10. Change log
 
@@ -539,13 +584,13 @@ It must keep the upstream credit and link `docs/upstream-attribution.md`.
 ## 12. Operator sequence for `0.5.0-tigon32.1.rc.1`
 
 1. The implementer opens a PR with the section 3 files. Required local checks: `node --test tests/release-candidate.test.mjs`, `node --check` on both scripts, `node scripts/check-actions.mjs`, `node scripts/check-docs.mjs`.
-2. A person reviews and merges the PR. The merge commit is `S`.
+2. Review and merge the PR under the `protect_master` rules. The merge commit is `S`.
 3. On `master` at `S`, dispatch `Miniquad integration CI`, `Miniquad three-engine browser acceptance`, and `Security advisory review`. Wait for `success`.
 4. Create and push the annotated tag `tigon32-miniquad-v0.5.0-tigon32.1.rc.1` at `S`.
 5. Dispatch `Miniquad release candidate` on `master` at `S` with `baseline_sha` `f837a98d415262320a8c66ef9f8024d8f2faeab1` and `rollback_target` `bootstrap-reference`.
-6. On the macOS computer, run `prepare` for baseline and candidate in a new directory outside the repository and outside system temporary directories. Run the second `prepare` and `compare`. Run `drill` with all three engines. Optional: run `measure` with profile `local-macos-shared-rehearsal`. Its result is a rehearsal and does not enter `regression`.
+6. On the macOS computer, run `prepare` for the baseline with `--role baseline --reference bootstrap-reference` and for the candidate with `--role candidate --label 0.5.0-tigon32.1.rc.1`, in a new directory outside the repository and outside system temporary directories. Run the second `prepare` and `compare`. Run `drill` with all three engines. Optional: run `measure` with profile `local-macos-shared-rehearsal`. Its result is a rehearsal and does not enter `regression`.
 7. Run `collect-ci`. Write `gate.json`. Run `node scripts/release-candidate.mjs gate --record <gate.json>`.
-8. Open the evidence PR. The reviewer records the decision. Merge. Post the result to issue #19 with the exact SHAs and limits.
+8. Open the evidence PR. The candidate reviewer (section 9.4) records the decision. Merge. Post the result to issue #19 with the exact SHAs and limits. State that the result is not a release approval.
 
 If `master` moves before step 5, the reference job cannot have `github.sha == S`. Then make a new candidate from the new `master`.
 
@@ -557,9 +602,10 @@ If `master` moves before step 5, the reference job cannot have `github.sha == S`
 * Precedence: `rc.1 < rc.2 < rc.10 < release` for the same `F`; `F=1 release < F=2 rc.1`.
 * Core: `0.4.11` plus browser break gives `0.5.0`; plus change only gives `0.4.12`; `1.2.3` plus break gives `2.0.0`.
 * Manifest: reject `../x`, `a/b`, `.hidden`, a duplicate name, an extra file, a missing file, a hash mismatch, `dirty: true`, a different SHA, and an unknown top-level key. Accept a valid manifest and remove both timestamps.
-* Leak scan: find each rule ID in a synthetic buffer; the finding does not contain the matched text.
-* Statistics: `medianConfidenceRanks(20)` gives 6 and 15; `nearestRank` of 1 to 20 at 0.90 gives 18; `evaluateMetric` gives `PASS`, `FAIL`, and `INCONCLUSIVE` on fixed data; fewer than 20 values give `INCONCLUSIVE`.
-* Gate: a complete fixture gives `QUALIFIED-CANDIDATE`; removing any one required field gives `BLOCKED`; a bootstrap baseline with an existing `.release` tag gives `BLOCKED`; a regression `FAIL` gives `FAILED`; a waiver gives `BLOCKED`.
+* Leak scan: find each rule ID in a synthetic buffer; the finding does not contain the matched text; `:root {` and the word `runner` give no finding.
+* Statistics: `medianConfidenceRanks(20)` gives 6 and 15; `nearestRank` of 1 to 20 at 0.90 gives 18; `evaluateMetric` gives `PASS`, `FAIL`, and `INCONCLUSIVE` on fixed data; a median at or below the limit with `ciHigh` above the limit gives `INCONCLUSIVE`; fewer than 20 values give `INCONCLUSIVE`; a `null` clock resolution gives `INCONCLUSIVE`; `clockResolution` never returns `0`.
+* Prepare arguments: reject `--label` for a bootstrap baseline; reject a candidate without an `rc` label.
+* Gate: a complete fixture with `reviewerKind: "automated"` gives `QUALIFIED-CANDIDATE`; `ownerApproval: true` gives `BLOCKED`; a newest regression run that is not `PASS` gives `BLOCKED`; removing any one required field gives `BLOCKED`; a bootstrap baseline with an existing `.release` tag gives `BLOCKED`; a regression `FAIL` gives `FAILED`; a waiver gives `BLOCKED`.
 * Server: an unknown path and `..` give `404`; a matching ETag gives `304`; `deploy` changes the served hash.
 
 These tests check logic only. They do not replace the browser exercise or the reference job.
@@ -571,14 +617,14 @@ These tests check logic only. They do not replace the browser exercise or the re
 * Native platforms are **unqualified**.
 * The first rollback target is a bootstrap reference, not a qualified release.
 * Reproducibility is shown for one host and toolchain. Cross-host byte identity is not claimed.
-* Timer resolution in some engines is coarse. The `step` term includes it in the budget.
+* Timer resolution in some engines is coarse. The measured `resolution` term includes it in the limit. A coarse clock makes `INCONCLUSIVE` results more likely.
 * Startup metrics do not measure the first visible pixel. The pixel checks in section 6.2 prove correctness, not latency.
 
 ## 15. Open questions for the owner
 
 These questions do not block the candidate. They block a `.release` publication.
 
-1. Approve the label core `0.5.0` or select a different compatibility rule.
+1. Approve the proposed label core `0.5.0` or select a different compatibility rule. The candidate can use the proposed core before this approval.
 2. Decide the `Cargo.toml` version for a publication, and the product name under MADR 0006.
 3. Decide whether a GitHub Release object is necessary for a publication.
 4. Decide whether a physical device profile is necessary before a publication.

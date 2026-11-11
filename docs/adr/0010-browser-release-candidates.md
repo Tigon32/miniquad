@@ -79,7 +79,8 @@ The shared macOS development computer is not a controlled measurement host.
 | --- | --- |
 | Absolute targets | **Rejected.** No calibration data supports them. |
 | Mean difference with a t-test | **Rejected.** Frame and startup times are not normally distributed. |
-| **Baseline nearest-rank p90 plus one observed timer step, compared with the candidate median and its distribution-free confidence interval** | **Selected.** The rule uses the observed baseline distribution. It needs only sorting and binomial arithmetic. |
+| Candidate median at or below the limit, without a confidence bound | **Rejected.** A median can pass while its uncertainty is above the limit. |
+| **Limit = baseline nearest-rank p90 plus the measured clock resolution. PASS only when the upper 95% confidence bound of the candidate median is at or below the limit** | **Selected.** The rule uses the observed baseline distribution and the measured clock. It needs only sorting and binomial arithmetic. Uncertainty gives `INCONCLUSIVE`, not `PASS`. |
 
 ## Decision Outcome
 
@@ -97,7 +98,8 @@ The main rules follow.
   Start from upstream `0.4.11`. While the major version is `0`, a breaking change to the Rust public API or to the core browser contract increases the minor version and sets the patch version to `0`.
   An additive or corrective change increases the patch version.
 * The first candidate label is `0.5.0-tigon32.1.rc.1`.
-  The reason is the observed bridge protocol change from version 2 to version 3.
+  The core `0.5.0` is a **proposed** decision about a breaking ABI change: the observed bridge protocol change from version 2 to version 3.
+  It does not change the crate name or the `Cargo.toml` version.
 * `Cargo.toml` keeps `name = "miniquad"` and `version = "0.4.11"` for candidates.
   The candidate record states this difference. A `.release` publication requires an owner decision about the package version.
 * Optional companions, the embedding module, and the starter parameter surface keep their own versions.
@@ -113,6 +115,10 @@ The main rules follow.
 * Move build timestamps to a separate timing receipt. Keep a canonical payload manifest without timestamps.
 * Record SHA-256, raw bytes, gzip level 9 bytes, and Brotli quality 11 bytes for every shipped file.
 * Write new files only. Do not overwrite. Do not delete.
+* The leak scan uses full absolute path prefixes, standard user directory patterns, `file://`, credentialed URLs, and token patterns.
+  It does not scan for a bare user name, because words such as `:root` or `runner` are valid content.
+* Only the candidate package has a label. The baseline package has role `baseline`, the commit SHA, and a reference kind.
+  A bootstrap baseline has no label.
 
 ### Rollout and rollback exercise
 
@@ -125,7 +131,8 @@ The main rules follow.
 
 The first candidate uses `f837a98d415262320a8c66ef9f8024d8f2faeab1` as a **bootstrap reference**.
 At that commit, a local run passed 141 Playwright tests in Chromium, Firefox, and desktop WebKit.
-That commit is **not** a qualified release.
+That commit is **not** a qualified release. It has no fork label and no tag.
+Its package has `role: "baseline"`, `label: null`, and `reference: "bootstrap-reference"`.
 The first rollback exercise proves the rollback procedure and package integrity.
 It does not prove a return to a qualified state.
 When a `tigon32-miniquad-v*.release` tag exists, the gate rejects a bootstrap rollback target.
@@ -135,9 +142,11 @@ When a `tigon32-miniquad-v*.release` tag exists, the gate rejects a bootstrap ro
 * The reference profile is one manual GitHub-hosted `ubuntu-24.04` job with pinned Playwright browsers.
   Chromium runs headless with SwiftShader. Firefox and WebKit run under `xvfb-run`, as in the existing browser matrix.
 * The job builds both packages before measurement. It runs at least 20 alternating baseline and candidate pairs for each engine.
-* The budget for each gated metric is the baseline nearest-rank p90 plus one observed timer step from the same job.
-* The candidate passes a metric when its median is at or below the budget.
-  It fails when the lower confidence bound of its median is above the budget.
+* The limit for each gated metric is the baseline nearest-rank p90 plus the measured clock resolution of that engine in the same job.
+  The clock resolution is the smallest positive difference between consecutive `performance.now()` readings.
+  If it cannot be measured, the result is inconclusive. A synthetic zero or a constant is not permitted.
+* The candidate passes a metric only when the upper 95% confidence bound of its median is at or below the limit.
+  It fails when the lower confidence bound is above the limit.
   Other results are inconclusive. An inconclusive result blocks the gate.
 * GPU memory, JavaScript heap, input latency, physical devices, and network latency have `null` values with a reason.
 * A local run on the shared macOS computer is a rehearsal. It cannot satisfy the regression guard.
@@ -147,7 +156,12 @@ When a `tigon32-miniquad-v*.release` tag exists, the gate rejects a bootstrap ro
 The gate result is `QUALIFIED-CANDIDATE`, `BLOCKED`, or `FAILED`.
 Missing CI, ABI, browser, rollback, regression, security, change log, or approval evidence gives `BLOCKED`.
 `QUALIFIED-CANDIDATE` applies only to the recorded reference profile and engines.
-It is not a release approval. A `.release` publication needs a separate owner approval.
+The candidate reviewer can be a person or an automated agent, such as GitHub Copilot.
+The record states the reviewer kind, the identity, and the exact method.
+An automated review must not claim owner approval. The candidate gate record sets `ownerApproval: false`.
+Technical, security, CI, browser, rollback, and regression checks stay fail-closed. A waiver gives `BLOCKED`.
+A candidate result or a rehearsal is not a release approval.
+A `.release` tag or a stable publication needs a separate, explicit approval by the human owner `Tigon32`.
 Native platforms stay **unqualified** unless a separate evidence record exists for each target.
 
 ## Consequences
@@ -173,7 +187,7 @@ Native platforms stay **unqualified** unless a separate evidence record exists f
 2. Two package builds of the same commit in two new directories give identical payload bytes.
 3. The rollout and rollback exercise passes in Chromium, Firefox, and desktop WebKit, with retained screenshots.
 4. The manual reference-profile job retains the raw samples and the regression result.
-5. A reviewer records the gate decision in the candidate evidence record.
+5. A candidate reviewer, a person or an identified automated agent, records the gate decision in the candidate evidence record.
 6. This decision stays proposed until that evidence is reviewed and merged.
 
 ## References

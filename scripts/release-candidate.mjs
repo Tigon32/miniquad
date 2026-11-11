@@ -1265,13 +1265,15 @@ const REQUIRED_WORKFLOWS = [
   { workflow: "Miniquad release candidate", job: "reference" },
 ];
 
-export function collectCi(options) {
+export function collectCi(options, { execFileSyncImpl = execFileSync } = {}) {
   const sha = options.sha;
+  if (!isCommitSha(sha)) fail("--sha must be a 40-character lowercase hex commit SHA");
   const results = [];
   let runsRaw;
   try {
-    runsRaw = execFileSync("gh", [
+    runsRaw = execFileSyncImpl("gh", [
       "api",
+      "--hostname", "github.com",
       `repos/Tigon32/miniquad/actions/runs?head_sha=${sha}&per_page=100`,
     ]).toString("utf8");
   } catch (error) {
@@ -1284,7 +1286,8 @@ export function collectCi(options) {
   const runs = JSON.parse(runsRaw).workflow_runs ?? [];
   for (const required of REQUIRED_WORKFLOWS) {
     const matching = runs
-      .filter((run) => run.name === required.workflow && run.head_sha === sha)
+      .filter((run) => run.name === required.workflow && run.head_sha === sha &&
+        run.status === "completed" && run.event === "workflow_dispatch" && run.head_branch === "master")
       .sort((x, y) => new Date(y.created_at) - new Date(x.created_at));
     const newest = matching[0];
     if (!newest) {
@@ -1293,7 +1296,7 @@ export function collectCi(options) {
     }
     let jobsRaw;
     try {
-      jobsRaw = execFileSync("gh", ["api", `repos/Tigon32/miniquad/actions/runs/${newest.id}/jobs`]).toString("utf8");
+      jobsRaw = execFileSyncImpl("gh", ["api", "--hostname", "github.com", `repos/Tigon32/miniquad/actions/runs/${newest.id}/jobs`]).toString("utf8");
     } catch (error) {
       results.push({ ...required, conclusion: "absent", sha: newest.head_sha, runId: newest.id, jobId: null, url: newest.html_url, reason: error.message });
       continue;

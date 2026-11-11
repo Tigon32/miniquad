@@ -21,6 +21,7 @@ import {
   scanForLeaks,
   evaluateGate,
   gate,
+  collectCi,
 } from "../scripts/release-candidate.mjs";
 
 import {
@@ -512,6 +513,43 @@ test("evaluateRegression retains invalid samples even when more than 20 pairs re
 test("measure rejects invalid pair counts before loading browser dependencies", async () => {
   for (const pairs of ["invalid", 19, 20.5, Infinity]) {
     await assert.rejects(measure({ pairs }), /--pairs must be an integer of 20 or more/);
+  }
+});
+
+test("collectCi uses only the newest completed master dispatch for the exact SHA", () => {
+  const dir = mkdtempSync(join(tmpdir(), "release-ci-test-"));
+  const sha = "c".repeat(40);
+  const workflow = "Miniquad integration CI";
+  const run = { name: workflow, head_sha: sha, status: "completed", event: "workflow_dispatch", head_branch: "master" };
+  const calls = [];
+  try {
+    const result = collectCi({ sha, out: join(dir, "ci.json") }, {
+      execFileSyncImpl(command, args) {
+        assert.equal(command, "gh");
+        assert.deepEqual(args.slice(0, 3), ["api", "--hostname", "github.com"]);
+        const path = args[3];
+        calls.push(path);
+        if (path.includes("head_sha=")) {
+          return Buffer.from(JSON.stringify({ workflow_runs: [
+            { ...run, id: 1, created_at: "2026-11-11T00:00:00Z" },
+            { ...run, id: 2, created_at: "2026-11-11T01:00:00Z" },
+            { ...run, id: 3, created_at: "2026-11-11T02:00:00Z", status: "in_progress" },
+            { ...run, id: 4, created_at: "2026-11-11T03:00:00Z", event: "pull_request" },
+            { ...run, id: 5, created_at: "2026-11-11T04:00:00Z", head_branch: "other" },
+            { ...run, id: 6, created_at: "2026-11-11T05:00:00Z", head_sha: "a".repeat(40) },
+          ] }));
+        }
+        assert.equal(path, "repos/Tigon32/miniquad/actions/runs/2/jobs");
+        return Buffer.from(JSON.stringify({ jobs: [{ name: "rust-wasm", conclusion: "success", id: 20 }] }));
+      },
+    });
+    assert.equal(result[0].runId, 2);
+    assert.equal(result[0].sha, sha);
+    assert.equal(result[0].conclusion, "success");
+    assert.equal(calls.length, 2);
+    assert.ok(result.slice(1).every((entry) => entry.conclusion === "absent"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });
 

@@ -483,7 +483,9 @@ node scripts/release-candidate.mjs collect-ci --sha <candidate sha> --out <absol
 ```
 
 Use `gh api repos/Tigon32/miniquad/actions/runs?head_sha=<sha>&per_page=100` and the jobs API.
-For each required job, select the newest completed run with `head_sha` equal to the candidate SHA. Record the run ID, the job ID, the conclusion, and the URL.
+For each required job, select the newest completed `workflow_dispatch` run on
+`master` with `head_sha` equal to the candidate SHA.
+Record that SHA, the run ID, the job ID, the conclusion, and the URL.
 
 | Workflow name | Job | Required conclusion |
 | --- | --- | --- |

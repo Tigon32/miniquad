@@ -110,6 +110,12 @@ function cutToByteLimit(bytes, limit) {
     return bytes.subarray(0, end);
 }
 
+// The last status Rust reported successfully. Contract section 5: only
+// "wasm-load-failed" and "contract-mismatch" may have reporter "host"; if
+// reading a later status fails, `host.status()` serves this instead of
+// fabricating a new reporter-"host" status for a Rust-side condition.
+let lastRustStatus = null;
+
 function readStatus() {
     wasm.exports.mq_proof_status(statusOutPtr);
     const header = new DataView(memoryBuffer(), statusOutPtr, 8);
@@ -117,7 +123,9 @@ function readStatus() {
     const len = header.getUint32(4, true);
     const bytes = new Uint8Array(memoryBuffer(), ptr, len);
     const text = new TextDecoder("utf-8", {fatal: true}).decode(bytes);
-    return JSON.parse(text);
+    const parsed = JSON.parse(text);
+    lastRustStatus = parsed;
+    return parsed;
 }
 
 // -- Host object (contract section 4) -------------------------------------
@@ -129,8 +137,11 @@ const host = {
         if (!wasm) return fallbackStatus;
         try {
             return readStatus();
-        } catch (error) {
-            return hostStatus("failed", {code: "internal", message: String((error && error.message) || error)});
+        } catch {
+            // Rust already exists, so a read failure here is not a
+            // reportable "host" status (contract section 5); serve the
+            // last status Rust reported instead of inventing one.
+            return lastRustStatus || fallbackStatus;
         }
     },
     requestReadback() {
@@ -243,24 +254,37 @@ function compileShader(requestId, deviceHandle, codePtr, codeLen) {
         return;
     }
     const module = chosenDevice.createShaderModule({code});
-    module.getCompilationInfo().then(info => {
-        const hasError = info.messages.some(m => m.type === "error");
-        if (hasError) {
-            const text = info.messages
-                .filter(m => m.type === "error")
-                .map(m => m.message)
-                .join("; ") || "shader compilation failed";
-            reportShaderResult(requestId, false, 0, text);
-            return;
-        }
-        const handle = putHandle(module);
-        reportShaderResult(requestId, true, handle, "");
-    });
+    module.getCompilationInfo().then(
+        info => {
+            const hasError = info.messages.some(m => m.type === "error");
+            if (hasError) {
+                const text = info.messages
+                    .filter(m => m.type === "error")
+                    .map(m => m.message)
+                    .join("; ") || "shader compilation failed";
+                reportShaderResult(requestId, false, 0, text);
+                return;
+            }
+            const handle = putHandle(module);
+            reportShaderResult(requestId, true, handle, "");
+        },
+        error => {
+            // `getCompilationInfo()` should not reject under the contract's
+            // shared shaders, but an unhandled rejection would leave the
+            // state machine in "starting" forever; forward it as a
+            // shader-compilation failure instead.
+            reportShaderResult(requestId, false, 0, String((error && error.message) || error));
+        },
+    );
 }
 
 function reportShaderResult(requestId, ok, handle, message) {
     const {ptr, len} = allocText(message);
-    wasm.exports.mq_proof_shader_result(requestId, ok ? 1 : 0, handle, ptr, len);
+    // `js_compile_shader` is called synchronously from Rust, and the
+    // "device handle is unknown" branch above reports synchronously too;
+    // deferring one microtask keeps this call from nesting inside that
+    // call's state borrow (see `deferToRust`).
+    deferToRust(() => wasm.exports.mq_proof_shader_result(requestId, ok ? 1 : 0, handle, ptr, len));
 }
 
 function createPipeline(requestId, deviceHandle, shaderHandle) {
@@ -270,19 +294,25 @@ function createPipeline(requestId, deviceHandle, shaderHandle) {
         reportPipelineResult(requestId, false, 0, "device or shader handle is unknown");
         return;
     }
-    try {
-        const created = chosenDevice.createRenderPipeline({
-            layout: "auto",
-            vertex: {module: shaderModule, entryPoint: "vs_main"},
-            fragment: {module: shaderModule, entryPoint: "fs_main", targets: [{format: canvasFormat}]},
-            primitive: {topology: "triangle-list"},
-        });
-        pipeline = created;
-        const handle = putHandle(created);
-        reportPipelineResult(requestId, true, handle, "");
-    } catch (error) {
-        reportPipelineResult(requestId, false, 0, String((error && error.message) || error));
-    }
+    // `createRenderPipeline` (synchronous) never throws for a validation
+    // error; WebGPU reports that asynchronously. `createRenderPipelineAsync`
+    // rejects on a validation error, so pipeline-creation failures reach
+    // Rust instead of being lost.
+    chosenDevice.createRenderPipelineAsync({
+        layout: "auto",
+        vertex: {module: shaderModule, entryPoint: "vs_main"},
+        fragment: {module: shaderModule, entryPoint: "fs_main", targets: [{format: canvasFormat}]},
+        primitive: {topology: "triangle-list"},
+    }).then(
+        created => {
+            pipeline = created;
+            const handle = putHandle(created);
+            reportPipelineResult(requestId, true, handle, "");
+        },
+        error => {
+            reportPipelineResult(requestId, false, 0, String((error && error.message) || error));
+        },
+    );
 }
 
 function reportPipelineResult(requestId, ok, handle, message) {
@@ -510,5 +540,18 @@ async function start() {
 }
 
 start().catch(error => {
-    fallbackStatus = hostStatus("failed", {code: "internal", message: String((error && error.message) || error)});
+    // `wasm` is only assigned once the module instantiates; the two
+    // "wasm-load-failed" branches above already return before this point.
+    // An error reaching here after `wasm` exists is an unexpected host
+    // bug, not a reportable status (contract section 5: only
+    // "wasm-load-failed" and "contract-mismatch" may have reporter
+    // "host"), so it is logged, not turned into a fabricated status.
+    if (!wasm) {
+        fallbackStatus = hostStatus("failed", {
+            code: "wasm-load-failed",
+            message: String((error && error.message) || error),
+        });
+        return;
+    }
+    console.error("mq-proof-manual: unexpected error after the WASM module loaded", error);
 });

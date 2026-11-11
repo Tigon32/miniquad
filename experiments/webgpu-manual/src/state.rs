@@ -357,6 +357,15 @@ impl State {
         bytes_per_row: u32,
         format_code: u32,
     ) {
+        // `bytes` is owned by this call (claimed from the JS-to-Rust
+        // registry before this method runs) and is freed when it goes out
+        // of scope, regardless of the early returns below. A terminal
+        // phase (for example, after `dispose()`) must not mutate
+        // `self.readback` back to "ready" or "failed" for a readback that
+        // was pending when it became terminal.
+        if self.phase.is_terminal() {
+            return;
+        }
         // A late result for an old id is discarded; a new request replaces
         // the old one (contract section 6, readback rule 6).
         if id != self.readback.id || self.readback.phase != ReadbackPhase::Pending {
@@ -785,6 +794,21 @@ mod tests {
         state.on_readback_result(first_id, true, 256, 256, &vec![0u8; 256 * 256 * 4], 256 * 4, 0);
         assert_eq!(state.readback.phase, ReadbackPhase::Pending, "the superseded id must not update state");
         assert_eq!(state.readback.id, second_id);
+    }
+
+    #[test]
+    fn a_pending_readback_result_after_disposal_does_not_mutate_terminal_state() {
+        let mut state = running_state();
+        let id = state.request_readback();
+        assert_eq!(state.readback.phase, ReadbackPhase::Pending);
+        assert!(state.dispose());
+        state.on_readback_result(id, true, 256, 256, &vec![0u8; 256 * 256 * 4], 256 * 4, 0);
+        assert_eq!(
+            state.readback.phase,
+            ReadbackPhase::Pending,
+            "a readback result arriving after dispose must not become ready or failed"
+        );
+        assert_eq!(state.phase, Phase::Disposed, "dispose must stay the terminal phase");
     }
 
     #[test]

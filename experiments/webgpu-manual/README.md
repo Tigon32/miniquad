@@ -73,16 +73,15 @@ committed.
 
 ```sh
 ~/.cargo/bin/cargo test --lib
-# test result: ok. 43 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
+# test result: ok. 44 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
 node --check web/host.js
 # ok
 
-CARGO=~/.cargo/bin/cargo node build.mjs
-# Built debug into .../experiments/webgpu-manual/dist
-
-node --test tests/webgpu-proof/harness.test.mjs   # (repo root; shared harness unit tests)
-# tests 15, pass 15, fail 0
+CARGO=~/.cargo/bin/cargo node build.mjs --release
+# Built release into .../experiments/webgpu-manual/dist
+# dist/app.wasm: 61078 bytes (release; the earlier debug artifact was
+# ~2.4 MB and is not a size basis for comparison)
 
 node tests/webgpu-proof/run-proof.mjs --candidate manual --lane software   # (repo root)
 # T1  pass
@@ -101,10 +100,57 @@ node tests/webgpu-proof/run-proof.mjs --candidate manual --lane software   # (re
 ```
 
 All of T1-T7 (render path) and N1-N5 (rejection path) pass on the real
-software lane (SwiftShader, Chromium, Playwright). This is a single local
-run, not a substitute for the eventual common CI harness run. Hardware
-(a real, non-fallback GPU adapter) and native platforms were **not
-tested**.
+software lane (SwiftShader, Chromium, Playwright) against the **release**
+build. This is a single local run, not a substitute for the eventual
+common CI harness run. Hardware (a real, non-fallback GPU adapter) and
+native platforms were **not tested**.
+
+## Must-fix round (conditional accept)
+
+An independent rerun of the prior commit passed, with five required
+fixes before an A/B comparison:
+
+1. **Pipeline creation is now asynchronous.** `createPipeline()` used
+   `GPUDevice.createRenderPipeline()` (synchronous), which never throws
+   for a validation error; WebGPU only reports that asynchronously.
+   `GPUDevice.createRenderPipelineAsync()` is used instead, and its
+   promise's rejection is forwarded to Rust as `pipeline-creation`
+   (contract section 6). No fixture in the frozen shared shaders drives
+   an actual pipeline-validation failure, so this path is covered by code
+   review and by `createRenderPipelineAsync`'s success path running on
+   every T1-T6 case, not by a dedicated rejection test case.
+2. **`compileShader`'s "unknown device handle" branch deferred.** It
+   called `reportShaderResult` synchronously, the same reentrancy risk
+   already fixed for `js_request_context`/`js_create_pipeline`/
+   `js_render_frame`. `reportShaderResult` now wraps its export call in
+   `deferToRust` (one microtask), matching `reportPipelineResult`.
+3. **`getCompilationInfo()` rejection is now handled.** The `.then(...)`
+   call had no rejection handler; an unhandled rejection would leave the
+   state machine stuck in "starting" forever. A `.catch(...)` now
+   forwards a `shader-compilation` failure to Rust.
+4. **`host.status()` and `start().catch()` no longer fabricate a
+   `reporter: "host"` status after the module has loaded.** Contract
+   section 5: only `wasm-load-failed` and `contract-mismatch` may have
+   `reporter: "host"`. Both places used to synthesize
+   `{reporter: "host", code: "internal"}` on any post-load failure. The
+   last Rust-reported status is now cached (`lastRustStatus`) and served
+   by `status()` on a read failure instead; `start().catch()` only
+   fabricates `wasm-load-failed` when `wasm` never got assigned, and
+   otherwise only logs (`status()` keeps serving Rust's last report).
+5. **A pending readback result arriving after `dispose()` no longer
+   mutates readback state.** `on_readback_result` (`src/state.rs`) only
+   checked the request id and `ReadbackPhase::Pending`, not the overall
+   `Phase`; a result that arrived after `dispose()` set `phase` to
+   `Disposed` could still flip `readback.phase` to `Ready`/`Failed`. An
+   `if self.phase.is_terminal() { return; }` guard was added before the
+   existing id/phase check. The payload (`Vec<u8>` claimed by
+   `mq_proof_readback_result`) is already freed on return regardless, so
+   no separate free call was needed. Covered by a new unit test,
+   `a_pending_readback_result_after_disposal_does_not_mutate_terminal_state`.
+
+Rust unit tests: 44/44 (43 prior plus the new disposal-race test). The
+shared harness and shared shaders were not edited; no oracle was
+weakened.
 
 ## Imports and exports (ownership)
 

@@ -21,6 +21,9 @@ applications that do not select this package.
 
 ## Ownership and package boundary
 
+Use the [drawing starter recipe](browser-starter-drawing.md) to add this
+package to a generated external browser project without copying its implementation.
+
 `companions/draw/` is a **standalone Rust crate**. It is not a Cargo
 workspace member of the root `miniquad` crate and the root `Cargo.toml`
 is not changed. It depends on `miniquad` by path (`../../`), the same way
@@ -99,39 +102,146 @@ dropped automatically, because releasing miniquad GPU resources needs
 
 ## Comparison evidence and artifact receipt
 
-On 2026-11-11, the GitHub API reported that `nical/lyon` was not archived.
-Its last push was on 2026-11-05.
-At [source `c3e869fa385876552972bf88402c815718e6e2cd`](https://github.com/nical/lyon/tree/c3e869fa385876552972bf88402c815718e6e2cd),
-[`lyon_tessellation` declares](https://github.com/nical/lyon/blob/c3e869fa385876552972bf88402c815718e6e2cd/crates/tessellation/Cargo.toml)
-version `1.0.23` and licence `MIT OR Apache-2.0`.
-Its default feature is `std`. It depends on `lyon_path` and `num-traits`.
-Serialization adds optional dependencies.
-This project did not build that package for WASM or measure an adapter to it.
-Do not treat its dependency size or WASM support as verified here.
+This section was rewritten after an actual pinned-Lyon benchmark build
+(previously this guide only recorded Lyon's license/version metadata and
+explicitly disclaimed any WASM build or measurement — see git history for
+that earlier text). The new evidence below is real: both backends were
+compiled, run, and measured from
+`experiments/drawing-comparison` (a benchmark-only crate, never a
+dependency of `companions/draw` or any production package — see
+`experiments/drawing-comparison/Cargo.toml`'s mutually-exclusive
+`internal`/`lyon` features).
 
-The internal showcase was built from source
-`ba0ab9ff30c6b9fc96ddc018370a0ee5a067da2d` on macOS arm64.
-The command was
-`cargo build --release --target wasm32-unknown-unknown --manifest-path companions/draw/Cargo.toml --example showcase`.
-The tools were `rustc 1.99.0 (b940084d7 2026-09-28)` and Node.js `v26.10.0`.
-Node `zlib.gzipSync` used level 9. `brotliCompressSync` used its default settings.
+**Source verification (real, re-checked this session).** At pinned
+version `lyon_tessellation = "=1.0.23"` / `lyon_path = "=1.0.19"`
+(fetched from crates.io via `cargo generate-lockfile` inside
+`experiments/drawing-comparison`, recorded in its tracked `Cargo.lock`):
+license `MIT OR Apache-2.0`, repository `https://github.com/nical/lyon`,
+default feature `std`, direct dependencies `lyon_path`, `num-traits`,
+`float_next_after`. This matches the prior unverified claim in this
+document's earlier revision.
 
-| Asset | Raw bytes | gzip bytes | Brotli bytes |
-| --- | ---: | ---: | ---: |
-| `showcase.wasm` | 216107 | 66999 | 56078 |
-| `js/gl.js` | 78278 | 17273 | 14467 |
+**WASM build (new: both sides now proven to compile for the browser
+target).**
 
-SHA-256:
-
-```text
-showcase.wasm  01fd927c83a12e472beb2a775d409f9bcf8fbcf8fff62cddbd36acdb2b38e74a
-js/gl.js       b04bb784b87b17c8fe328b6f0a0b1cefdc50283a90d6d7c89b0a16e8521696b8
+```sh
+cargo build --release --target wasm32-unknown-unknown \
+    --no-default-features --features internal --lib \
+    --manifest-path experiments/drawing-comparison/Cargo.toml \
+    --target-dir experiments/drawing-comparison/target-internal
+cargo build --release --target wasm32-unknown-unknown \
+    --no-default-features --features lyon --lib \
+    --manifest-path experiments/drawing-comparison/Cargo.toml \
+    --target-dir experiments/drawing-comparison/target-lyon
 ```
 
-These are complete example assets, not an isolated package cost or a speed measurement.
-The same compiled showcase passed pixel and resize checks in Chromium, Firefox,
-and desktop WebKit. A matched alternative-library build remains open in #123.
-The package is a usable prototype, not a measured winner over Lyon.
+Both commands passed against core `miniquad`/`companions/draw` baseline
+`f837a98d415262320a8c66ef9f8024d8f2faeab1` (not itself modified; the
+benchmark crate, tests, and this doc are new/changed on top of it — see
+the exact fixture-commit SHA recorded in
+`docs/performance-evidence/2026-11-11-drawing-companion-comparison.md`),
+macOS arm64, `rustc 1.99.0`, `wasm32-unknown-unknown` via `rustup target
+add`. `node scripts/compare-drawing.mjs` builds both backends itself
+(`cargo build --release --locked --target wasm32-unknown-unknown`, from
+a clean tracked tree — it refuses to run otherwise) before measuring, so
+a stale, hand-built artifact can never be reported. Real artifact sizes
+and hashes (gzip at `zlib` level 9, Brotli at quality 11):
+
+| Backend | Raw bytes | gzip bytes | Brotli bytes | SHA-256 |
+| --- | ---: | ---: | ---: | --- |
+| internal (`miniquad-draw` geometry only, no GPU upload) | 74223 | 26438 | 22670 | `6789c35ee301882e2edb3606fa49eab2ba92fba460d33196e8e6acb209f7c6d4` |
+| lyon (pinned `lyon_tessellation` 1.0.23 adapter) | 196415 | 68011 | 57923 | `54c8fd0b62bf9806dab17819f4580a5b520fcc7445a850727fef06879a2684cf` |
+
+These are the comparison crate's own CPU-only geometry/tessellation
+artifacts (`experiments/drawing-comparison/src/{internal,lyon_adapter}.rs`),
+**not** the showcase example, and **not** a GPU-upload or frame-time
+measurement — neither side uploads anything to a GPU in this comparison.
+At brotli, the pinned Lyon adapter is **35253 bytes larger** than the
+internal path (57923 vs 22670), on this one bounded workload and this one
+target profile (`opt-level` as set by `[profile.release]`, if any, or
+cargo's default release profile — this repository's root
+`Cargo.toml`/workspace profile applies to both builds identically, since
+both crates build through the same `cargo build --release` invocation
+family).
+
+**Equal bounded reference workload**
+(`experiments/drawing-comparison/src/workload.rs`): 50 rectangles, 50
+triangles, 20 circles (radius 20, both sides using 32 segments), and 10
+stroked cubic curves (tolerance 0.5, thickness 2.0), built once per
+backend from identical input coordinates/colors.
+
+**Correctness, with explicit, enforced tolerances (no pixel-parity
+claim).** Lyon's fill/stroke tessellation algorithms differ fundamentally
+from the internal fixed-segment/butt-cap implementation (documented in
+`experiments/drawing-comparison/src/lyon_adapter.rs`), so exact
+triangle-count or pixel parity is **not** claimed. `checkAreaTolerances`
+in `scripts/compare-drawing.mjs` computes each shape's relative area
+difference and checks it against a fixed per-shape tolerance
+(`AREA_TOLERANCE`); `node scripts/compare-drawing.mjs` throws (nonzero
+exit) if any shape exceeds its tolerance, so this table cannot silently
+go stale:
+
+| Shape | Tolerance | Internal area (sum) | Lyon area (sum) | Observed difference |
+| --- | ---: | ---: | ---: | ---: |
+| Rectangles (50) | 0% (exact) | 14000.0 | 14000.0 | exact (both are simple convex axis-aligned fills) |
+| Triangles (50) | 0% (exact) | 8100.0 | 8100.0 | exact (both are simple convex fills) |
+| Circles (20, r=20) | 3% | 24971.572469653038 | 24491.760360374697 | 1.92% (Lyon's circular-arc tessellation vs. the internal fixed-segment polygon) |
+| Stroked curves (10) | 1% | 1915.4326597578356 | 1917.3037460932273 | 0.10% (adaptive-subdivision flattening tolerance differs slightly between the two stroke builders) |
+
+Total vertex count: internal 1330, Lyon 870 (different triangulation
+strategies; not a correctness defect on either side, and not comparable
+as a "verbosity" metric since the two tessellators are not required to
+produce the same mesh for the same input). Both counts are also each
+backend's exported WASM `run()` checksum; `compare-drawing.mjs` cross-
+checks this native count against the value the compiled WASM module
+actually returned and throws if they differ, so a checksum match is
+real cross-runtime evidence the WASM build executed the same workload
+as the native one, not merely that it returned *some* non-zero number.
+
+**Paired runtime (Node's `WebAssembly`, 5 alternating repeats per the
+Performance proof skill, median reported, classification by sample-range
+overlap — see `scripts/compare-drawing.mjs`'s `classifyRuntime`).**
+One representative run on this shared macOS host, Node v26.10.0:
+internal median 0.048 ms, Lyon median 0.141 ms per workload call,
+classification **`"inconclusive"`** (the two `[min, max]` sample ranges
+overlapped, driven by a JIT warm-up outlier on an early repeat — see
+`test-results/drawing-comparison.json`, regenerated by
+`node scripts/compare-drawing.mjs`, not committed). Per the Performance
+proof skill: **do not read this as a measured speed win for either
+side.** This is also a Node `WebAssembly` runtime measurement, not a
+browser frame time, and not a GPU timing — see the browser qualification
+evidence below for the one pixel/GPU-release measurement this issue does
+make in a real browser.
+
+**Reproduce:**
+
+```sh
+node scripts/compare-drawing.mjs            # 5 repeats (default)
+node scripts/compare-drawing.mjs 5          # explicit repeat count
+```
+
+The command requires a clean tracked tree (`git status --porcelain
+--untracked-files=no` must be empty) and builds both backends itself
+with `--locked`, so it never measures a stale or hand-edited artifact;
+it also records the exact `git rev-parse HEAD`, `rustc --version`, and
+`cargo --version` it ran with in the receipt.
+
+Unit tests for the script's pure helpers (`median`, `classifyRuntime`,
+`measureArtifact`, `checkAreaTolerances`) live in
+`tests/drawing-comparison.test.mjs`
+(`node --test tests/drawing-comparison.test.mjs`; 13 passed). The
+artifact-measurement tests use hermetic temporary fixtures (a minimal
+valid WASM header) and a missing-file rejection case; they do not
+require or skip on a prebuilt benchmark artifact.
+
+**Why this stays benchmark-only.** `lyon_tessellation`/`lyon_path` are
+pinned, exact-version dependencies of `experiments/drawing-comparison`
+only (`=1.0.23`/`=1.0.19` in that crate's `Cargo.toml`); neither
+`companions/draw` nor any production package depends on Lyon. This
+matches the explicit scope approval for this change: "Approve
+benchmark-only dependencies ... for pinned Lyon and block-mesh only in
+isolated bench projects, never core or production companions."
+
 
 ## Selection rationale: narrow adapter vs. a maintained tessellation library
 
@@ -147,15 +257,25 @@ maintained drawing/tessellation library before selecting an approach.
 | Fit to the existing `RenderingBackend` | Built directly against the trait reviewed in `src/graphics.rs` (vertex/index buffers, `PipelineParams`, `apply_scissor_rect`) | Would need a separate integration layer to turn tessellator output into `miniquad` buffers and pipelines; not part of the library itself |
 | Antialiasing | None. Edges are hard; no coverage-based or MSAA-aware stroke/fill | Depends on the chosen tessellator and renderer integration; some projects add MSAA or signed-distance-field strokes |
 
-**Decision:** keep the narrow, in-repository adapter for this first
-version. The bounded scope (five geometry kinds, explicit validation
+**Decision:** keep the narrow, in-repository adapter as the default for
+this companion. This change's benchmark confirms the earlier reasoning
+with real numbers rather than overturning it: at brotli, the pinned Lyon
+adapter is 35253 bytes larger on the bounded reference workload above,
+and the paired runtime comparison came back inconclusive (see above) —
+neither a measured size nor speed win justifies replacing the bounded,
+dependency-free implementation for the shapes it already covers
+(triangles, axis-aligned rectangles, circles, thick polylines, cubic
+curves). The bounded scope (five geometry kinds, explicit validation
 errors, deterministic curve termination) is small enough to unit test
 completely and to keep dependency-free, which issue #123 and MADR 0009
 both require ("Keep Miniquad core small", "no drawing-layer dependencies
 to applications that do not select it"). A maintained tessellation
 library remains a reasonable later option if a project needs concave
 polygon fill, line joins, or dashed strokes that this package does not
-provide; that step was out of scope here and is not implemented.
+provide — Lyon's own fill/stroke tessellators clearly support those
+(see `experiments/drawing-comparison/src/lyon_adapter.rs`); that
+integration work is still out of scope for this companion and is not
+implemented here.
 
 ## Fixed: real-browser rendering regression (invisible canvas)
 
@@ -223,26 +343,183 @@ exercised this way; Firefox and WebKit, resize/DPI behavior, and input
 remain the parent's stated responsibility (see the Browser reproduction
 skill), now unblocked.
 
+## GPU resource release and real-browser qualification (issue #123)
+
+After adding the exports and QC panels below, the showcase artifact is
+`companions/draw/target/wasm32-unknown-unknown/release/examples/showcase.wasm`:
+raw 219073 bytes, gzip9 67870 bytes (`zlib` level 9), brotli11 56745
+bytes (quality 11), SHA-256
+`6059c3bccec33c2aff1c1ebd528a80f799876a97168c73b34594ed641edd7d26`
+(`cargo build --release --locked --target wasm32-unknown-unknown
+--example showcase`, fixture commit
+`ae7c8556ef7893558b0532851eb47083c57873ee`).
+
+**GPU release proof fixture.** `companions/draw/examples/showcase.rs`
+now exposes three `extern "C"` exports, app-specific to this showcase
+(not
+a core miniquad ABI change):
+
+* `request_gpu_release()` — a one-shot request (an `AtomicBool`, no raw
+  global pointer) that the next `draw()` call consumes exactly once: it
+  `.take()`s the `Option<Renderer>`, calls `Renderer::destroy(ctx)`, and
+  thereafter renders only a defined clear frame (never a crash, freeze,
+  or further scene draw).
+* `resources_live()` — returns `1` while the `Renderer` is live, `0`
+  once destroyed (an `AtomicU32`), so a host page can assert the release
+  actually happened instead of trusting JS-side bookkeeping alone.
+* `request_empty_frame()` — switches the renderer into a *persistent*
+  empty-`Batch` mode (zero chunks every frame, not a one-shot flag),
+  proving `Renderer::draw` does not panic or issue a zero-length draw
+  call on an empty batch across many consecutive frames, not just one.
+* `empty_frames_processed()` — returns the count of frames rendered
+  since `request_empty_frame()` was called (an `AtomicU32`), so a host
+  page can assert the empty-frame mode is actually still advancing, not
+  stalled after the first frame.
+
+**Browser harness.** This session built its own, isolated Playwright
+harness, never the parent's `tests/browser/serve.mjs` / root
+`playwright.config.mjs` (port 4173):
+
+* `experiments/drawing-comparison/serve-drawing.mjs` — a static file
+  server on port 4280 (override with `DRAWING_QUALIFICATION_PORT`)
+  serving the repository's existing, unmodified `js/gl.js`,
+  `js/miniquad.mjs`, `js/runtime.html`, `js/runtime.mjs`,
+  `js/host-preferences.mjs`, this session's own
+  `tests/browser/drawing-qualification.html`, and this session's own
+  built `companions/draw/target/wasm32-unknown-unknown/release/examples/showcase.wasm`.
+* `experiments/drawing-comparison/playwright.config.mjs` — an
+  independent config (`testMatch: "drawing.spec.mjs"`,
+  `MINIQUAD_BROWSER=chromium|firefox|webkit` to select one engine,
+  default all three). DPR 1 and DPR 2 are **not** separate Chromium-only
+  projects: `tests/browser/drawing.spec.mjs` runs its "device pixel
+  ratio 1"/"device pixel ratio 2" cases as two `test.describe` blocks
+  using Playwright's `test.use({ deviceScaleFactor })`, so the same
+  config and the same spec file run unmodified under the root
+  `playwright.config.mjs` once the parent integrates the
+  `/drawing-qualification` route (see "Root integration" below) —
+  nothing in the spec depends on this session's private project
+  metadata or a project-name-based skip.
+
+**Real evidence from `tests/browser/drawing.spec.mjs` (own run, this
+session, macOS, headless, fixture commit
+`ae7c8556ef7893558b0532851eb47083c57873ee` on top of core baseline
+`f837a98d415262320a8c66ef9f8024d8f2faeab1`):**
+
+```sh
+# from the repository root
+ln -s /path/to/parent-checkout/node_modules node_modules   # or npm ci
+cargo build --release --locked --target wasm32-unknown-unknown \
+    --manifest-path companions/draw/Cargo.toml --example showcase
+DRAWING_QUALIFICATION_PORT=4280 node node_modules/.bin/playwright test \
+    --config experiments/drawing-comparison/playwright.config.mjs
+```
+
+| Engine | Tests | Result |
+| --- | --- | --- |
+| chromium | 9 (render, resize, empty batch, clip, opacity, draw order, GPU release, DPR 1, DPR 2) | **9 passed** |
+| firefox | same 9 | **9 passed** |
+| webkit | same 9 | **9 passed** |
+
+**27 passed, 0 failed, 0 skipped, 0 flaky**, one combined run across all
+three engines (JSON reporter output saved at
+`test-results/drawing-browser-qualification.json`, not committed — see
+its SHA-256 in
+`docs/performance-evidence/2026-11-11-drawing-companion-comparison.md`).
+Each test asserts zero `pageerror`/console-error events in addition to
+its pixel or counter checks.
+
+What each test actually checks (interior pixels only, away from any
+anti-aliased edge — hard edges are the documented antialiasing limit
+below, so no pixel-parity claim is made at a shape boundary):
+
+* **Clipping** — `Batch::set_clip` restricts an overlay rectangle to its
+  left half; the right half keeps the unclipped base color.
+* **Opacity** — a 50%-alpha overlay over an opaque base blends to the
+  expected `over`-compositing color within a 2/255 per-channel
+  tolerance (a flat interior pixel, not an edge: the tolerance covers
+  only 8-bit rounding/premultiplied-alpha rounding error).
+* **Draw order** — two identical, fully opaque, overlapping rectangles;
+  only the later (top) color is visible.
+* **Empty batch** — `request_empty_frame()` switches the renderer into a
+  *persistent* empty-batch mode (not a one-shot flag); the test polls
+  the exported `empty_frames_processed()` counter past zero and then
+  past that value again (proving frames keep advancing while empty, not
+  just that one frame was consumed), then screenshots the canvas and
+  asserts every pixel equals the clear color (exactly one distinct
+  color) within a 2/255 per-channel tolerance.
+* **GPU release** — before release, `resources_live() === 1`, exactly
+  one *live* GL program and exactly two *live* GL buffers exist (not
+  just "at least"), and zero live shader objects (shader objects are
+  deleted at link time). Liveness is tracked by identity (a `Set` of the
+  actual `WebGLBuffer`/`WebGLShader`/`WebGLProgram` objects returned by
+  `gl.create*`, not a call counter), via `page.addInitScript`-installed
+  wrappers around `WebGLRenderingContext.prototype.{create,delete}{Buffer,Shader,Program}`
+  that also flag a delete of an object that was never live or already
+  deleted (`duplicateOrUnknownDeletes`). After
+  `request_gpu_release()`, every live object count is `0`, every
+  created object was deleted exactly once (`create === delete` per
+  kind), no new program was created by the release itself, and there
+  are zero duplicate/unknown deletes. A second release request is a
+  no-op (idempotent): the full GL-tracking snapshot is byte-for-byte
+  unchanged, while the runtime's frame counter keeps advancing (proving
+  the second request did not freeze the runtime).
+* **DPR 1 and DPR 2** — `devicePixelRatio` inside the runtime iframe
+  equals the configured ratio; the canvas's *physical* backing-store
+  width/height (the `<canvas>` element's `width`/`height` attributes,
+  not its CSS size) equals `cssSize * ratio` exactly, and the captured
+  screenshot's own pixel dimensions match that same physical size — not
+  just "some non-trivial content exists" at an unverified size.
+
+**Investigated, no defect found: `delete_shader` and compiled shader
+objects.** The task that produced this change asked whether root
+`src/graphics/gl.rs`'s `delete_shader` might not delete compiled shader
+objects. On inspection: `load_shader_internal` already calls
+`glDetachShader` + `glDeleteShader` on both the vertex and fragment
+shader objects immediately after `glLinkProgram` succeeds — this is the
+standard GL pattern (a linked program retains the data it needs; the
+shader objects themselves have no further purpose once linked). The
+public `delete_shader(ShaderId)` function then only needs to, and does,
+call `glDeleteProgram` on the one long-lived object (the linked
+program). This is **not a defect**: no core change was made, per this
+change's instruction not to make an unrelated core change unless
+strictly necessary (it was not).
+
 ## Limits (state clearly, no unverified claims)
 
-* **No benchmark or maintenance comparison was run.** This guide does not
-  claim `miniquad-draw` is faster, smaller, or better maintained than any
-  external library. No artifact-size or frame-time measurement was taken
-  for either option. A later MADR or issue should do that work if a
-  performance or size claim is needed; see MADR 0009's own instruction
-  not to report a memory or performance improvement without
-  measurements.
-* **Browser rendering was verified once, in Chromium only**, via a
-  temporary, session-local harness (see the "Fixed: real-browser
-  rendering regression" section above): `gl.getError()` is clean and the
-  canvas shows 89+ distinct colors across a running showcase, clearing
-  the parent's `colors.size > 8` assertion. Firefox, WebKit, resize/DPI
-  behavior, and input were not exercised this way; the parent's own
-  `tests/browser/drawing.spec.mjs` run is the authoritative check.
+* **A real pinned-Lyon benchmark was run (issue #123), but it is CPU-only
+  and inconclusive on runtime.** See "Comparison evidence and artifact
+  receipt" above: both backends' WASM artifact sizes and a correctness
+  tolerance table are real and measured; the paired runtime comparison
+  came back `"inconclusive"` per the Performance proof skill's
+  overlap rule, so **no speed claim is made for either backend**. Neither
+  side uploads to a GPU in that comparison; it is not a frame-time or
+  GPU-timing measurement.
+* **Browser rendering, resize, clipping, opacity, draw order, empty-batch,
+  GPU-release, and DPR 1/2 were all verified in real Chromium, Firefox,
+  and WebKit** via this session's own isolated Playwright harness (see
+  "GPU resource release and real-browser qualification" above): **27
+  passed, 0 failed, 0 skipped, 0 flaky**, across all three engines (DPR 1
+  and DPR 2 are run on all three engines via `test.use({
+  deviceScaleFactor })`, not restricted to Chromium or to a project-level
+  hack). The same spec file is designed to run unmodified under the
+  root `playwright.config.mjs` once the `/drawing-qualification` route
+  is integrated there (see "Root integration needs" at the end of this
+  document); this session's own config and port (4280) remain a private
+  staging harness until that integration happens, and the parent's own
+  pass against the root config after integration remains the
+  authoritative final check per this repository's conventions.
   Native-platform rendering was still not verified: this package was
   checked and tested with `cargo test` (host, macOS) and
-  `cargo check`/`cargo build --release` for `wasm32-unknown-unknown`, but
-  no pixel was observed in a real native window.
+  `cargo check`/`cargo build --release --locked` for
+  `wasm32-unknown-unknown`, but no pixel was observed in a real native
+  window — **do not read any part of this issue's evidence as a native
+  window-rendering claim.**
+* **This is a single, shared, non-dedicated macOS host, not a dedicated
+  benchmark machine.** No timing improvement, SLO, or throughput claim is
+  made anywhere in this document beyond the explicitly labeled,
+  `"inconclusive"`-classified runtime comparison above; a WebKit
+  (desktop Safari engine) pass on macOS is also not evidence for any
+  mobile Safari/WebKit claim.
 * **No antialiasing.** Shape edges are hard-edged triangles; this package
   does not implement coverage-based or MSAA-specific antialiasing.
 * **Polyline joins are butt caps only.** Adjacent polyline segments are
@@ -301,26 +578,85 @@ cover, per module:
 
 Observed result: **41 passed, 0 failed** (`cargo test --manifest-path
 companions/draw/Cargo.toml`, macOS, local toolchain). A crate-level doc
-test (the `lib.rs` quick example) also passed.
+test (the `lib.rs` quick example) also passed. Adding the
+`request_empty_frame`/`request_gpu_release`/`resources_live` exports and
+the QC-panel drawing to `examples/showcase.rs` did not change this count
+(examples are not covered by the crate's own unit tests; see the browser
+qualification section above for their real test coverage).
+
+`tests/drawing-comparison.test.mjs` (`node --test
+tests/drawing-comparison.test.mjs`) covers `scripts/compare-drawing.mjs`'s
+pure helpers (`median`, `classifyRuntime`, `wasmPath`,
+`measureArtifact`, `checkAreaTolerances`), using hermetic temporary
+fixtures and a missing-file rejection case rather than a prebuilt
+artifact: **13 passed, 0 failed**.
+
+`tests/browser/drawing.spec.mjs`, run against this session's own
+isolated harness (see above): **27 passed, 0 failed, 0 skipped, 0
+flaky** across chromium/firefox/webkit, including the DPR 1/DPR 2 cases
+on all three engines.
 
 Not run here (blocked or explicitly out of scope for this change):
 
-* Browser pixel, resize, DPI, and input tests (see the Browser
-  reproduction skill; the parent owns this once the showcase shader is
-  confirmed to run).
-* Native-platform frame tests on an actual OS window.
-* Any performance or artifact-size measurement (see Limits).
+* Native-platform frame tests on an actual OS window (this remains a gap
+  for both `companions/draw` and the new `experiments/drawing-comparison`
+  external-consumer fixture; only `wasm32-unknown-unknown` and native
+  `cargo check`/`cargo test` were exercised).
 
 ## Build and check commands used
 
 ```sh
-cargo test --manifest-path companions/draw/Cargo.toml
+cargo fmt --check --manifest-path companions/draw/Cargo.toml
+cargo test --lib --manifest-path companions/draw/Cargo.toml
 cargo check --target wasm32-unknown-unknown --manifest-path companions/draw/Cargo.toml --lib
-cargo build --release --target wasm32-unknown-unknown --manifest-path companions/draw/Cargo.toml --example showcase
+cargo build --release --locked --target wasm32-unknown-unknown --manifest-path companions/draw/Cargo.toml --example showcase
+node --test tests/drawing-comparison.test.mjs
+node scripts/compare-drawing.mjs
+DRAWING_QUALIFICATION_PORT=4280 node node_modules/.bin/playwright test \
+    --config experiments/drawing-comparison/playwright.config.mjs
 ```
 
-All three passed locally (`wasm32-unknown-unknown` installed via
-`rustup target add wasm32-unknown-unknown`).
+All passed locally (`wasm32-unknown-unknown` installed via
+`rustup target add wasm32-unknown-unknown`; the Playwright command needs
+either `npm ci` in the repository root or a `node_modules` symlink to an
+existing parent checkout that already ran it — this session used the
+latter and made no `package.json`/`package-lock.json` changes). The
+`--locked` flag on the WASM build and on `scripts/compare-drawing.mjs`'s
+own internal builds/native runs ensures every measured artifact comes
+from the pinned `Cargo.lock` (`lyon_tessellation = 1.0.23`,
+`lyon_path = 1.0.19`), not an accidentally newer dependency resolution.
+
+## External consumer qualification (issue #123)
+
+A fresh, separate crate —
+`experiments/drawing-comparison/external-consumer`
+(`drawing-external-consumer`, `publish = false`) — depends on
+`miniquad-draw` the way a downstream project would: a path dependency in
+its own `Cargo.toml` (`miniquad-draw = { path = "../../../companions/draw" }`,
+the equivalent of a pinned `git = "...", rev = "<sha>"` dependency before
+this companion has a public crates.io release — `companions/draw/Cargo.toml`
+itself has `publish = false`). No source from `companions/draw` is
+copied; `examples/consume.rs` only calls the companion's existing public
+`Batch`/`Color`/`Rect`/`Renderer`/`Transform2D` API to draw one rectangle
+and one circle.
+
+```sh
+cargo check --manifest-path experiments/drawing-comparison/external-consumer/Cargo.toml --example consume
+cargo build --release --target wasm32-unknown-unknown \
+    --manifest-path experiments/drawing-comparison/external-consumer/Cargo.toml --example consume
+node experiments/drawing-comparison/verify-consumer-render.mjs
+```
+
+All three passed. The WASM artifact
+(`experiments/drawing-comparison/external-consumer/target/wasm32-unknown-unknown/release/examples/consume.wasm`,
+208227 bytes, SHA-256
+`8ef94fd98f56792c82195bd780e52e59c289de39f70abd96ed9e667b1cc38404`) was
+rendered in a real headless Chromium page via
+`verify-consumer-render.mjs` (a small, reusable, owned verification
+script, not a committed Playwright test): the canvas showed **12 distinct
+colors** (more than a flat clear color) and raised **zero** console or
+page errors — confirming the external crate actually renders through
+`miniquad-draw`'s public API, not just that it compiles.
 
 ## Instructions for the parent: running the showcase in a browser
 
@@ -342,3 +678,35 @@ the bridge. The showcase draws a grid, two arrows, one sampled cubic
 curve, and a field of animated circles entirely with GPU-owned geometry;
 it does not draw any DOM text. A host page can place HTML labels over or
 beside the canvas, as MADR 0009 expects for the browser adoption layer.
+
+## Root integration needs (left for the parent)
+
+This change stays out of `companions/draw/**`, `experiments/drawing-comparison/**`,
+`scripts/compare-drawing.mjs`, `tests/drawing-comparison.test.mjs`,
+`tests/browser/drawing.spec.mjs`/`drawing-qualification.html`, and this
+doc pair, per its stated scope. To make the 27-case suite above run
+against the shared root harness instead of this session's private
+port-4280 staging config, the parent still needs to:
+
+* Wire the `/drawing-qualification` route (serving
+  `tests/browser/drawing-qualification.html` and the built
+  `companions/draw/.../examples/showcase.wasm`) and the `/drawing.wasm`
+  static route into the root dev server / `tests/browser/serve.mjs`,
+  matching the contract `tests/browser/drawing.spec.mjs` already assumes.
+  No change is needed in the spec file itself for this: once the root
+  `playwright.config.mjs` also includes `tests/browser/drawing.spec.mjs`
+  (a `testMatch` addition is enough), it runs unmodified under
+  chromium/firefox/webkit with `test.use({ deviceScaleFactor })` already
+  in place — no DPR-specific project configuration is required.
+* Add CI invocation for the new Node (`node --test
+  tests/drawing-comparison.test.mjs`) and Rust (`cargo test --lib
+  --manifest-path companions/draw/Cargo.toml`,
+  `cargo fmt --check --manifest-path companions/draw/Cargo.toml`) checks
+  to the project's existing pipeline; none of these were added to CI
+  config in this change (out of scope per the task).
+* Decide whether `scripts/compare-drawing.mjs` should run in CI (it is
+  CPU-only and `"inconclusive"` on this host; CI nondeterminism on a
+  shared runner could make the runtime comparison noisier still, so this
+  change does not recommend gating CI on its runtime classification —
+  only on its area-tolerance and checksum checks, which are
+  deterministic).

@@ -20,6 +20,12 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Restore copied worktree metadata in the local container
+        if: ${{ env.ACT }}
+        run: node scripts/prepare-local-git.mjs
+      - name: Bootstrap Rustup in the local container
+        if: ${{ env.ACT }}
+        run: bash scripts/install-local-rust.sh
       - name: Install stable Rust and WASM target
         run: |
           rustup toolchain install stable --profile minimal
@@ -27,6 +33,7 @@ jobs:
           rustup target add wasm32-unknown-unknown
           rustup component add rustfmt clippy
       - name: Restore Cargo package cache
+        if: ${{ !env.ACT }}
         id: cargo-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -66,16 +73,21 @@ jobs:
           cargo test --manifest-path companions/draw/Cargo.toml
           cargo fmt --manifest-path companions/draw/Cargo.toml -- --check
           cargo build --release --target wasm32-unknown-unknown --manifest-path companions/draw/Cargo.toml --example showcase
+          cargo build --release --locked --target wasm32-unknown-unknown --manifest-path experiments/drawing-comparison/external-consumer/Cargo.toml --example consume
       - name: Build a fresh external browser consumer
         run: |
           cargo test --manifest-path companions/voxel/Cargo.toml
           cargo fmt --manifest-path companions/voxel/Cargo.toml -- --check
           cargo build --release --target wasm32-unknown-unknown --manifest-path companions/voxel/Cargo.toml --example offline
+          cargo run --manifest-path tests/hex-picker-consumer/Cargo.toml
+          cargo build --target wasm32-unknown-unknown --manifest-path tests/hex-picker-consumer/Cargo.toml
           node scripts/create-browser-project.mjs "$RUNNER_TEMP/miniquad-browser-starter" --source path --miniquad-path "$GITHUB_WORKSPACE" --name miniquad-browser-starter
           node "$RUNNER_TEMP/miniquad-browser-starter/scripts/build.mjs"
           echo "MINIQUAD_STARTER_PATH=$RUNNER_TEMP/miniquad-browser-starter" >> "$GITHUB_ENV"
+      - name: Build a Git-pinned generated drawing consumer
+        run: node experiments/draw-starter-consumption/generate-fixture.mjs
       - name: Save Cargo package cache before browser checks
-        if: steps.cargo-cache.outputs.cache-hit != 'true'
+        if: ${{ !env.ACT && steps.cargo-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
@@ -86,7 +98,7 @@ jobs:
         uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
-          cache: npm
+          cache: ${{ !env.ACT && 'npm' || '' }}
       - name: Record release fixture compressed bundle sizes
         env:
           GITHUB_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -107,6 +119,7 @@ jobs:
       - name: ESLint browser bridge
         run: npm run lint:js
       - name: Restore browser binaries for the selected lane
+        if: ${{ !env.ACT }}
         id: playwright-cache
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -115,6 +128,9 @@ jobs:
       - name: Install extra host libraries for the manual browser matrix
         if: github.event_name == 'workflow_dispatch'
         run: npx playwright install-deps chromium firefox webkit
+      - name: Install local container libraries for Chromium
+        if: ${{ env.ACT && github.event_name != 'workflow_dispatch' }}
+        run: npx playwright install-deps chromium
       - name: Download browser binaries only on a cache miss
         if: steps.playwright-cache.outputs.cache-hit != 'true'
         run: |
@@ -126,9 +142,9 @@ jobs:
       - name: Report browser cache result
         run: |
           echo "Playwright cache hit: ${{ steps.playwright-cache.outputs.cache-hit }}"
-          ls -1 ~/.cache/ms-playwright
+          ls -1 "${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"
       - name: Save browser downloads before running tests
-        if: steps.playwright-cache.outputs.cache-hit != 'true'
+        if: ${{ !env.ACT && steps.playwright-cache.outputs.cache-hit != 'true' }}
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.cache/ms-playwright
@@ -140,8 +156,15 @@ jobs:
           else
             npm run test:browser:chromium
           fi
+      - name: Test the generated drawing consumer
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            npx playwright test --config experiments/draw-starter-consumption/playwright.config.mjs
+          else
+            MINIQUAD_BROWSER=chromium npx playwright test --config experiments/draw-starter-consumption/playwright.config.mjs
+          fi
       - name: Store revision-specific size and timing baseline receipts
-        if: always()
+        if: ${{ always() && !env.ACT }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: browser-performance-baseline
@@ -149,7 +172,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
       - name: Store browser test traces on failure
-        if: failure()
+        if: ${{ failure() && !env.ACT }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: browser-smoke-failures

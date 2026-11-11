@@ -4,6 +4,8 @@ flowchart LR
     Runtime -->|"One classic bridge per frame"| Bridge["js/gl.js"]
     Host -->|"Optional palette and motion adapter"| Preferences["js/host-preferences.mjs"]
     App["Browser game or example"] -->|"Rust EventHandler API"| Public["src/lib.rs and src/event.rs"]
+    Hex["Optional hexagonal-prism geometry"] -->|"Visible-face MeshBuffers"| Voxel["Optional voxel application"]
+    Voxel -->|"Rust rendering API"| Public
     Public -->|"WASM target runtime"| Backend["src/native/wasm.rs"]
     Backend -->|"Imported functions and exported callbacks"| Bridge["js/gl.js"]
     Bridge -->|"DOM focus, input, clipboard, file drops"| Browser["Browser DOM"]

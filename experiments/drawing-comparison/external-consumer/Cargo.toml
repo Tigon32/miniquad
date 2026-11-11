@@ -1,0 +1,25 @@
+[package]
+name = "drawing-external-consumer"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = """
+Issue #123 qualification: a fresh, separate crate that depends on the
+`miniquad-draw` companion the same way a downstream game or app would —
+not a copy of its implementation. Built only from
+`experiments/drawing-comparison/external-consumer`, never from inside
+`companions/draw` itself.
+"""
+
+[dependencies]
+# Path dependency reaching into the existing companion crate, exactly
+# like a real downstream consumer would reference it via a pinned Git
+# revision (`miniquad-draw = { git = "...", rev = "<sha>" }`) before the
+# crate is ever published to crates.io (`companions/draw/Cargo.toml` has
+# `publish = false`). No source from `companions/draw` is copied here.
+miniquad-draw = { path = "../../../companions/draw" }
+miniquad = { path = "../../../" }
+
+[[example]]
+name = "consume"
+path = "examples/consume.rs"

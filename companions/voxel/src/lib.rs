@@ -43,6 +43,8 @@
 
 pub mod camera;
 pub mod chunk;
+pub mod hex;
+pub mod hex_pick;
 pub mod hud;
 pub mod math;
 pub mod mesh;

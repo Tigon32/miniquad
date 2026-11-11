@@ -51,7 +51,7 @@ Each path has one writer. Parent integration cherry-picks between trees.
 
 A candidate worker must not edit a path outside its own folder.
 If a candidate needs a contract change, it reports the need to the queen.
-The shared harness files are not in this commit. The queen or parent adds them later.
+The shared harness is in [`tests/webgpu-proof/`](../tests/webgpu-proof/README.md).
 
 ### Candidate folder layout
 

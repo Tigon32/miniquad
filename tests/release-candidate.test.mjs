@@ -21,6 +21,7 @@ import {
   scanForLeaks,
   evaluateGate,
   gate,
+  verifyTagBinding,
   collectCi,
   verify,
 } from "../scripts/release-candidate.mjs";
@@ -784,15 +785,15 @@ function buildValidGateRecord() {
       reference: {
         result: "PASS", profile: "gha-ubuntu-24.04-x64-pw1.56.1", sha256: "0".repeat(64),
         packages: {
-          baseline: { canonicalManifestSha256: "a".repeat(64) },
-          candidate: { canonicalManifestSha256: "b".repeat(64) },
+          baseline: { role: "baseline", label: null, sourceSha: SHA, canonicalManifestSha256: "a".repeat(64) },
+          candidate: { role: "candidate", label: "0.5.0-tigon32.1.rc.1", sourceSha: "c".repeat(40), canonicalManifestSha256: "b".repeat(64) },
         },
       },
       local: {
         result: "PASS", profile: "local-macos-shared-rehearsal", sha256: "1".repeat(64),
         packages: {
-          baseline: { canonicalManifestSha256: "a".repeat(64) },
-          candidate: { canonicalManifestSha256: "b".repeat(64) },
+          baseline: { role: "baseline", label: null, sourceSha: SHA, canonicalManifestSha256: "a".repeat(64) },
+          candidate: { role: "candidate", label: "0.5.0-tigon32.1.rc.1", sourceSha: "c".repeat(40), canonicalManifestSha256: "b".repeat(64) },
         },
       },
     },
@@ -1154,20 +1155,178 @@ test("gate CLI reports a failing exit code for a BLOCKED record and does not rep
   }
 });
 
-test("gate CLI reports a successful exit code for a QUALIFIED-CANDIDATE record", () => {
+test("gate CLI reports a successful exit code for a QUALIFIED-CANDIDATE record with a proven tag binding", () => {
   const dir = mkdtempSync(join(tmpdir(), "release-gate-test-"));
+  const record = buildValidGateRecord();
   const recordPath = join(dir, "gate.json");
-  writeFileSyncFs(recordPath, JSON.stringify(buildValidGateRecord()));
+  writeFileSyncFs(recordPath, JSON.stringify(record));
   const previousExitCode = process.exitCode;
   process.exitCode = 0;
+  const fakeGit = (_bin, args) => {
+    if (args.includes("cat-file")) return Buffer.from("tag\n");
+    if (args.includes("rev-parse")) return Buffer.from(`${record.candidateSha}\n`);
+    throw new Error(`unexpected git invocation: ${args.join(" ")}`);
+  };
   try {
-    const { result } = gate({ record: recordPath });
+    const { result } = gate({ record: recordPath, repo: dir }, { gitImpl: fakeGit });
     assert.equal(result, "QUALIFIED-CANDIDATE");
     assert.equal(process.exitCode, 0);
   } finally {
     process.exitCode = previousExitCode;
     rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test("gate CLI fails closed to BLOCKED when the tag cannot be proven to point at candidateSha", () => {
+  const dir = mkdtempSync(join(tmpdir(), "release-gate-test-"));
+  const record = buildValidGateRecord();
+  const recordPath = join(dir, "gate.json");
+  writeFileSyncFs(recordPath, JSON.stringify(record));
+  const previousExitCode = process.exitCode;
+  process.exitCode = 0;
+  const fakeGitWrongCommit = (_bin, args) => {
+    if (args.includes("cat-file")) return Buffer.from("tag\n");
+    if (args.includes("rev-parse")) return Buffer.from(`${"f".repeat(40)}\n`);
+    throw new Error(`unexpected git invocation: ${args.join(" ")}`);
+  };
+  try {
+    const { result, reasons } = gate({ record: recordPath, repo: dir }, { gitImpl: fakeGitWrongCommit });
+    assert.equal(result, "BLOCKED");
+    assert.ok(reasons.some((reason) => reason.includes("tag binding")));
+  } finally {
+    process.exitCode = previousExitCode;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("gate CLI fails closed to BLOCKED when the tag is lightweight (not annotated)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "release-gate-test-"));
+  const record = buildValidGateRecord();
+  const recordPath = join(dir, "gate.json");
+  writeFileSyncFs(recordPath, JSON.stringify(record));
+  const previousExitCode = process.exitCode;
+  process.exitCode = 0;
+  const fakeGitLightweightTag = (_bin, args) => {
+    if (args.includes("cat-file")) return Buffer.from("commit\n");
+    throw new Error(`unexpected git invocation: ${args.join(" ")}`);
+  };
+  try {
+    const { result, reasons } = gate({ record: recordPath, repo: dir }, { gitImpl: fakeGitLightweightTag });
+    assert.equal(result, "BLOCKED");
+    assert.ok(reasons.some((reason) => reason.includes("not an annotated tag")));
+  } finally {
+    process.exitCode = previousExitCode;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("gate CLI fails closed to BLOCKED when the tag does not exist", () => {
+  const dir = mkdtempSync(join(tmpdir(), "release-gate-test-"));
+  const record = buildValidGateRecord();
+  const recordPath = join(dir, "gate.json");
+  writeFileSyncFs(recordPath, JSON.stringify(record));
+  const previousExitCode = process.exitCode;
+  process.exitCode = 0;
+  const fakeGitMissingTag = () => {
+    throw new Error("fatal: Not a valid object name tigon32-miniquad-v0.5.0-tigon32.1.rc.1");
+  };
+  try {
+    const { result, reasons } = gate({ record: recordPath, repo: dir }, { gitImpl: fakeGitMissingTag });
+    assert.equal(result, "BLOCKED");
+    assert.ok(reasons.some((reason) => reason.includes("does not exist")));
+  } finally {
+    process.exitCode = previousExitCode;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("gate CLI does not run the tag proof when the record is already BLOCKED (fewer reasons, same verdict)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "release-gate-test-"));
+  const record = buildValidGateRecord();
+  delete record.compare;
+  const recordPath = join(dir, "gate.json");
+  writeFileSyncFs(recordPath, JSON.stringify(record));
+  const previousExitCode = process.exitCode;
+  process.exitCode = 0;
+  const fakeGitThatMustNotBeCalled = () => {
+    throw new Error("git must not be invoked for an already-BLOCKED record");
+  };
+  try {
+    const { result } = gate({ record: recordPath, repo: dir }, { gitImpl: fakeGitThatMustNotBeCalled });
+    assert.equal(result, "BLOCKED");
+  } finally {
+    process.exitCode = previousExitCode;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("verifyTagBinding rejects a tag that resolves to a different commit than candidateSha", () => {
+  const candidateSha = "c".repeat(40);
+  const fakeGit = (_bin, args) => {
+    if (args.includes("cat-file")) return Buffer.from("tag\n");
+    if (args.includes("rev-parse")) return Buffer.from(`${"d".repeat(40)}\n`);
+    throw new Error(`unexpected git invocation: ${args.join(" ")}`);
+  };
+  const result = verifyTagBinding({ repo: "/tmp/does-not-matter", tag: "v1.0.0", candidateSha }, { gitImpl: fakeGit });
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /points to/);
+});
+
+test("verifyTagBinding rejects a lightweight (non-annotated) tag", () => {
+  const fakeGit = (_bin, args) => {
+    if (args.includes("cat-file")) return Buffer.from("commit\n");
+    throw new Error(`unexpected git invocation: ${args.join(" ")}`);
+  };
+  const result = verifyTagBinding(
+    { repo: "/tmp/does-not-matter", tag: "v1.0.0", candidateSha: "c".repeat(40) },
+    { gitImpl: fakeGit },
+  );
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /not an annotated tag/);
+});
+
+test("verifyTagBinding rejects a missing tag (git command failure)", () => {
+  const fakeGit = () => {
+    throw new Error("fatal: Not a valid object name v1.0.0");
+  };
+  const result = verifyTagBinding(
+    { repo: "/tmp/does-not-matter", tag: "v1.0.0", candidateSha: "c".repeat(40) },
+    { gitImpl: fakeGit },
+  );
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /does not exist/);
+});
+
+test("verifyTagBinding rejects an unresolvable commit (non-hex rev-parse output)", () => {
+  const fakeGit = (_bin, args) => {
+    if (args.includes("cat-file")) return Buffer.from("tag\n");
+    if (args.includes("rev-parse")) return Buffer.from("not-a-sha\n");
+    throw new Error(`unexpected git invocation: ${args.join(" ")}`);
+  };
+  const result = verifyTagBinding(
+    { repo: "/tmp/does-not-matter", tag: "v1.0.0", candidateSha: "c".repeat(40) },
+    { gitImpl: fakeGit },
+  );
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /could not resolve/);
+});
+
+test("verifyTagBinding accepts an annotated tag whose commit exactly matches candidateSha", () => {
+  const candidateSha = "c".repeat(40);
+  const fakeGit = (_bin, args) => {
+    if (args.includes("cat-file")) return Buffer.from("tag\n");
+    if (args.includes("rev-parse")) return Buffer.from(`${candidateSha}\n`);
+    throw new Error(`unexpected git invocation: ${args.join(" ")}`);
+  };
+  const result = verifyTagBinding({ repo: "/tmp/does-not-matter", tag: "v1.0.0", candidateSha }, { gitImpl: fakeGit });
+  assert.equal(result.ok, true);
+  assert.equal(result.reason, null);
+});
+
+test("verifyTagBinding fails closed when required fields are missing", () => {
+  const result = verifyTagBinding({ repo: "/tmp/does-not-matter", tag: "", candidateSha: "c".repeat(40) });
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /requires repo, tag, and candidateSha/);
 });
 
 // ---------------------------------------------------------------------
@@ -1444,4 +1603,55 @@ test("evaluateGate gives BLOCKED when a retained drill has no package-identity b
 test("evaluateGate still gives QUALIFIED-CANDIDATE for the complete, correctly bound fixture", () => {
   const { result, reasons } = evaluateGate(buildValidGateRecord());
   assert.equal(result, "QUALIFIED-CANDIDATE", reasons.join("; "));
+});
+
+// G1 (Opus follow-up on 0c59538): a drill's canonicalManifestSha256 at the
+// right JSON key is not, by itself, proof the drill actually exercised the
+// correctly-labeled package: a hash is not provenance. Require each
+// retained drill's own role/label/sourceSha to independently match the
+// gate record's candidate/baseline identity, so swapping which package
+// played which role (same two correct hashes, wrong slots) is rejected.
+test("evaluateGate gives BLOCKED when a retained drill swaps baseline and candidate roles (G1)", () => {
+  const record = buildValidGateRecord();
+  const swapped = {
+    baseline: { ...record.drill.reference.packages.candidate },
+    candidate: { ...record.drill.reference.packages.baseline },
+  };
+  record.drill.reference.packages = swapped;
+  record.drill.local.packages = swapped;
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "BLOCKED", reasons.join("; "));
+  assert.ok(reasons.some((r) => /\.role is/.test(r)));
+});
+
+test("evaluateGate gives BLOCKED when a retained drill's candidate.label contradicts record.label (G1)", () => {
+  const record = buildValidGateRecord();
+  record.drill.reference.packages.candidate.label = "9.9.9-tigon32.1.rc.1";
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "BLOCKED", reasons.join("; "));
+  assert.ok(reasons.some((r) => r.includes("drill.reference.packages.candidate.label")));
+});
+
+test("evaluateGate gives BLOCKED when a retained drill's candidate.sourceSha contradicts candidateSha (G1)", () => {
+  const record = buildValidGateRecord();
+  record.drill.local.packages.candidate.sourceSha = "9".repeat(40);
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "BLOCKED", reasons.join("; "));
+  assert.ok(reasons.some((r) => r.includes("drill.local.packages.candidate.sourceSha")));
+});
+
+test("evaluateGate gives BLOCKED when a retained drill's baseline.sourceSha contradicts baseline.sha (G1)", () => {
+  const record = buildValidGateRecord();
+  record.drill.reference.packages.baseline.sourceSha = "8".repeat(40);
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "BLOCKED", reasons.join("; "));
+  assert.ok(reasons.some((r) => r.includes("drill.reference.packages.baseline.sourceSha")));
+});
+
+test("evaluateGate gives BLOCKED when a retained drill's baseline.label is non-null for a bootstrap baseline (G1)", () => {
+  const record = buildValidGateRecord();
+  record.drill.local.packages.baseline.label = "0.5.0-tigon32.1.rc.1";
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "BLOCKED", reasons.join("; "));
+  assert.ok(reasons.some((r) => r.includes("drill.local.packages.baseline.label")));
 });

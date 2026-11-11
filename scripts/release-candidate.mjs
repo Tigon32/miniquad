@@ -718,6 +718,44 @@ export function evaluateGate(record) {
         reasons.push(`drill.${drillKind}.packages.${role}.canonicalManifestSha256 is missing or does not match packages.${key}`);
       }
     }
+
+    // G1 (Opus follow-up on 0c59538): a hash at the right JSON key is not,
+    // by itself, proof the drill actually exercised the correctly-labeled
+    // package. Require each retained drill's own `role`/`label`/`sourceSha`
+    // to independently match this record's candidate/baseline identity, so
+    // a package that merely has the right hash but the wrong slot (e.g. a
+    // baseline/candidate role swap) is still rejected.
+    const candidatePkg = drillPackages?.candidate;
+    if (candidatePkg?.role !== "candidate") {
+      blocked = true;
+      reasons.push(`drill.${drillKind}.packages.candidate.role is "${candidatePkg?.role}", not "candidate"`);
+    }
+    if (candidatePkg?.label !== record?.label) {
+      blocked = true;
+      reasons.push(`drill.${drillKind}.packages.candidate.label does not match record.label`);
+    }
+    if (candidatePkg?.sourceSha !== record?.candidateSha) {
+      blocked = true;
+      reasons.push(`drill.${drillKind}.packages.candidate.sourceSha does not match candidateSha`);
+    }
+
+    const baselinePkg = drillPackages?.baseline;
+    if (baselinePkg?.role !== "baseline") {
+      blocked = true;
+      reasons.push(`drill.${drillKind}.packages.baseline.role is "${baselinePkg?.role}", not "baseline"`);
+    }
+    if (baselinePkg?.sourceSha !== record?.baseline?.sha) {
+      blocked = true;
+      reasons.push(`drill.${drillKind}.packages.baseline.sourceSha does not match baseline.sha`);
+    }
+    // A baseline package's manifest label is always null, for both the
+    // "bootstrap-reference" and "qualified-release" baseline kinds (section
+    // 9.1: "manifest.label must be null for a baseline package"); a
+    // non-null retained baseline label can never be genuine.
+    if (baselinePkg?.label !== null) {
+      blocked = true;
+      reasons.push(`drill.${drillKind}.packages.baseline.label is "${baselinePkg?.label}", not null`);
+    }
   }
   if (
     typeof record?.packages?.baselineManifestSha256 === "string" &&
@@ -1609,12 +1647,73 @@ function writeOut(path, value) {
 // `gate`
 // ---------------------------------------------------------------------
 
-export function gate(options) {
+/** Verifies, by Git command against a real repository, that `tag` is an
+ * annotated tag whose commit is exactly `candidateSha`. This is the F4(c)
+ * follow-up: the contract already requires the tag to point to
+ * `candidateSha` (section 9.2); `evaluateGate` itself stays pure and only
+ * checks `formatTag(label) === tag` as a string, so this function is the
+ * actual proof, run at the `gate` CLI boundary before a QUALIFIED-CANDIDATE
+ * record is treated as real evidence. It performs read-only Git commands;
+ * it does not create, move, or push a tag, and it does not authorize
+ * publication. `gitImpl` is injectable for tests; it defaults to real Git
+ * via `execFileSync`. A missing tag, a non-annotated tag, or a mismatched
+ * commit each fail closed with an explicit reason, instead of being
+ * silently accepted or skipped. */
+export function verifyTagBinding({ repo, tag, candidateSha }, { gitImpl = execFileSync } = {}) {
+  const run = (args) => {
+    try {
+      return gitImpl("git", ["-C", repo, ...args], { stdio: ["ignore", "pipe", "pipe"] }).toString("utf8").trim();
+    } catch (err) {
+      return { error: err };
+    }
+  };
+
+  if (!repo || !tag || !candidateSha) {
+    return { ok: false, reason: "verifyTagBinding requires repo, tag, and candidateSha" };
+  }
+
+  const objectType = run(["cat-file", "-t", tag]);
+  if (typeof objectType !== "string") {
+    return { ok: false, reason: `tag ${tag} does not exist in ${repo} (git cat-file -t failed)` };
+  }
+  if (objectType !== "tag") {
+    return { ok: false, reason: `${tag} is a ${objectType}, not an annotated tag object` };
+  }
+
+  const resolvedCommit = run(["rev-parse", `${tag}^{commit}`]);
+  if (typeof resolvedCommit !== "string" || !/^[0-9a-f]{40}$/u.test(resolvedCommit)) {
+    return { ok: false, reason: `could not resolve ${tag}^{commit} to a 40-hex commit SHA` };
+  }
+  if (resolvedCommit !== candidateSha) {
+    return { ok: false, reason: `${tag} points to ${resolvedCommit}, not candidateSha ${candidateSha}` };
+  }
+
+  return { ok: true, reason: null };
+}
+
+export function gate(options, { gitImpl = execFileSync } = {}) {
   const record = JSON.parse(readFileSync(resolve(options.record), "utf8"));
   const { result, reasons } = evaluateGate(record);
-  console.log(JSON.stringify({ result, reasons }, null, 2));
-  if (result !== "QUALIFIED-CANDIDATE") process.exitCode = 1;
-  return { result, reasons };
+  let finalResult = result;
+  const finalReasons = [...reasons];
+
+  // The pure evaluator only checks that `tag` is the string
+  // `formatTag(label)`; it has no I/O and cannot prove the tag actually
+  // exists or points at `candidateSha`. Run that proof here, at the gate
+  // boundary, before a BLOCKED-free record is reported as qualified. This
+  // does not create a tag and is not a publication decision.
+  if (finalResult !== "BLOCKED" && finalResult !== "FAILED" && record?.tag && record?.candidateSha) {
+    const repo = resolve(options.repo ?? REPO_ROOT);
+    const tagBinding = verifyTagBinding({ repo, tag: record.tag, candidateSha: record.candidateSha }, { gitImpl });
+    if (!tagBinding.ok) {
+      finalResult = "BLOCKED";
+      finalReasons.push(`tag binding: ${tagBinding.reason}`);
+    }
+  }
+
+  console.log(JSON.stringify({ result: finalResult, reasons: finalReasons }, null, 2));
+  if (finalResult !== "QUALIFIED-CANDIDATE") process.exitCode = 1;
+  return { result: finalResult, reasons: finalReasons };
 }
 
 // ---------------------------------------------------------------------

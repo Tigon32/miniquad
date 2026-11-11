@@ -638,6 +638,7 @@ These tests check logic only. They do not replace the browser exercise or the re
 * Reproducibility is shown for one host and toolchain. Cross-host byte identity is not claimed.
 * Timer resolution in some engines is coarse. The measured `resolution` term includes it in the limit. A coarse clock makes `INCONCLUSIVE` results more likely.
 * Startup metrics do not measure the first visible pixel. The pixel checks in section 6.2 prove correctness, not latency.
+* `gate` runs `verifyTagBinding` (a read-only `git cat-file -t` and `git rev-parse <tag>^{commit}` check) before it reports `QUALIFIED-CANDIDATE`. This proves the named tag exists and resolves to `candidateSha` at gate time. It does not create, move, or push a tag, and a `QUALIFIED-CANDIDATE` result is still not a publication decision (section 9.4).
 
 ## 15. Open questions for the owner
 
@@ -647,6 +648,6 @@ These questions do not block the candidate. They block a `.release` publication.
 2. Decide the `Cargo.toml` version for a publication, and the product name under MADR 0006.
 3. Decide whether a GitHub Release object is necessary for a publication.
 4. Decide whether a physical device profile is necessary before a publication.
-5. Decide whether `evaluateGate` must itself verify, by a Git command, that the annotated tag named in `tag` actually points to `candidateSha` (`git cat-file -t <tag>` is `tag` and `git rev-parse <tag>^{commit}` equals `candidateSha`), or whether a documented reviewer-evidence field for that check is sufficient. This contract already requires the tag to point to `candidateSha` (section 9.2); the open question is only the exact binding mechanism, not whether the requirement exists.
+5. **Resolved.** The binding mechanism is a read-only Git command, run at the `gate` CLI boundary and not inside the pure `evaluateGate` function: `verifyTagBinding` runs `git cat-file -t <tag>` (must be `tag`, an annotated tag object) and `git rev-parse <tag>^{commit}` (must equal `candidateSha`) before `gate` reports `QUALIFIED-CANDIDATE`; a missing tag, a lightweight tag, or a mismatched commit each give `BLOCKED` with an explicit reason (section 14). `evaluateGate` itself stays pure and keeps checking only that `tag` equals `formatTag(label)` as a string; it has no I/O.
 
 **Writing review:** STE-aligned draft. Full dictionary review not done.

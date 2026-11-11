@@ -30,6 +30,9 @@ See [MADR 0003](adr/0003-use-asd-ste100-for-communication.md).
 | **GPU buffer** | Memory on the GPU that holds data for drawing. | JavaScript ArrayBuffer |
 | **Buffer update** | An operation that changes data in a GPU buffer. The API contract defines the exact action. | A CPU memory write |
 | **Texture** | An image resource that the GPU uses for drawing. | Source image file |
+| **Raw texture** | A platform GPU texture object that the application creates and owns outside Miniquad, then wraps with `TextureId::from_raw_id`. Miniquad reads it but does not take ownership of it. | Managed texture |
+| **Managed texture** | A texture that Miniquad creates, owns, and releases through `new_texture`/`delete_texture`. | Raw texture |
+| **Capability query** | A function that reports, before a call, whether an operation will succeed for a given resource — for example `texture_supports_resize`. | An undocumented panic |
 | **Render target** | The screen or an offscreen resource that receives a rendered image. | Input-only texture |
 | **Render pass** | A set of drawing operations that use one target and one defined state. | One draw call |
 | **Draw call** | A command that tells the GPU to draw geometry. | Game update |
@@ -46,6 +49,7 @@ See [MADR 0003](adr/0003-use-asd-ste100-for-communication.md).
 | **Support tier** | The policy value for a platform: QUALIFIED, TARGETED, LEGACY, or UNSUPPORTED. See the [platform support policy](platform-support-policy.md). | Test status (Pass, Fail, Not tested, Blocked) |
 | **Axial coordinate** | A cell position `(q, r)` on a flat-top or pointy-top hexagon grid. No layer is required: a 2D hex layout uses the position alone, and a hexagonal-prism voxel adds an integer layer. | Cube coordinate, offset coordinate |
 | **2D hex layout** | An optional, pixel-only 2D module that maps an axial coordinate to a cell center, corners, and neighbors for one chosen orientation (flat-top or pointy-top), with no layer and no voxel. | Hexagonal-prism voxel |
+| **Deprecated API** | A public function or type that keeps its name and signature but no longer has a verified, working path. Calling it after a documented unsupported check gives a panic, not a success-shaped placeholder value. | Removed API |
 
 ## Add a term
 

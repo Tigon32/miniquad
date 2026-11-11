@@ -55,23 +55,19 @@ function fakeExecFileSync({ hasCargo = true, hasRustup = true, hasWasmTarget = t
   };
 }
 
-// The reviewed, immutable, publicly available commit that
-// DEFAULT_BASELINE_REV in scripts/create-browser-project.mjs must
-// resolve to when a caller runs `--source git` without `--rev`. It is
-// the first revision on Tigon32/miniquad with all five required
-// browser files present (merged #125, browser-tested in #126/#127).
+// The commit scripts/create-browser-project.mjs resolves `--rev` to
+// when a caller runs `--source git` without `--rev`. It is a
+// reviewed, browser-tested revision on Tigon32/miniquad with all five
+// required files (not necessarily the first such revision).
 const EXPECTED_DEFAULT_REV = "f837a98d415262320a8c66ef9f8024d8f2faeab1";
-// The old reviewed baseline, pre-adoption-layer. It predates the
-// browser adoption layer and has only `js/gl.js`; a default
-// `--source git` generation pinned to it always failed. Kept here as
-// a named regression fixture, not as a current default.
+// The old default, pre-adoption-layer: it has only `js/gl.js`, so a
+// default `--source git` generation pinned to it always failed.
 const PRE_ADOPTION_REV = "454792c46febefc476e1df153a5efed8bbb2ef79";
 
-// Runs `git` for real (against this checkout's own object store, which
-// this test relies on already containing both fixture revisions
-// above), while still faking `cargo`/`rustup` so the test does not
-// depend on a Rust toolchain being installed.
-function realGitFakeToolchain({ hasWasmTarget = true } = {}) {
+// Fakes `cargo`/`rustup` so toolchain checks don't need Rust
+// installed, but runs `git` for real -- against whatever `--git-repo`
+// a test passes, including the fully owned fixture repo below.
+function fakeToolchainRealGit({ hasWasmTarget = true } = {}) {
   return (command, args, options) => {
     if (command === "git") {
       return execFileSync(command, args, options);
@@ -89,6 +85,42 @@ function realGitFakeToolchain({ hasWasmTarget = true } = {}) {
     }
     throw new Error(`unexpected command in fake: ${command}`);
   };
+}
+
+// Builds a small, disposable git repository with two commits, entirely
+// owned by this test run (no network fetch, no dependency on this
+// checkout's own clone depth or commit history, so it also works in a
+// shallow single-branch clone): one with only `js/gl.js` (modeling the
+// old pre-adoption default's shape) and one with every required
+// browser file (modeling a reviewed, adopted revision). Returns both
+// resolved full commit SHAs alongside the repo path.
+function makeFixtureGitRepo() {
+  const repoDir = makeScratchDir("git-fixture-");
+  const gitIdentity = ["-c", "user.email=fixture@example.invalid", "-c", "user.name=Fixture"];
+  const git = (...args) =>
+    execFileSync("git", args, { cwd: repoDir, stdio: "pipe", encoding: "utf8" });
+
+  git(...gitIdentity, "init", "-q");
+  mkdirSync(join(repoDir, "js"), { recursive: true });
+  writeFileSync(join(repoDir, "js", "gl.js"), "// gl.js fixture body\n");
+  git("add", "-A");
+  git(...gitIdentity, "commit", "-q", "-m", "pre-adoption: only gl.js");
+  const preAdoptionSha = git("rev-parse", "HEAD").trim();
+
+  const laterAssets = {
+    "miniquad.mjs": "// miniquad.mjs fixture body\n",
+    "runtime.html": "<!-- runtime.html fixture body -->\n",
+    "runtime.mjs": "// runtime.mjs fixture body\n",
+    "host-preferences.mjs": "// host-preferences.mjs fixture body\n",
+  };
+  for (const [name, body] of Object.entries(laterAssets)) {
+    writeFileSync(join(repoDir, "js", name), body);
+  }
+  git("add", "-A");
+  git(...gitIdentity, "commit", "-q", "-m", "adopted: all five required browser files");
+  const adoptedSha = git("rev-parse", "HEAD").trim();
+
+  return { repoDir, preAdoptionSha, adoptedSha };
 }
 
 test("checkToolchain fails with an actionable error when cargo is missing", () => {
@@ -368,66 +400,93 @@ test("resolveMiniquadSource in git mode rejects a resolved revision that is not 
 });
 
 // Regression test for a default `--source git` generation that always
+
+// Regression test for a default `--source git` generation that always
 // failed: DEFAULT_BASELINE_REV used to be the pre-adoption-layer
-// commit, which is missing four of the five required browser files.
-// This test proves the default now resolves to a commit that has all
-// five, against this checkout's real object store (no network fetch,
-// no fixture stand-ins), and would still fail against the old default.
-test("resolveMiniquadSource + readRequiredWebAssets: the old pre-adoption default revision is missing required browser assets", () => {
-  assert.throws(
-    () => {
-      const source = resolveMiniquadSource(
-        { source: "git", rev: PRE_ADOPTION_REV, gitRepo: REPO_ROOT },
-        { execFileSyncImpl: realGitFakeToolchain() }
-      );
-      readRequiredWebAssets(source);
-    },
-    (error) => {
-      assert.ok(error instanceof GeneratorError);
-      assert.match(error.message, /miniquad\.mjs/);
-      assert.match(error.message, /runtime\.html/);
-      assert.match(error.message, /runtime\.mjs/);
-      assert.match(error.message, /host-preferences\.mjs/);
-      assert.doesNotMatch(error.message, /gl\.js/);
-      return true;
+// commit, missing four of the five required browser files. This test
+// mocks the git DI boundary (no real `git` process, no network, no
+// dependency on this checkout's own history/clone depth) to capture
+// exactly which revision a default (no `--rev`) request resolves,
+// proving it is the reviewed revision above and not the old default.
+test("resolveMiniquadSource in git mode defaults --rev to the reviewed revision, not the old pre-adoption default", () => {
+  let requestedRev;
+  const source = resolveMiniquadSource(
+    { source: "git", gitRepo: REPO_ROOT },
+    {
+      execFileSyncImpl: (command, args) => {
+        if (command === "git" && args[2] === "rev-parse" && args[3] === "--verify") {
+          requestedRev = args[4].replace(/\^\{commit\}$/, "");
+          return `${EXPECTED_DEFAULT_REV}\n`;
+        }
+        throw new Error(`unexpected git invocation in fake: ${args.join(" ")}`);
+      },
     }
   );
+  assert.equal(requestedRev, EXPECTED_DEFAULT_REV);
+  assert.notEqual(requestedRev, PRE_ADOPTION_REV);
+  assert.equal(source.provenance.sha, EXPECTED_DEFAULT_REV);
 });
 
-test("generateProject with --source git and no --rev resolves the new default revision, which has every required browser asset", () => {
-  const scratch = makeScratchDir("default-git-");
-  const destinationDir = join(scratch, "project");
+// Hermetic regression test for the same class of fault as the old
+// pre-adoption default: a revision with only `js/gl.js` must still
+// fail readRequiredWebAssets, against an owned fixture repo this test
+// creates and commits to itself (no network, no shared object store).
+test("resolveMiniquadSource + readRequiredWebAssets: a pre-adoption-shaped revision is missing required browser assets", () => {
+  const { repoDir, preAdoptionSha } = makeFixtureGitRepo();
+  try {
+    assert.throws(
+      () => {
+        const source = resolveMiniquadSource(
+          { source: "git", rev: preAdoptionSha, gitRepo: repoDir },
+          { execFileSyncImpl: fakeToolchainRealGit() }
+        );
+        readRequiredWebAssets(source);
+      },
+      (error) => {
+        assert.ok(error instanceof GeneratorError);
+        assert.match(error.message, /miniquad\.mjs/);
+        assert.match(error.message, /runtime\.html/);
+        assert.match(error.message, /runtime\.mjs/);
+        assert.match(error.message, /host-preferences\.mjs/);
+        assert.doesNotMatch(error.message, /gl\.js/);
+        return true;
+      }
+    );
+  } finally {
+    rmSync(repoDir, { recursive: true, force: true });
+  }
+});
+
+// Hermetic end-to-end regression test for the generation + copied byte
+// + dependency pin pipeline in git mode, against the same owned
+// fixture repo's adopted commit (all five files): proves the pinned
+// `Cargo.toml` dependency and every copied asset's bytes match real
+// `git show <sha>:<path>` output for that commit, not only a recorded
+// hash constant, with no network fetch and no reliance on this
+// checkout's own commit history or clone depth.
+test("generateProject with --source git copies exact asset bytes and pins the resolved full SHA", () => {
+  const { repoDir, adoptedSha } = makeFixtureGitRepo();
+  const destinationDir = join(repoDir, "..", "project");
   try {
     const result = generateProject(
       destinationDir,
-      { source: "git", gitRepo: REPO_ROOT, name: "default-git-demo" },
-      { execFileSyncImpl: realGitFakeToolchain() }
+      { source: "git", rev: adoptedSha, gitRepo: repoDir, name: "fixture-git-demo" },
+      { execFileSyncImpl: fakeToolchainRealGit() }
     );
 
-    // The resolved dependency must be the named, reviewed default, not
-    // a floating "master"/"HEAD" and not the old pre-adoption baseline
-    // that caused the regression this test guards against.
-    assert.match(result.source, new RegExp(EXPECTED_DEFAULT_REV));
+    assert.match(result.source, new RegExp(adoptedSha));
     const cargoToml = readFileSync(join(destinationDir, "Cargo.toml"), "utf8");
     assert.match(
       cargoToml,
-      new RegExp(
-        `git = "https://github\\.com/Tigon32/miniquad\\.git", rev = "${EXPECTED_DEFAULT_REV}"`
-      )
+      new RegExp(`git = "https://github\\.com/Tigon32/miniquad\\.git", rev = "${adoptedSha}"`)
     );
 
-    const manifest = JSON.parse(
-      readFileSync(join(destinationDir, "web", "MANIFEST.json"), "utf8")
-    );
+    const manifest = JSON.parse(readFileSync(join(destinationDir, "web", "MANIFEST.json"), "utf8"));
     assert.equal(manifest.source.mode, "git");
-    assert.equal(manifest.source.sha, EXPECTED_DEFAULT_REV);
+    assert.equal(manifest.source.sha, adoptedSha);
     assert.equal(manifest.source.dirty, false);
     assert.equal(manifest.files.length, 5);
 
-    // Compare every copied asset byte-for-byte against `git show` at the
-    // pinned revision (not only a recorded hash constant), so a
-    // generator defect that substituted, truncated, or re-encoded a
-    // same-named file would still fail this test.
     const expectedAssetPaths = {
       "gl.js": "js/gl.js",
       "miniquad.mjs": "js/miniquad.mjs",
@@ -438,22 +497,24 @@ test("generateProject with --source git and no --rev resolves the new default re
     for (const [outName, sourcePath] of Object.entries(expectedAssetPaths)) {
       const expectedBytes = execFileSync(
         "git",
-        ["-C", REPO_ROOT, "show", `${EXPECTED_DEFAULT_REV}:${sourcePath}`],
+        ["-C", repoDir, "show", `${adoptedSha}:${sourcePath}`],
         { stdio: "pipe" }
       );
       const actualBytes = readFileSync(join(destinationDir, "web", outName));
       assert.ok(
         actualBytes.equals(expectedBytes),
-        `${outName} bytes must match git show ${EXPECTED_DEFAULT_REV}:${sourcePath}`
+        `${outName} bytes must match git show ${adoptedSha}:${sourcePath}`
       );
       const manifestEntry = manifest.files.find((entry) => entry.file === outName);
       assert.ok(manifestEntry, `manifest is missing ${outName}`);
       assert.equal(manifestEntry.bytes, expectedBytes.length);
     }
   } finally {
-    rmSync(scratch, { recursive: true, force: true });
+    rmSync(repoDir, { recursive: true, force: true });
+    rmSync(destinationDir, { recursive: true, force: true });
   }
 });
+
 
 test("build.mjs records final app.wasm/index.html hashes without dropping source-copied entries or provenance", () => {
   const scratchRoot = makeScratchDir("generate-then-build-");

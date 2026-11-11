@@ -2,8 +2,8 @@
 
 Status: **generator and external consumer implemented and
 browser-tested at one reviewed revision; not release qualified**.
-Addresses [issue #124](https://github.com/Tigon32/miniquad/issues/124)
-(closed). Implemented by [#125](https://github.com/Tigon32/miniquad/pull/125);
+Addresses [issue #124](https://github.com/Tigon32/miniquad/issues/124).
+Implemented by [#125](https://github.com/Tigon32/miniquad/pull/125);
 browser-tested by [#127](https://github.com/Tigon32/miniquad/pull/127).
 Depends on the optional browser adoption layer recorded in
 [MADR 0009](adr/0009-optional-browser-adoption-layer.md) (status:
@@ -93,12 +93,11 @@ The generator never silently depends on the original upstream project
   SHA with `git rev-parse --verify` against `--git-repo` and fails if
   that does not succeed. The resolved SHA, not the input, is what is
   pinned in `Cargo.toml` and read from with `git show`. `--rev`
-  defaults to the reviewed, immutable, publicly available revision
-  `f837a98d415262320a8c66ef9f8024d8f2faeab1` (the first revision with
-  all five required browser files; see "Evidence and tested scope"
-  below); the default `--git-url` is the `Tigon32/miniquad` fork, not
-  upstream. An explicit `--rev` to a different revision that has all
-  five required files still works.
+  defaults to a reviewed, browser-tested, immutable, publicly
+  available revision `f837a98d415262320a8c66ef9f8024d8f2faeab1` (see
+  "Evidence and tested scope" below); the default `--git-url` is the
+  `Tigon32/miniquad` fork, not upstream. An explicit `--rev` to a
+  different revision that has all five required files still works.
 
 Issue #19 owns the long-term SemVer and release identity for this
 dependency; the pinning options above are an interim, explicit,
@@ -130,15 +129,17 @@ any file.
 
 `node scripts/create-browser-project.mjs <dest> --source git --git-repo
 <local clone>` (no `--rev`) resolves to, and copies exact asset bytes
-from, `f837a98d415262320a8c66ef9f8024d8f2faeab1`: the first reviewed,
-immutable, publicly available `Tigon32/miniquad` revision with all
-five required browser files. An explicit `--rev <other sha>` that also
-has all five files still works; the generator does not special-case
-the default revision. `tests/starter-generator.test.mjs` asserts the
-resolved default SHA, the pinned `Cargo.toml` dependency, and every
-copied asset's bytes against `git show <sha>:<path>`, not only a
-recorded hash constant, so it fails if the default ever points back at
-a revision missing a required file.
+from, `f837a98d415262320a8c66ef9f8024d8f2faeab1`: a reviewed,
+browser-tested, immutable, publicly available `Tigon32/miniquad`
+revision with all five required browser files. An explicit
+`--rev <other sha>` that also has all five files still works; the
+generator does not special-case the default revision.
+`tests/starter-generator.test.mjs` asserts that the default `--rev`
+resolution never falls back to the old pre-adoption revision, and
+exercises the resolve/copy/pin pipeline end to end against an owned,
+hermetic git fixture repository (no network fetch, no dependency on
+this checkout's own commit history), so it fails if the default ever
+points back at a revision missing a required file.
 
 What is tested at `f837a98d415262320a8c66ef9f8024d8f2faeab1`,
 end to end, against a freshly generated external consumer

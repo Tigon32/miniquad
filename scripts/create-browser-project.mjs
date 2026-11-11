@@ -32,25 +32,22 @@ const THIS_FILE = fileURLToPath(import.meta.url);
 const REPO_ROOT = dirname(dirname(THIS_FILE));
 const TEMPLATES_ROOT = join(REPO_ROOT, "templates", "browser");
 const WASM_TARGET = "wasm32-unknown-unknown";
-// `454792c46febefc476e1df153a5efed8bbb2ef79` was the reviewed baseline
-// before the browser adoption layer landed; it has only `js/gl.js` and
-// is missing the other four files in REQUIRED_WEB_ASSETS below, so a
-// default `--source git` generation with no `--rev` always failed.
-// `f837a98d415262320a8c66ef9f8024d8f2faeab1` is the first reviewed,
-// immutable, publicly available revision on `Tigon32/miniquad` with
-// all five files present (merged #125, browser-tested in #127: 18
-// starter cases across Chromium, Firefox, and desktop WebKit). Keep
-// this pinned to one named, reviewed commit; never default to a
-// floating ref such as `master` or `HEAD`, because that would let the
-// generator silently start reading unreviewed future commits.
+// `454792c46febefc476e1df153a5efed8bbb2ef79` predates the browser
+// adoption layer and has only `js/gl.js`, so a default `--source git`
+// generation with no `--rev` always failed. `f837a98d415262320a8c66ef9f8024d8f2faeab1`
+// is a reviewed, browser-tested, immutable, publicly available
+// revision on `Tigon32/miniquad` with all five required files (not
+// the first such revision: #125/cefff8f already had them; #127 added
+// further browser-tested coverage over it). Keep this pinned to one
+// named commit; never a floating ref like `master` or `HEAD`, which
+// would let the generator silently start reading unreviewed commits.
 const DEFAULT_BASELINE_REV = "f837a98d415262320a8c66ef9f8024d8f2faeab1";
 const DEFAULT_GIT_URL = "https://github.com/Tigon32/miniquad.git";
 
-// Files the embedding module needs. All five exist in
-// DEFAULT_BASELINE_REV above and in every later reviewed revision.
-// `readRequiredWebAssets` still fails with an actionable, itemized
-// error if a caller points `--rev`/`--miniquad-path` at an older or
-// unrelated revision that is missing any of them.
+// Files the embedding module needs. `readRequiredWebAssets` fails
+// with an actionable, itemized error if a caller points `--rev` or
+// `--miniquad-path` at a revision missing any of them; that is not
+// guaranteed for every revision after DEFAULT_BASELINE_REV.
 const REQUIRED_WEB_ASSETS = [
   "js/gl.js",
   "js/miniquad.mjs",

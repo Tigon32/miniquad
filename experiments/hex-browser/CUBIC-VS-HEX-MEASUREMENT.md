@@ -10,10 +10,13 @@ uses 20 alternating page loads per engine, or 10 samples per scene. It does not
 meet the requested 20 paired runs.
 The measurements were collected at `a98966a350e64f7de6bc10dc0086e938366f62ed`,
 before this branch merged `origin/master` at
-`80e03a6f11624095a4d05abc3fd66a12713f99de`. They were not rerun on the merged
-source revision. A fresh run is blocked in the post-reboot shell:
+`80e03a6f11624095a4d05abc3fd66a12713f99de` and the later master update
+`b83f88f9a4a834637e40fd4a6335ff27761cffa7`. They were not rerun on the merged
+source revision. A fresh measurement-fixture build is blocked on the host:
 `node experiments/hex-browser/build-fixtures.mjs` fails because the
 `wasm32-unknown-unknown` target is not installed; `rustup` is unavailable.
+`npm run ci:local` passed on the merged source, but it runs the root Chromium
+smoke lane and does not build or run this experiment's measurement fixture.
 
 ## Source and conditions
 

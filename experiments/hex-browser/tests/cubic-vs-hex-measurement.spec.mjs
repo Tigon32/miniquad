@@ -3,7 +3,8 @@
 // pixel ratio, seed, and chunk count. Their actual cell counts differ
 // because the examples use different chunk dimensions. Record that
 // difference and do not claim an equal-workload speed comparison.
-// RUN_COUNT is 20 page loads per engine (10 per scene), not 20 pairs.
+// RUN_COUNT is 20 page loads per engine (10 alternating pairs), not
+// the required 20 pairs.
 // Record real numbers, with any unavailable value left `null` with a
 // stated reason -- never fabricated.
 //
@@ -161,7 +162,9 @@ test.describe("cubic vs hex: alternating measurement", () => {
                 dpr: 1,
                 seed: 20261111,
                 residentChunkCount: 2,
-                runsPerScene: RUN_COUNT
+                pageLoads: RUN_COUNT,
+                pairedRuns: RUN_COUNT / 2,
+                runsPerScene: RUN_COUNT / 2
             },
             knownDifferences: {
                 chunkDims: { cubic: [8, 12, 8], hex: [8, 4, 8] },

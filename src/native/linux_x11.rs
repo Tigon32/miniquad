@@ -55,6 +55,9 @@ pub struct X11Display {
     drag_n_drop: drag_n_drop::X11DnD,
 }
 
+const NET_WM_STATE_REMOVE: isize = 0;
+const NET_WM_STATE_ADD: isize = 1;
+
 impl X11Display {
     unsafe fn process_event(&mut self, event: &mut XEvent, event_handler: &mut dyn EventHandler) {
         match event.type_0 {
@@ -263,7 +266,6 @@ impl X11Display {
         }
     }
 
-    // `fullscreen == false` does not restore the windowed state: #148.
     unsafe fn set_fullscreen(&mut self, window: Window, fullscreen: bool) {
         let wm_state = (self.libx11.XInternAtom)(
             self.display,
@@ -272,18 +274,12 @@ impl X11Display {
         );
         let wm_fullscreen = (self.libx11.XInternAtom)(
             self.display,
-            if fullscreen {
-                b"_NET_WM_STATE_FULLSCREEN\x00" as *const u8 as *const _
-            } else {
-                b"\x00" as *const u8 as *const _
-            },
+            b"_NET_WM_STATE_FULLSCREEN\x00" as *const u8 as *const _,
             false as _,
         );
 
-        // this is the first method to make window fullscreen
-        // hide it, change _NET_WM_STATE_FULLSCREEN property and than show it back
-        // someone on stackoverflow mentioned that this is not working on ubuntu/unity though
-        {
+        // Keep initial fullscreen setup; unmapping on exit loses the saved geometry.
+        if fullscreen {
             (self.libx11.XLowerWindow)(self.display, window);
             (self.libx11.XUnmapWindow)(self.display, window);
             (self.libx11.XSync)(self.display, false as _);
@@ -304,12 +300,14 @@ impl X11Display {
             (self.libx11.XFlush)(self.display);
         }
 
-        // however, this is X, so just in case - the second method
-        // send ClientMessage to the window with request to change property to fullscreen
         {
             let mut data = [0isize; 5];
 
-            data[0] = 1;
+            data[0] = if fullscreen {
+                NET_WM_STATE_ADD
+            } else {
+                NET_WM_STATE_REMOVE
+            };
             data[1] = wm_fullscreen as isize;
             data[2] = 0;
 
@@ -332,6 +330,7 @@ impl X11Display {
                 (1048576 | 131072) as _,
                 &mut ev as *mut XClientMessageEvent as *mut _,
             );
+            (self.libx11.XFlush)(self.display);
         }
     }
 

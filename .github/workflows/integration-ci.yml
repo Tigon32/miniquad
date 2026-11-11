@@ -79,6 +79,8 @@ jobs:
           cargo test --manifest-path companions/voxel/Cargo.toml
           cargo fmt --manifest-path companions/voxel/Cargo.toml -- --check
           cargo build --release --target wasm32-unknown-unknown --manifest-path companions/voxel/Cargo.toml --example offline
+          cargo run --manifest-path tests/hex-picker-consumer/Cargo.toml
+          cargo build --target wasm32-unknown-unknown --manifest-path tests/hex-picker-consumer/Cargo.toml
           node scripts/create-browser-project.mjs "$RUNNER_TEMP/miniquad-browser-starter" --source path --miniquad-path "$GITHUB_WORKSPACE" --name miniquad-browser-starter
           node "$RUNNER_TEMP/miniquad-browser-starter/scripts/build.mjs"
           echo "MINIQUAD_STARTER_PATH=$RUNNER_TEMP/miniquad-browser-starter" >> "$GITHUB_ENV"

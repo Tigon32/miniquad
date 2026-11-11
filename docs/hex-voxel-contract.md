@@ -279,6 +279,9 @@ pub fn pick_hex(world: &World, ray: &HexRay, params: &HexPickParams)
 `hex_cell_at_xz` returns the cell whose center is nearest to `(x, z)`.
 Hex cells are the nearest-center regions of the center lattice, so this is exact inside a cell.
 Calculate fractional axial values, round to a candidate, then compare the candidate and its 6 neighbors by squared distance.
+Use the analytic lattice in `f64`: center `(1.5·q, (2·r+q)·√3/2)`.
+Do not use the rounded `f32` mesh centers or normals for this calculation or the walk.
+Mesh rounding must not change an analytic edge or vertex tie.
 **Tie rule A:** at equal distance (a point on an edge or a vertex), select the smallest `(q, r)` in lexicographic order.
 A non-finite input or a cell outside the bound gives `CoordinateOutOfRange`.
 
@@ -291,7 +294,7 @@ A non-finite input or a cell outside the bound gives `CoordinateOutOfRange`.
    **Tie rule B:** at equal `t_k` (an edge or vertex crossing), select the lowest face index. The next column is `neighbor(k)` and its entry face is `opposite(k)`.
    Three cells meet at a vertex. A cycle is not possible, because each step crosses a side with `d·n_k > 0`.
 5. In a column with interval `[t_in, t_out]`, visit the layers from `y(t_in)` to `y(t_out)` in ray order. On an exact layer boundary, use the layer that the ray moves into (`floor` for `dy >= 0`, `ceil − 1` for `dy < 0`). The second and later layers in a column have entry face `Top` (`dy < 0`) or `Bottom` (`dy > 0`).
-6. Each visited cell is one step. The first solid cell gives `Some(HexHit { cell, face, distance: t })`. A cell in a missing chunk is air. A neighbor outside the bound, `t > max_distance`, or `max_steps` reached gives `Ok(None)`.
+6. Each visited cell is one step. The first solid cell gives `Some(HexHit { cell, face, distance: t })`. A cell in a missing chunk is air. A start cell or neighbor outside the bound, `t > max_distance`, or `max_steps` reached gives `Ok(None)`.
 
 A ray with `dx = dz = 0` stays in the start column. A ray in the plane of a side stays deterministic by rule B.
 

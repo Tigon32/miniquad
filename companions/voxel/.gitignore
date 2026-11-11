@@ -1,4 +1,5 @@
 /target
 /target-webgl1
 /target-webgl2
+/target-cubic
 Cargo.lock

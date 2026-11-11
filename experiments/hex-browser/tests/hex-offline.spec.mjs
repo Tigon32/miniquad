@@ -688,15 +688,10 @@ test.describe("offline hex-voxel scene: honest measurements", () => {
             jsBytes: jsBytes.length,
             jsGzipBytes: zlib.gzipSync(jsBytes).length,
             cubicComparison: {
-                available: false,
+                available: true,
                 reason:
-                    "the cubic baseline lives on the parent-owned port 4173/4174 server; this isolated port-4290 tree does not navigate there, per the task's port-isolation constraint. No cubic number is fabricated: both sides of any cubic-vs-hex figure are left out rather than guessed.",
-                vertices: null,
-                indices: null,
-                meshBuildTimeMs: null,
-                frameIntervalMsP95: null,
-                frameIntervalMsP99: null,
-                wasmGzipBytes: null
+                    "a real, paired cubic-vs-hex comparison is recorded by cubic-vs-hex-measurement.spec.mjs in this same private port-4290 tree, which builds and serves the UNCHANGED companions/voxel/examples/offline.rs cubic example on its own route (see build-fixtures.mjs's buildCubicMeasurementFixture and cubic-measurement.html) instead of navigating to the parent-owned port 4173/4174 server. See that spec's JSON artifact for the actual numbers and stated differences (e.g. ChunkDims).",
+                seeArtifact: "cubic-vs-hex-<project>.json"
             },
             gpuMetricsUnavailable: {
                 vramBytes: null,

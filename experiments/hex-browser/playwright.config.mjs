@@ -18,7 +18,7 @@ if (browser && !known.includes(browser)) {
 
 export default defineConfig({
     testDir: "./tests",
-    testMatch: "hex-offline.spec.mjs",
+    testMatch: ["hex-offline.spec.mjs", "cubic-vs-hex-measurement.spec.mjs"],
     timeout: 45000,
     expect: { timeout: 20000 },
     retries: 0,

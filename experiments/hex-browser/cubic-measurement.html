@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Miniquad offline cubic voxel scene (measurement only)</title>
+  <style>
+    html, body { margin: 0; background: #000; }
+    /* Same CSS canvas size as tests/browser/hex-offline.html, so the
+       cubic-vs-hex frame-interval comparison runs under an identical
+       canvas size and (absent an explicit context override) an
+       identical device pixel ratio. */
+    #glcanvas { width: 640px; height: 360px; display: block; }
+  </style>
+</head>
+<body>
+  <!--
+    Private, measurement-only page for issue #131's required
+    cubic-vs-hex comparison (see
+    experiments/hex-browser/tests/cubic-vs-hex-measurement.spec.mjs).
+    Loads the UNCHANGED `companions/voxel/examples/offline.rs` cubic
+    example's WASM output (built by build-fixtures.mjs into its own
+    target directory, never touching offline.rs itself) through the
+    same generic `js/gl.js` loader `tests/browser/hex-offline.html`
+    uses. It adds no cubic-specific status bar or controls: this page
+    exists only to measure real browser-rendered frame timing for the
+    cubic scene, under the same canvas size as the hex scene, served
+    from this same private port-4290 harness (not the parent-owned
+    port 4173/4174 server).
+  -->
+  <canvas id="glcanvas" width="640" height="360" tabindex="0"></canvas>
+  <script src="/js/gl.js"></script>
+  <script>
+    load("/offline_cubic_webgl1.wasm");
+  </script>
+</body>
+</html>

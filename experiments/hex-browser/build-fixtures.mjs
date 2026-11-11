@@ -37,6 +37,24 @@ export function buildHexFixtures() {
     return { webgl1, webgl2 };
 }
 
+// Builds the UNCHANGED cubic `offline` example (issue #131's required
+// measurement condition: a fair cubic-vs-hex comparison) into its own
+// gitignored target directory, the same hermetic way as the hex
+// fixtures above. Never edits `offline.rs`; only adds a build step for
+// it here, inside this private harness.
+export function buildCubicMeasurementFixture() {
+    const env = { ...process.env, CARGO_TARGET_DIR: "target-cubic" };
+    const args = ["build", "--release", "--target", "wasm32-unknown-unknown", "--example", "offline"];
+    console.log("hex-browser fixtures: cargo " + args.join(" ") + " (CARGO_TARGET_DIR=target-cubic)");
+    execFileSync("cargo", args, { cwd: voxelCrate, env, stdio: "inherit" });
+    const wasmPath = resolve(voxelCrate, "target-cubic/wasm32-unknown-unknown/release/examples/offline.wasm");
+    if (!existsSync(wasmPath)) {
+        throw new Error("Expected build output missing: " + wasmPath);
+    }
+    return wasmPath;
+}
+
 if (import.meta.url === `file://${process.argv[1]}`) {
     buildHexFixtures();
+    buildCubicMeasurementFixture();
 }

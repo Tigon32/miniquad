@@ -21,6 +21,20 @@ const files = new Map([
     [
         "/offline_hex_webgl2.wasm",
         { file: "companions/voxel/target-webgl2/wasm32-unknown-unknown/release/examples/offline_hex.wasm", type: "application/wasm" }
+    ],
+    // Issue #131's required cubic-vs-hex measurement condition (see
+    // experiments/hex-browser/tests/cubic-vs-hex-measurement.spec.mjs).
+    // The page is this harness's own measurement-only page; the WASM
+    // is the UNCHANGED cubic `offline` example, built by
+    // build-fixtures.mjs's `buildCubicMeasurementFixture` into its own
+    // gitignored target directory.
+    [
+        "/cubic-measurement",
+        { file: "experiments/hex-browser/cubic-measurement.html", type: "text/html; charset=utf-8" }
+    ],
+    [
+        "/offline_cubic_webgl1.wasm",
+        { file: "companions/voxel/target-cubic/wasm32-unknown-unknown/release/examples/offline.wasm", type: "application/wasm" }
     ]
 ]);
 

@@ -16,6 +16,7 @@ The documents are **STE-aligned drafts**. We have not completed a full ASD-STE10
 * [0007 — Use supported and secure development tools](0007-use-supported-and-secure-toolchains.md) — **Accepted**
 * [0008 — Keep optional voxel simulation outside Miniquad core](0008-optional-voxel-topologies.md) — **Proposed**
 * [0009 — Keep browser adoption tools outside the core library](0009-optional-browser-adoption-layer.md) — **Proposed**
+* [0010 — Use fork-scoped browser release candidates](0010-browser-release-candidates.md) — **Proposed**
 
 ## Write a new decision
 

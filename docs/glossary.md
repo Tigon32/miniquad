@@ -29,6 +29,10 @@ See [MADR 0003](adr/0003-use-asd-ste100-for-communication.md).
 | **Rendering pipeline** | The shaders and render state that the GPU uses for drawing. | CI pipeline |
 | **Frame** | One completed visual update. | Physics simulation step |
 | **CI check** | A test or build check that runs automatically. | Proof of browser behavior |
+| **Candidate package** | An immutable browser payload and canonical manifest built from one reviewed source revision. | Approved public release |
+| **Bootstrap reference** | A tested source revision used before a qualified release exists. It has no candidate label or release qualification. | Previous qualified release |
+| **Reference-profile regression guard** | A comparison of baseline and candidate measurements in one specified CI profile. | A performance objective for user devices |
+| **QUALIFIED-CANDIDATE** | A candidate gate result for the recorded source, artifacts, and browser profile. It does not grant owner approval for publication. | Stable release approval |
 | **Integration PR** | A pull request that adds selected upstream changes to this fork. | Original upstream PR |
 | **SSE (server-side execution)** | Game simulation or other work that runs on a server. | Intel SSE instructions or HTTP Server-Sent Events |
 | **BDD** | Behavior-driven development. It records user behavior in test scenarios. | A guarantee that all tests pass |

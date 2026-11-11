@@ -394,7 +394,7 @@ impl Glx {
     }
 }
 
-// TODO: this code came a long way from sokol_app, better reimplement it!
+// Adapted from sokol_app.
 unsafe fn choose_fbconfig(
     libgl: &mut LibGlx,
     libx11: &mut super::LibX11,

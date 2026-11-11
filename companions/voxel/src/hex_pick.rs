@@ -244,7 +244,9 @@ pub fn hex_cell_at_xz(x: f64, z: f64, layer: i32) -> Result<HexCell, HexError> {
     consider(candidate_q, candidate_r);
     for face in HexFace::SIDES {
         let (dq, dr, _dlayer) = face.delta();
-        consider(candidate_q + dq, candidate_r + dr);
+        if let (Some(q), Some(r)) = (candidate_q.checked_add(dq), candidate_r.checked_add(dr)) {
+            consider(q, r);
+        }
     }
     match best {
         Some((q, r, _)) => HexCell::new(q, r, layer),
@@ -401,12 +403,18 @@ pub fn pick_hex(
         // Visit the layers crossed in this column, in ray order.
         let mut layer_t = t;
         let mut current_entry_face = entry_face;
+        let p = add3(ray.origin, scale3(ray.dir, layer_t));
+        let mut layer = layer_at_y(p[1], params.min_layer, params.max_layer);
+        if dy < 0.0
+            && layer > params.min_layer
+            && (p[1] - layer as f64 * LAYER_HEIGHT).abs() <= 1e-9
+        {
+            layer -= 1;
+        }
         loop {
             if layer_t > column_t_out + 1e-9 || steps >= params.max_steps {
                 break;
             }
-            let p = add3(ray.origin, scale3(ray.dir, layer_t));
-            let layer = layer_at_y(p[1], params.min_layer, params.max_layer);
             let cell = match HexCell::new(q, r, layer) {
                 Ok(cell) => cell,
                 Err(_) => return Ok(None),
@@ -431,6 +439,10 @@ pub fn pick_hex(
             if !(t_next.is_finite()) || t_next <= layer_t {
                 break;
             }
+            if (dy > 0.0 && layer == params.max_layer) || (dy < 0.0 && layer == params.min_layer) {
+                break;
+            }
+            layer += if dy > 0.0 { 1 } else { -1 };
             layer_t = t_next;
             current_entry_face = if dy > 0.0 {
                 Some(HexFace::Bottom)
@@ -534,6 +546,53 @@ mod tests {
             hex_cell_at_xz(f64::NAN, 0.0, 0).unwrap_err(),
             HexError::CoordinateOutOfRange
         );
+    }
+
+    #[test]
+    fn hex_cell_at_xz_rejects_extreme_finite_coordinates_without_panicking() {
+        for (x, z) in [
+            (f64::MAX, 0.0),
+            (f64::MIN, 0.0),
+            (0.0, f64::MAX),
+            (0.0, f64::MIN),
+        ] {
+            assert_eq!(hex_cell_at_xz(x, z, 0), Err(HexError::CoordinateOutOfRange));
+        }
+    }
+
+    #[test]
+    fn vertical_ray_crosses_empty_layers_before_the_first_solid_cell() {
+        let dims = crate::chunk::ChunkDims::new(4, 4, 4);
+        let mut world = World::new(dims, 1).unwrap();
+        let mut chunk = crate::chunk::Chunk::new(dims).unwrap();
+        chunk.set(0, 1, 0, 1).unwrap();
+        world
+            .insert(crate::world::ChunkCoord::new(0, 0, 0), chunk)
+            .unwrap();
+        let params = HexPickParams {
+            max_distance: 20.0,
+            max_steps: 20,
+            min_layer: 0,
+            max_layer: 3,
+        };
+        for (origin_y, direction_y, distance, face) in [
+            (10.0, -1.0, 8.0, HexFace::Top),
+            (-10.0, 1.0, 11.0, HexFace::Bottom),
+        ] {
+            let hit = pick_hex(
+                &world,
+                &HexRay {
+                    origin: [0.0, origin_y, 0.0],
+                    dir: [0.0, direction_y, 0.0],
+                },
+                &params,
+            )
+            .unwrap()
+            .expect("the ray must reach the solid layer");
+            assert_eq!(hit.cell, HexCell::new(0, 0, 1).unwrap());
+            assert_eq!(hit.face, Some(face));
+            assert_eq!(hit.distance, distance);
+        }
     }
 
     #[test]

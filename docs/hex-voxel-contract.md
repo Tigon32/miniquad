@@ -294,7 +294,7 @@ A non-finite input or a cell outside the bound gives `CoordinateOutOfRange`.
    **Tie rule B:** at equal `t_k` (an edge or vertex crossing), select the lowest face index. The next column is `neighbor(k)` and its entry face is `opposite(k)`.
    Three cells meet at a vertex. A cycle is not possible, because each step crosses a side with `d·n_k > 0`.
 5. In a column with interval `[t_in, t_out]`, visit the layers from `y(t_in)` to `y(t_out)` in ray order. On an exact layer boundary, use the layer that the ray moves into (`floor` for `dy >= 0`, `ceil − 1` for `dy < 0`). The second and later layers in a column have entry face `Top` (`dy < 0`) or `Bottom` (`dy > 0`).
-6. Each visited cell is one step. The first solid cell gives `Some(HexHit { cell, face, distance: t })`. A cell in a missing chunk is air. A neighbor outside the bound, `t > max_distance`, or `max_steps` reached gives `Ok(None)`.
+6. Each visited cell is one step. The first solid cell gives `Some(HexHit { cell, face, distance: t })`. A cell in a missing chunk is air. A start cell or neighbor outside the bound, `t > max_distance`, or `max_steps` reached gives `Ok(None)`.
 
 A ray with `dx = dz = 0` stays in the start column. A ray in the plane of a side stays deterministic by rule B.
 

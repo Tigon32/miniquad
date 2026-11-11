@@ -34,28 +34,42 @@ impl std::error::Error for Error {}
 
 pub type Response = Result<Vec<u8>, Error>;
 
-/// Decide how many bytes of a native Android asset read to report, given
-/// the asset's declared `length` and the native `AAsset_read` result.
+/// Checks a native Android asset's declared length before any
+/// allocation or read is attempted.
 ///
-/// `None` means the load failed: the caller must not read the buffer.
-/// `Some(n)` reports exactly `n` read bytes; a short read
-/// (`0 < read < length`) reports only `read`, so the caller never reads
-/// uninitialized memory. An asset with `length <= 0` is a successful
-/// empty read. Extracted as a pure function so this part of the fix is
-/// host-testable; the native `AAssetManager`/`libc::malloc` call sites
-/// stay blocked without an Android device or emulator. #149.
+/// `android_asset::content_length` is a C `int` (`i32`), so a negative
+/// `AAsset_getLength64` result (should not happen, but is not trusted)
+/// or one exceeding `i32::MAX` can never be reported back correctly.
+/// Rejecting it here, before `load_asset` allocates or reads anything,
+/// avoids allocating for a length it could not honestly report. #149.
+#[cfg(any(target_os = "android", test))]
+pub(crate) fn android_asset_length_in_range(length: i64) -> bool {
+    (0..=i32::MAX as i64).contains(&length)
+}
+
+/// Decide how many bytes of an already-length-validated native Android
+/// asset read to report, given the asset's declared `length` (already
+/// checked by [`android_asset_length_in_range`]) and the native
+/// `AAsset_read` result.
+///
+/// `None` means the load failed: the caller must free the buffer and
+/// report an error. `Some(n)` reports exactly `n` read bytes. A short
+/// read (`0 <= read < length`) is an error, not a truncated success: the
+/// caller must never serve a partially-read asset as if it were
+/// complete. `length == 0` is a successful empty read. #149.
 ///
 /// Only `native::android::load_asset` calls this on a real target, so a
-/// non-Android build would otherwise warn that it is unused.
-#[cfg_attr(not(target_os = "android"), allow(dead_code))]
+/// non-Android, non-test build would otherwise warn that it is unused.
+#[cfg(any(target_os = "android", test))]
 pub(crate) fn android_asset_read_outcome(length: i64, read: i32) -> Option<usize> {
-    if length <= 0 {
+    if length == 0 {
         return Some(0);
     }
-    if read <= 0 {
-        return None;
+    if read as i64 == length {
+        Some(length as usize)
+    } else {
+        None
     }
-    Some(read as usize)
 }
 
 /// Filesystem path on desktops or HTTP URL in WASM
@@ -168,7 +182,7 @@ fn load_file_desktop<F: Fn(Response)>(path: &str, on_loaded: F) {
 
 #[cfg(test)]
 mod android_asset_read_outcome_tests {
-    use super::android_asset_read_outcome;
+    use super::{android_asset_length_in_range, android_asset_read_outcome};
 
     #[test]
     fn empty_asset_is_a_successful_zero_byte_read() {
@@ -181,15 +195,36 @@ mod android_asset_read_outcome_tests {
     }
 
     #[test]
-    fn short_read_reports_only_the_bytes_actually_read() {
-        // Before the fix this path reported `length` (128), which let
-        // the caller read 108 uninitialized bytes past the short read.
-        assert_eq!(android_asset_read_outcome(128, 20), Some(20));
+    fn short_read_is_an_error_not_a_truncated_success() {
+        // The acceptance criteria for #149 require an error on a short
+        // read. Before this fix, this path reported `read` (20) as a
+        // successful length, serving a silently truncated asset.
+        assert_eq!(android_asset_read_outcome(128, 20), None);
     }
 
     #[test]
     fn failed_read_of_a_non_empty_asset_is_an_error() {
         assert_eq!(android_asset_read_outcome(128, 0), None);
         assert_eq!(android_asset_read_outcome(128, -1), None);
+    }
+
+    #[test]
+    fn negative_length_is_rejected_before_any_read() {
+        // Should not happen, but `AAsset_getLength64` is not trusted:
+        // a negative length must never reach the read/report path.
+        assert!(!android_asset_length_in_range(-1));
+    }
+
+    #[test]
+    fn length_over_c_int_max_is_rejected_before_any_read() {
+        // content_length is a C `int`; a length that cannot fit in one
+        // must be rejected before `load_asset` allocates or reads.
+        assert!(!android_asset_length_in_range(i32::MAX as i64 + 1));
+    }
+
+    #[test]
+    fn zero_and_max_c_int_lengths_are_in_range() {
+        assert!(android_asset_length_in_range(0));
+        assert!(android_asset_length_in_range(i32::MAX as i64));
     }
 }

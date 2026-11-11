@@ -276,18 +276,11 @@ impl MainThreadState {
     /// set `quit_ordered`. `cancel_quit()` called from
     /// `quit_requested_event` keeps the activity open. #151.
     fn check_quit(&mut self) {
-        let d = crate::native_display().try_lock().unwrap();
-        if d.quit_requested && !d.quit_ordered {
-            drop(d);
-            self.event_handler.quit_requested_event();
-            let mut d = crate::native_display().try_lock().unwrap();
-            d.quit_ordered =
-                crate::native::confirm_quit_after_event(d.quit_requested, d.quit_ordered);
-        }
+        let quit_ordered = crate::native::drive_android_quit_state(crate::native_display(), || {
+            self.event_handler.quit_requested_event()
+        });
 
-        if !self.activity_finish_requested
-            && crate::native_display().try_lock().unwrap().quit_ordered
-        {
+        if !self.activity_finish_requested && quit_ordered {
             self.activity_finish_requested = true;
             unsafe {
                 let env = attach_jni_env();
@@ -338,75 +331,66 @@ impl MainThreadState {
     }
 }
 
-/// Get the JNI Env by calling ndk's AttachCurrentThread
-///
-/// Calling `AttachCurrentThread` from the same thread multiple times is
-/// very cheap: a thread that is already attached gets back its existing
-/// `JNIEnv`.
-///
-/// Contract for a user thread:
-///
-/// * Call this only from a thread that your own code created, or from a
-///   thread that the JVM already owns and passed into a JNI callback
-///   (that thread is already attached; calling this on it is a cheap
-///   no-op and you must not detach it).
-/// * If you created the thread yourself (for example with
-///   `thread::spawn`), you must detach it before it exits. Keep a
-///   [`JniThreadGuard`] alive for the lifetime of that thread's closure;
-///   its `Drop` calls `DetachCurrentThread` once, when the guard goes out
-///   of scope.
-/// * Do not call `DetachCurrentThread` yourself on a JVM-owned thread
-///   (for example the UI thread that delivers a JNI callback). The JVM
-///   manages that thread's attachment, and detaching it would break
-///   later JNI calls on it.
-///
-/// This crate's own render thread uses a `JniThreadGuard` for exactly
-/// this reason: see `run`.
-pub unsafe fn attach_jni_env() -> *mut ndk_sys::JNIEnv {
-    let mut env: *mut ndk_sys::JNIEnv = std::ptr::null_mut();
-    let attach_current_thread = (**VM).AttachCurrentThread.unwrap();
+// Detaches the current thread from the JVM on thread exit. Only ever
+// stored in `DETACH_ON_THREAD_EXIT` by `attach_jni_env`, and only for a
+// thread that `GetEnv` first reported as `JNI_EDETACHED` (#150): a
+// JVM-owned thread (a JNI callback thread) is already attached and so
+// never gets one of these, and is therefore never detached by us.
+struct DetachOnThreadExit;
 
-    let res = attach_current_thread(VM, &mut env, std::ptr::null_mut());
-    assert!(res == 0);
-
-    env
-}
-
-/// A guard that detaches the current thread from the JVM when dropped.
-///
-/// Create this once, near the start of a thread's closure, on a thread
-/// that your own code created and that calls [`attach_jni_env`]. Keep it
-/// alive for the whole closure: when the closure returns (the thread is
-/// about to exit) the guard drops and calls `DetachCurrentThread` exactly
-/// once.
-///
-/// Do not create this on a thread that the JVM owns, for example a
-/// thread that invokes a JNI callback the JVM calls directly. Detaching
-/// a JVM-owned thread is incorrect and can break later JNI calls on it.
-pub struct JniThreadGuard {
-    _private: (),
-}
-
-impl JniThreadGuard {
-    /// # Safety
-    /// See the type-level contract: only use this on a thread your own
-    /// code created, not on a thread the JVM owns.
-    pub unsafe fn new() -> JniThreadGuard {
-        JniThreadGuard { _private: () }
-    }
-}
-
-impl Drop for JniThreadGuard {
+impl Drop for DetachOnThreadExit {
     fn drop(&mut self) {
         unsafe {
             if VM.is_null() {
                 return;
             }
             if let Some(detach_current_thread) = (**VM).DetachCurrentThread {
-                detach_current_thread(VM);
+                let res = detach_current_thread(VM);
+                if res != ndk_sys::JNI_OK as i32 {
+                    console_error(
+                        b"miniquad: DetachCurrentThread failed on thread exit\0".as_ptr() as _,
+                    );
+                }
             }
         }
     }
+}
+
+thread_local! {
+    static DETACH_ON_THREAD_EXIT: std::cell::RefCell<Option<DetachOnThreadExit>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+/// Get the JNI Env for the current thread, attaching it to the JVM only
+/// if it is not already attached.
+///
+/// Uses `GetEnv` to check attachment first: a thread the JVM already
+/// owns (for example the UI thread delivering a JNI callback) is always
+/// already attached, and this is then a cheap no-op that never touches
+/// `AttachCurrentThread`/`DetachCurrentThread`. A thread this crate
+/// creates itself (for example the render thread spawned in `run`) is
+/// `JNI_EDETACHED` on its first call here: this attaches it and records
+/// a thread-local [`DetachOnThreadExit`] guard, so the thread is
+/// detached automatically, exactly once, when it exits (including on a
+/// panic unwind) — without ever detaching a JVM-owned thread. #150.
+pub unsafe fn attach_jni_env() -> *mut ndk_sys::JNIEnv {
+    let mut env: *mut ::core::ffi::c_void = std::ptr::null_mut();
+    let get_env = (**VM).GetEnv.unwrap();
+    let status = get_env(VM, &mut env, ndk_sys::JNI_VERSION_1_6 as _);
+
+    if status == ndk_sys::JNI_EDETACHED {
+        let mut attached_env: *mut ndk_sys::JNIEnv = std::ptr::null_mut();
+        let attach_current_thread = (**VM).AttachCurrentThread.unwrap();
+        let res = attach_current_thread(VM, &mut attached_env, std::ptr::null_mut());
+        assert!(res == ndk_sys::JNI_OK as i32);
+
+        DETACH_ON_THREAD_EXIT.with(|guard| *guard.borrow_mut() = Some(DetachOnThreadExit));
+
+        return attached_env;
+    }
+
+    assert!(status == ndk_sys::JNI_OK as i32);
+    env as *mut ndk_sys::JNIEnv
 }
 
 /// `Resources.getDisplayMetrics().density` — 1.0 = mdpi, 2.0 = xhdpi,
@@ -538,13 +522,6 @@ where
     MESSAGES_TX.with(move |messages_tx| *messages_tx.borrow_mut() = Some(tx2));
 
     thread::spawn(move || {
-        // This thread is ours, not the JVM's. `attach_jni_env` calls made
-        // from it (directly, or through `query_display_density`,
-        // `set_full_screen`, `AndroidClipboard`, and `process_request`)
-        // attach it to the JVM. Detach it here, once, right before this
-        // closure returns and the thread exits. #150.
-        let _jni_thread_guard = unsafe { JniThreadGuard::new() };
-
         let mut libegl = LibEgl::try_load().expect("Cant load LibEGL");
 
         // skip all the messages until android will be able to actually open a window
@@ -879,6 +856,14 @@ pub(crate) unsafe fn load_asset(filepath: *const ::core::ffi::c_char, out: *mut 
     }
 
     let length = ndk_sys::AAsset_getLength64(asset);
+    if !crate::fs::android_asset_length_in_range(length) {
+        // content_length is a C int: a negative or over-i32::MAX length
+        // can never be reported correctly. Reject before allocating or
+        // reading anything. #149.
+        ndk_sys::AAsset_close(asset);
+        return;
+    }
+
     // `malloc(0)` is not required to return a non-null pointer, so an
     // empty asset still allocates one byte. `content_length` stays 0.
     let alloc_size = if length > 0 { length as usize } else { 1 };
@@ -896,8 +881,9 @@ pub(crate) unsafe fn load_asset(filepath: *const ::core::ffi::c_char, out: *mut 
     ndk_sys::AAsset_close(asset);
 
     // `android_asset_read_outcome` is the host-tested decision for this
-    // part of #149: `None` means free the buffer and report an error;
-    // `Some(n)` means report exactly `n` read bytes, never `length`.
+    // part of #149: `None` means free the buffer and report an error
+    // (including a short read); `Some(n)` means report exactly `n`
+    // read bytes.
     match crate::fs::android_asset_read_outcome(length, read) {
         Some(reported_len) => {
             (*out).content_length = reported_len as _;

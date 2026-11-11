@@ -142,6 +142,35 @@ pub(crate) fn confirm_quit_after_event(
     quit_ordered_before || quit_requested_after_event
 }
 
+/// Runs `android::MainThreadState::check_quit`'s lock/confirm/lock
+/// sequence against the real shared `display` mutex, calling
+/// `confirm_quit` (`EventHandler::quit_requested_event`) in between with
+/// no lock held. The first lock is dropped (its block ends) before
+/// `confirm_quit` runs and before the second lock is taken: holding it
+/// across `confirm_quit` and then calling `try_lock()` again panics with
+/// `WouldBlock` on a real `Mutex`, which is what the pre-fix code did on
+/// every frame. Returns whether `Activity.finish()` should now be
+/// requested, i.e. the (possibly just-updated) `quit_ordered`. #151.
+#[cfg(any(target_os = "android", test))]
+pub(crate) fn drive_android_quit_state(
+    display: &std::sync::Mutex<NativeDisplayData>,
+    confirm_quit: impl FnOnce(),
+) -> bool {
+    let needs_confirmation = {
+        let d = display.try_lock().unwrap();
+        d.quit_requested && !d.quit_ordered
+    };
+
+    if needs_confirmation {
+        confirm_quit();
+
+        let mut d = display.try_lock().unwrap();
+        d.quit_ordered = confirm_quit_after_event(d.quit_requested, d.quit_ordered);
+    }
+
+    display.try_lock().unwrap().quit_ordered
+}
+
 #[cfg(test)]
 mod quit_confirmation_tests {
     use super::confirm_quit_after_event;
@@ -166,5 +195,68 @@ mod quit_confirmation_tests {
         // order_quit()), a later cancel_quit() must not un-order it.
         assert!(confirm_quit_after_event(false, true));
         assert!(confirm_quit_after_event(true, true));
+    }
+}
+
+#[cfg(test)]
+mod android_quit_state_tests {
+    use super::{drive_android_quit_state, Clipboard, NativeDisplayData};
+    use std::sync::Mutex;
+
+    struct NoopClipboard;
+    impl Clipboard for NoopClipboard {
+        fn get(&mut self) -> Option<String> {
+            None
+        }
+        fn set(&mut self, _string: &str) {}
+    }
+
+    fn display_with(quit_requested: bool, quit_ordered: bool) -> Mutex<NativeDisplayData> {
+        let (tx, _rx) = std::sync::mpsc::channel();
+        let mut data = NativeDisplayData::new(0, 0, tx, Box::new(NoopClipboard));
+        data.quit_requested = quit_requested;
+        data.quit_ordered = quit_ordered;
+        Mutex::new(data)
+    }
+
+    #[test]
+    fn confirmed_quit_is_ordered_without_deadlocking() {
+        let display = display_with(true, false);
+
+        // Before the fix, the first lock guard was still held while
+        // this ran, so re-locking the same `Mutex` here would panic
+        // with `WouldBlock` instead of returning.
+        let quit_ordered = drive_android_quit_state(&display, || {
+            let _ = display.try_lock().unwrap().quit_requested;
+        });
+
+        assert!(quit_ordered);
+        assert!(display.lock().unwrap().quit_ordered);
+    }
+
+    #[test]
+    fn cancel_quit_inside_confirm_keeps_activity_open() {
+        let display = display_with(true, false);
+
+        let quit_ordered = drive_android_quit_state(&display, || {
+            // Simulates `cancel_quit()` called from inside
+            // `quit_requested_event`, which must run without the
+            // outer lock held.
+            display.try_lock().unwrap().quit_requested = false;
+        });
+
+        assert!(!quit_ordered);
+        assert!(!display.lock().unwrap().quit_ordered);
+    }
+
+    #[test]
+    fn already_ordered_quit_skips_reconfirmation() {
+        let display = display_with(true, true);
+
+        let quit_ordered = drive_android_quit_state(&display, || {
+            panic!("confirm_quit must not run once quit_ordered is already true");
+        });
+
+        assert!(quit_ordered);
     }
 }

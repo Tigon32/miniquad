@@ -12,6 +12,7 @@ public class QuadNative {
     public native static void activityOnResume();
     public native static void activityOnPause();
     public native static void activityOnDestroy();
+    public native static void activityOnBackPressed();
 
     // belongs to QuadSurface class
     public native static void surfaceOnSurfaceCreated(Surface surface);

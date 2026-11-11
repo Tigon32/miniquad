@@ -287,8 +287,9 @@ public class MainActivity extends Activity {
     public void onBackPressed() {
         Log.w("SAPP", "onBackPressed");
 
-        // Back does not call request_quit yet: #151.
-        super.onBackPressed();
+        // Let Rust decide: request_quit()/order_quit()/cancel_quit()
+        // control whether the activity finishes. #151.
+        QuadNative.activityOnBackPressed();
     }
 
     @Override

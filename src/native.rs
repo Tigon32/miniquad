@@ -126,3 +126,45 @@ pub mod gl;
 pub use wasm::webgl as gl;
 
 pub mod query_stab;
+
+/// Decide whether a confirmed quit request should be promoted to
+/// `quit_ordered`, given the `quit_requested` flag observed right after
+/// `EventHandler::quit_requested_event` returned. `quit_ordered` never
+/// resets once true: an event handler cannot un-order an already-ordered
+/// quit, only cancel a pending `quit_requested` that has not been
+/// promoted yet. Shared by the request-quit confirmation flow used by
+/// `linux_x11`, `linux_wayland`, `macos`, `windows`, and `android`
+/// (#151).
+pub(crate) fn confirm_quit_after_event(
+    quit_requested_after_event: bool,
+    quit_ordered_before: bool,
+) -> bool {
+    quit_ordered_before || quit_requested_after_event
+}
+
+#[cfg(test)]
+mod quit_confirmation_tests {
+    use super::confirm_quit_after_event;
+
+    #[test]
+    fn cancel_quit_keeps_a_pending_request_unordered() {
+        // The event handler called cancel_quit(), so quit_requested is
+        // false after quit_requested_event() returned.
+        assert!(!confirm_quit_after_event(false, false));
+    }
+
+    #[test]
+    fn an_unconfirmed_request_is_promoted_to_ordered() {
+        // The event handler did nothing: the pending request_quit()
+        // becomes an order_quit().
+        assert!(confirm_quit_after_event(true, false));
+    }
+
+    #[test]
+    fn an_already_ordered_quit_cannot_be_cancelled() {
+        // Once quit_ordered is true (for example a real Destroy, or an
+        // order_quit()), a later cancel_quit() must not un-order it.
+        assert!(confirm_quit_after_event(false, true));
+        assert!(confirm_quit_after_event(true, true));
+    }
+}

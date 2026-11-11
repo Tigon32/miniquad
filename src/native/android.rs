@@ -68,6 +68,9 @@ enum Message {
     Pause,
     Resume,
     Destroy,
+    /// The activity's `onBackPressed` called into Rust instead of
+    /// finishing immediately. #151.
+    BackPressed,
     Request(crate::native::Request),
 }
 unsafe impl Send for Message {}
@@ -138,6 +141,9 @@ struct MainThreadState {
     fullscreen: bool,
     update_requested: bool,
     keymods: KeyMods,
+    /// Set once `Activity.finish()` has been requested, so `check_quit`
+    /// calls it at most once. #151.
+    activity_finish_requested: bool,
 }
 
 impl MainThreadState {
@@ -245,10 +251,48 @@ impl MainThreadState {
                 self.event_handler.window_restored_event()
             }
             Message::Destroy => {
+                // Real OS destruction cannot be cancelled: `cancel_quit`
+                // from this event has no effect, matching
+                // `EventHandler::quit_requested_event` docs. #151.
+                let mut d = crate::native_display().lock().unwrap();
+                d.quit_requested = true;
+                d.quit_ordered = true;
+                drop(d);
                 self.quit = true;
                 self.event_handler.quit_requested_event()
             }
+            Message::BackPressed => {
+                // Mirror `request_quit()`: let `check_quit` confirm with
+                // `quit_requested_event` before anything finishes. #151.
+                let mut d = crate::native_display().lock().unwrap();
+                d.quit_requested = true;
+            }
             Message::Request(req) => self.process_request(req),
+        }
+    }
+
+    /// Confirm a pending `request_quit()`/Back quit, and finish the
+    /// activity once `order_quit()` or a confirmed `request_quit()` has
+    /// set `quit_ordered`. `cancel_quit()` called from
+    /// `quit_requested_event` keeps the activity open. #151.
+    fn check_quit(&mut self) {
+        let d = crate::native_display().try_lock().unwrap();
+        if d.quit_requested && !d.quit_ordered {
+            drop(d);
+            self.event_handler.quit_requested_event();
+            let mut d = crate::native_display().try_lock().unwrap();
+            d.quit_ordered =
+                crate::native::confirm_quit_after_event(d.quit_requested, d.quit_ordered);
+        }
+
+        if !self.activity_finish_requested
+            && crate::native_display().try_lock().unwrap().quit_ordered
+        {
+            self.activity_finish_requested = true;
+            unsafe {
+                let env = attach_jni_env();
+                ndk_utils::call_void_method!(env, ACTIVITY, "finish", "()V");
+            }
         }
     }
 
@@ -296,23 +340,28 @@ impl MainThreadState {
 
 /// Get the JNI Env by calling ndk's AttachCurrentThread
 ///
-/// Safety note: This function is not exactly correct now, it should be fixed!
+/// Calling `AttachCurrentThread` from the same thread multiple times is
+/// very cheap: a thread that is already attached gets back its existing
+/// `JNIEnv`.
 ///
-/// AttachCurrentThread should be called at least once for any given thread that
-/// wants to use the JNI and DetachCurrentThread should be called only once, when
-/// the thread stack is empty and the thread is about to stop
+/// Contract for a user thread:
 ///
-/// calling AttachCurrentThread from the same thread multiple time is very cheap
+/// * Call this only from a thread that your own code created, or from a
+///   thread that the JVM already owns and passed into a JNI callback
+///   (that thread is already attached; calling this on it is a cheap
+///   no-op and you must not detach it).
+/// * If you created the thread yourself (for example with
+///   `thread::spawn`), you must detach it before it exits. Keep a
+///   [`JniThreadGuard`] alive for the lifetime of that thread's closure;
+///   its `Drop` calls `DetachCurrentThread` once, when the guard goes out
+///   of scope.
+/// * Do not call `DetachCurrentThread` yourself on a JVM-owned thread
+///   (for example the UI thread that delivers a JNI callback). The JVM
+///   manages that thread's attachment, and detaching it would break
+///   later JNI calls on it.
 ///
-/// BUT! there is no DetachCurrentThread call right now, this code:
-/// `thread::spawn(|| attach_jni_env());` will lead to internal jni crash :/
-/// thread::spawn(|| { attach_jni_env(); loop {} }); is basically what miniquad
-/// is doing. this is not correct, but works
-/// `thread::spawn(|| { Attach(); .. Detach() });` will not work as well:
-/// JNI checks that the thread stack is still alive and crashes.
-///
-/// Detach must run from the thread destructor. SDL2 does this with
-/// `pthread_setspecific`. Tracked in #150.
+/// This crate's own render thread uses a `JniThreadGuard` for exactly
+/// this reason: see `run`.
 pub unsafe fn attach_jni_env() -> *mut ndk_sys::JNIEnv {
     let mut env: *mut ndk_sys::JNIEnv = std::ptr::null_mut();
     let attach_current_thread = (**VM).AttachCurrentThread.unwrap();
@@ -321,6 +370,43 @@ pub unsafe fn attach_jni_env() -> *mut ndk_sys::JNIEnv {
     assert!(res == 0);
 
     env
+}
+
+/// A guard that detaches the current thread from the JVM when dropped.
+///
+/// Create this once, near the start of a thread's closure, on a thread
+/// that your own code created and that calls [`attach_jni_env`]. Keep it
+/// alive for the whole closure: when the closure returns (the thread is
+/// about to exit) the guard drops and calls `DetachCurrentThread` exactly
+/// once.
+///
+/// Do not create this on a thread that the JVM owns, for example a
+/// thread that invokes a JNI callback the JVM calls directly. Detaching
+/// a JVM-owned thread is incorrect and can break later JNI calls on it.
+pub struct JniThreadGuard {
+    _private: (),
+}
+
+impl JniThreadGuard {
+    /// # Safety
+    /// See the type-level contract: only use this on a thread your own
+    /// code created, not on a thread the JVM owns.
+    pub unsafe fn new() -> JniThreadGuard {
+        JniThreadGuard { _private: () }
+    }
+}
+
+impl Drop for JniThreadGuard {
+    fn drop(&mut self) {
+        unsafe {
+            if VM.is_null() {
+                return;
+            }
+            if let Some(detach_current_thread) = (**VM).DetachCurrentThread {
+                detach_current_thread(VM);
+            }
+        }
+    }
 }
 
 /// `Resources.getDisplayMetrics().density` — 1.0 = mdpi, 2.0 = xhdpi,
@@ -452,6 +538,13 @@ where
     MESSAGES_TX.with(move |messages_tx| *messages_tx.borrow_mut() = Some(tx2));
 
     thread::spawn(move || {
+        // This thread is ours, not the JVM's. `attach_jni_env` calls made
+        // from it (directly, or through `query_display_density`,
+        // `set_full_screen`, `AndroidClipboard`, and `process_request`)
+        // attach it to the JVM. Detach it here, once, right before this
+        // closure returns and the thread exits. #150.
+        let _jni_thread_guard = unsafe { JniThreadGuard::new() };
+
         let mut libegl = LibEgl::try_load().expect("Cant load LibEGL");
 
         // skip all the messages until android will be able to actually open a window
@@ -530,6 +623,7 @@ where
                 alt: false,
                 logo: false,
             },
+            activity_finish_requested: false,
         };
 
         let rx_timeout = conf
@@ -560,6 +654,8 @@ where
             if !conf.platform.blocking_event_loop || s.update_requested {
                 s.frame();
             }
+
+            s.check_quit();
 
             thread::yield_now();
         }
@@ -635,6 +731,14 @@ unsafe extern "C" fn Java_quad_1native_QuadNative_activityOnDestroy(
     _: ndk_sys::jobject,
 ) {
     send_message(Message::Destroy);
+}
+
+#[no_mangle]
+unsafe extern "C" fn Java_quad_1native_QuadNative_activityOnBackPressed(
+    _: *mut ndk_sys::JNIEnv,
+    _: ndk_sys::jobject,
+) {
+    send_message(Message::BackPressed);
 }
 
 #[no_mangle]
@@ -731,6 +835,10 @@ unsafe fn set_full_screen(env: *mut ndk_sys::JNIEnv, fullscreen: bool) {
     ndk_utils::call_void_method!(env, ACTIVITY, "setFullScreen", "(Z)V", fullscreen as i32);
 }
 
+/// `content` is null on any load error (missing asset, allocation
+/// failure, or a failed read). On success `content` is a `libc::malloc`
+/// buffer that the caller owns: the caller must release it with
+/// `libc::free` once it has copied the bytes out.
 #[repr(C)]
 #[derive(Debug, Copy, Clone)]
 pub struct android_asset {
@@ -765,15 +873,38 @@ pub(crate) unsafe fn load_asset(filepath: *const ::core::ffi::c_char, out: *mut 
     let mgr = AAssetManager_fromJava(env, asset_manager);
     let asset = ndk_sys::AAssetManager_open(mgr, filepath, ndk_sys::AASSET_MODE_BUFFER as _);
     if asset.is_null() {
+        // No asset at this path. `out` stays zeroed: the caller sees a
+        // null `content` and reports a load error.
         return;
     }
-    let length = ndk_sys::AAsset_getLength64(asset);
-    // Nothing frees this buffer: #149.
-    let buffer = libc::malloc(length as _);
-    if ndk_sys::AAsset_read(asset, buffer, length as _) > 0 {
-        ndk_sys::AAsset_close(asset);
 
-        (*out).content_length = length as _;
-        (*out).content = buffer as _;
+    let length = ndk_sys::AAsset_getLength64(asset);
+    // `malloc(0)` is not required to return a non-null pointer, so an
+    // empty asset still allocates one byte. `content_length` stays 0.
+    let alloc_size = if length > 0 { length as usize } else { 1 };
+    let buffer = libc::malloc(alloc_size);
+    if buffer.is_null() {
+        ndk_sys::AAsset_close(asset);
+        return;
+    }
+
+    let read = if length > 0 {
+        ndk_sys::AAsset_read(asset, buffer, length as _)
+    } else {
+        0
+    };
+    ndk_sys::AAsset_close(asset);
+
+    // `android_asset_read_outcome` is the host-tested decision for this
+    // part of #149: `None` means free the buffer and report an error;
+    // `Some(n)` means report exactly `n` read bytes, never `length`.
+    match crate::fs::android_asset_read_outcome(length, read) {
+        Some(reported_len) => {
+            (*out).content_length = reported_len as _;
+            (*out).content = buffer as _;
+        }
+        None => {
+            libc::free(buffer);
+        }
     }
 }

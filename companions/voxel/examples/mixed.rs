@@ -93,6 +93,45 @@ static SIM: Mutex<Option<Sim>> = Mutex::new(None);
 /// Sprite centre in canvas pixels, updated once per `draw`.
 static SPRITE_PIXEL: AtomicU32 = AtomicU32::new(0);
 
+/// The app-parameters surface version (matches
+/// `templates/browser/rust/src/main.rs` and `examples/offline.rs`'s
+/// contract), and the sprite animation speed it sets. This is a
+/// purely local, host-side visual control, distinct from
+/// `Command::SetSpeed` below: `mq_param_set_f32` only scales this
+/// client's own sprite-bobbing animation rate, while a `SetSpeed`
+/// input (`vx_input(2, ...)`) is a network command queued for the
+/// *server's* authoritative `Sim`. The HUD/UI contract calls for a
+/// host control that drives both at once.
+const PARAMS_VERSION: u32 = 1;
+const DEFAULT_SPEED_BITS: u32 = 0x3F80_0000; // f32::to_bits(1.0)
+static SPEED_BITS: AtomicU32 = AtomicU32::new(DEFAULT_SPEED_BITS);
+
+/// Reports the app-parameters surface version.
+#[no_mangle]
+pub extern "C" fn mq_params_version() -> u32 {
+    PARAMS_VERSION
+}
+
+/// Sets a float parameter. `id` 1 is sprite animation speed, range
+/// `0..=2`. Returns `0` on success, `1` for a non-finite or
+/// out-of-range value, `2` for an unknown `id`.
+#[no_mangle]
+pub extern "C" fn mq_param_set_f32(id: u32, value: f32) -> i32 {
+    if !value.is_finite() {
+        return 1;
+    }
+    match id {
+        1 => {
+            if !(0.0..=2.0).contains(&value) {
+                return 1;
+            }
+            SPEED_BITS.store(value.to_bits(), Ordering::Relaxed);
+            0
+        }
+        _ => 2,
+    }
+}
+
 // ---------------------------------------------------------------------
 // Staging exports
 // ---------------------------------------------------------------------
@@ -791,7 +830,8 @@ impl EventHandler for Stage {
             self.ctx.draw(0, mesh.index_count, 1);
         }
 
-        let t = date::now() - self.start_time;
+        let speed = f32::from_bits(SPEED_BITS.load(Ordering::Relaxed));
+        let t = (date::now() - self.start_time) * speed as f64;
         let world_center_x = SCENE_CHUNK_DIMS.x as f32;
         let world_center_z = (SCENE_CHUNK_DIMS.z as f32) * 0.5;
         let radius = 3.0;

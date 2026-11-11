@@ -1,0 +1,24 @@
+[package]
+name = "allocation-profile-experiment"
+version = "0.0.0"
+edition = "2018"
+publish = false
+description = """
+Benchmark-only, isolated counting allocator for issue #14 (allocation
+profiling evidence). Not part of the `miniquad` package: this is a separate
+Cargo manifest with no path dependency on the root crate, so the root
+Cargo.toml is never edited by this experiment. See
+docs/browser-profiling.md and docs/performance-evidence/*allocation*.md for
+how this crate's measured output is used as evidence.
+"""
+
+# No [workspace] section in the repository root means this manifest is not
+# auto-discovered as a workspace member; it is built and tested only with an
+# explicit `--manifest-path experiments/allocation-profile/Cargo.toml`.
+[dependencies]
+
+[profile.release]
+# Keep allocation call sites stable and unmerged for this benchmark-only
+# crate; this profile does not apply to and does not change the root
+# `miniquad` package's `[profile.release]`.
+opt-level = 1

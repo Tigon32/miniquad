@@ -127,75 +127,25 @@ pub use wasm::webgl as gl;
 
 pub mod query_stab;
 
-/// Decide whether a confirmed quit request should be promoted to
-/// `quit_ordered`, given the `quit_requested` flag observed right after
-/// `EventHandler::quit_requested_event` returned. `quit_ordered` never
-/// resets once true: an event handler cannot un-order an already-ordered
-/// quit, only cancel a pending `quit_requested` that has not been
-/// promoted yet. Shared by the request-quit confirmation flow used by
-/// `linux_x11`, `linux_wayland`, `macos`, `windows`, and `android`
-/// (#151).
-pub(crate) fn confirm_quit_after_event(
-    quit_requested_after_event: bool,
-    quit_ordered_before: bool,
-) -> bool {
-    quit_ordered_before || quit_requested_after_event
-}
-
-/// Runs `android::MainThreadState::check_quit`'s lock/confirm/lock
-/// sequence against the real shared `display` mutex, calling
-/// `confirm_quit` (`EventHandler::quit_requested_event`) in between with
-/// no lock held. The first lock is dropped (its block ends) before
-/// `confirm_quit` runs and before the second lock is taken: holding it
-/// across `confirm_quit` and then calling `try_lock()` again panics with
-/// `WouldBlock` on a real `Mutex`, which is what the pre-fix code did on
-/// every frame. Returns whether `Activity.finish()` should now be
-/// requested, i.e. the (possibly just-updated) `quit_ordered`. #151.
+/// Run the quit callback without the display lock. Return whether to finish.
 #[cfg(any(target_os = "android", test))]
 pub(crate) fn drive_android_quit_state(
     display: &std::sync::Mutex<NativeDisplayData>,
     confirm_quit: impl FnOnce(),
 ) -> bool {
     let needs_confirmation = {
-        let d = display.try_lock().unwrap();
+        let d = display.lock().unwrap();
         d.quit_requested && !d.quit_ordered
     };
 
     if needs_confirmation {
         confirm_quit();
 
-        let mut d = display.try_lock().unwrap();
-        d.quit_ordered = confirm_quit_after_event(d.quit_requested, d.quit_ordered);
+        let mut d = display.lock().unwrap();
+        d.quit_ordered = d.quit_ordered || d.quit_requested;
     }
 
-    display.try_lock().unwrap().quit_ordered
-}
-
-#[cfg(test)]
-mod quit_confirmation_tests {
-    use super::confirm_quit_after_event;
-
-    #[test]
-    fn cancel_quit_keeps_a_pending_request_unordered() {
-        // The event handler called cancel_quit(), so quit_requested is
-        // false after quit_requested_event() returned.
-        assert!(!confirm_quit_after_event(false, false));
-    }
-
-    #[test]
-    fn an_unconfirmed_request_is_promoted_to_ordered() {
-        // The event handler did nothing: the pending request_quit()
-        // becomes an order_quit().
-        assert!(confirm_quit_after_event(true, false));
-    }
-
-    #[test]
-    fn an_already_ordered_quit_cannot_be_cancelled() {
-        // Once quit_ordered is true (for example a real Destroy, or an
-        // order_quit()), a later cancel_quit() must not un-order it.
-        assert!(confirm_quit_after_event(false, true));
-        assert!(confirm_quit_after_event(true, true));
-    }
+    display.lock().unwrap().quit_ordered
 }
 
 #[cfg(test)]
@@ -212,7 +162,10 @@ mod android_quit_state_tests {
     }
 
     fn display_with(quit_requested: bool, quit_ordered: bool) -> Mutex<NativeDisplayData> {
+        #[cfg(not(target_os = "android"))]
         let (tx, _rx) = std::sync::mpsc::channel();
+        #[cfg(target_os = "android")]
+        let tx = Box::new(|_| {});
         let mut data = NativeDisplayData::new(0, 0, tx, Box::new(NoopClipboard));
         data.quit_requested = quit_requested;
         data.quit_ordered = quit_ordered;
@@ -223,9 +176,6 @@ mod android_quit_state_tests {
     fn confirmed_quit_is_ordered_without_deadlocking() {
         let display = display_with(true, false);
 
-        // Before the fix, the first lock guard was still held while
-        // this ran, so re-locking the same `Mutex` here would panic
-        // with `WouldBlock` instead of returning.
         let quit_ordered = drive_android_quit_state(&display, || {
             let _ = display.try_lock().unwrap().quit_requested;
         });
@@ -239,9 +189,6 @@ mod android_quit_state_tests {
         let display = display_with(true, false);
 
         let quit_ordered = drive_android_quit_state(&display, || {
-            // Simulates `cancel_quit()` called from inside
-            // `quit_requested_event`, which must run without the
-            // outer lock held.
             display.try_lock().unwrap().quit_requested = false;
         });
 
@@ -258,5 +205,23 @@ mod android_quit_state_tests {
         });
 
         assert!(quit_ordered);
+    }
+
+    #[test]
+    fn idle_frame_keeps_running_without_confirmation() {
+        let display = display_with(false, false);
+        assert!(!drive_android_quit_state(&display, || {
+            panic!("an idle frame must not request quit confirmation");
+        }));
+    }
+
+    #[test]
+    fn order_quit_inside_confirmation_overrides_cancel() {
+        let display = display_with(true, false);
+        assert!(drive_android_quit_state(&display, || {
+            let mut d = display.try_lock().unwrap();
+            d.quit_ordered = true;
+            d.quit_requested = false;
+        }));
     }
 }

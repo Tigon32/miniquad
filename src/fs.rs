@@ -34,38 +34,16 @@ impl std::error::Error for Error {}
 
 pub type Response = Result<Vec<u8>, Error>;
 
-/// Checks a native Android asset's declared length before any
-/// allocation or read is attempted.
-///
-/// `android_asset::content_length` is a C `int` (`i32`), so a negative
-/// `AAsset_getLength64` result (should not happen, but is not trusted)
-/// or one exceeding `i32::MAX` can never be reported back correctly.
-/// Rejecting it here, before `load_asset` allocates or reads anything,
-/// avoids allocating for a length it could not honestly report. #149.
+/// Check that the asset length fits `android_asset::content_length`.
 #[cfg(any(target_os = "android", test))]
 pub(crate) fn android_asset_length_in_range(length: i64) -> bool {
     (0..=i32::MAX as i64).contains(&length)
 }
 
-/// Decide how many bytes of an already-length-validated native Android
-/// asset read to report, given the asset's declared `length` (already
-/// checked by [`android_asset_length_in_range`]) and the native
-/// `AAsset_read` result.
-///
-/// `None` means the load failed: the caller must free the buffer and
-/// report an error. `Some(n)` reports exactly `n` read bytes. A short
-/// read (`0 <= read < length`) is an error, not a truncated success: the
-/// caller must never serve a partially-read asset as if it were
-/// complete. `length == 0` is a successful empty read. #149.
-///
-/// Only `native::android::load_asset` calls this on a real target, so a
-/// non-Android, non-test build would otherwise warn that it is unused.
+/// Accept only a complete read, including an empty asset.
 #[cfg(any(target_os = "android", test))]
 pub(crate) fn android_asset_read_outcome(length: i64, read: i32) -> Option<usize> {
-    if length == 0 {
-        return Some(0);
-    }
-    if read as i64 == length {
+    if android_asset_length_in_range(length) && i64::from(read) == length {
         Some(length as usize)
     } else {
         None
@@ -102,8 +80,6 @@ fn load_file_android<F: Fn(Response)>(path: &str, on_loaded: F) {
             let slice =
                 unsafe { std::slice::from_raw_parts(data.content, data.content_length as _) };
             let response = slice.iter().map(|c| *c as _).collect::<Vec<_>>();
-            // `load_asset` documents `content` as a `libc::malloc` buffer
-            // that this caller owns and must release.
             unsafe { libc::free(data.content as _) };
             Ok(response)
         } else {
@@ -196,9 +172,6 @@ mod android_asset_read_outcome_tests {
 
     #[test]
     fn short_read_is_an_error_not_a_truncated_success() {
-        // The acceptance criteria for #149 require an error on a short
-        // read. Before this fix, this path reported `read` (20) as a
-        // successful length, serving a silently truncated asset.
         assert_eq!(android_asset_read_outcome(128, 20), None);
     }
 
@@ -210,15 +183,11 @@ mod android_asset_read_outcome_tests {
 
     #[test]
     fn negative_length_is_rejected_before_any_read() {
-        // Should not happen, but `AAsset_getLength64` is not trusted:
-        // a negative length must never reach the read/report path.
         assert!(!android_asset_length_in_range(-1));
     }
 
     #[test]
     fn length_over_c_int_max_is_rejected_before_any_read() {
-        // content_length is a C `int`; a length that cannot fit in one
-        // must be rejected before `load_asset` allocates or reads.
         assert!(!android_asset_length_in_range(i32::MAX as i64 + 1));
     }
 

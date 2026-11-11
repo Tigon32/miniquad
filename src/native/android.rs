@@ -68,8 +68,6 @@ enum Message {
     Pause,
     Resume,
     Destroy,
-    /// The activity's `onBackPressed` called into Rust instead of
-    /// finishing immediately. #151.
     BackPressed,
     Request(crate::native::Request),
 }
@@ -141,8 +139,6 @@ struct MainThreadState {
     fullscreen: bool,
     update_requested: bool,
     keymods: KeyMods,
-    /// Set once `Activity.finish()` has been requested, so `check_quit`
-    /// calls it at most once. #151.
     activity_finish_requested: bool,
 }
 
@@ -251,19 +247,15 @@ impl MainThreadState {
                 self.event_handler.window_restored_event()
             }
             Message::Destroy => {
-                // Real OS destruction cannot be cancelled: `cancel_quit`
-                // from this event has no effect, matching
-                // `EventHandler::quit_requested_event` docs. #151.
                 let mut d = crate::native_display().lock().unwrap();
                 d.quit_requested = true;
                 d.quit_ordered = true;
                 drop(d);
                 self.quit = true;
+                self.activity_finish_requested = true;
                 self.event_handler.quit_requested_event()
             }
             Message::BackPressed => {
-                // Mirror `request_quit()`: let `check_quit` confirm with
-                // `quit_requested_event` before anything finishes. #151.
                 let mut d = crate::native_display().lock().unwrap();
                 d.quit_requested = true;
             }
@@ -271,10 +263,6 @@ impl MainThreadState {
         }
     }
 
-    /// Confirm a pending `request_quit()`/Back quit, and finish the
-    /// activity once `order_quit()` or a confirmed `request_quit()` has
-    /// set `quit_ordered`. `cancel_quit()` called from
-    /// `quit_requested_event` keeps the activity open. #151.
     fn check_quit(&mut self) {
         let quit_ordered = crate::native::drive_android_quit_state(crate::native_display(), || {
             self.event_handler.quit_requested_event()
@@ -331,26 +319,28 @@ impl MainThreadState {
     }
 }
 
-// Detaches the current thread from the JVM on thread exit. Only ever
-// stored in `DETACH_ON_THREAD_EXIT` by `attach_jni_env`, and only for a
-// thread that `GetEnv` first reported as `JNI_EDETACHED` (#150): a
-// JVM-owned thread (a JNI callback thread) is already attached and so
-// never gets one of these, and is therefore never detached by us.
-struct DetachOnThreadExit;
+struct DetachOnThreadExit {
+    vm: *mut ndk_sys::JavaVM,
+}
 
 impl Drop for DetachOnThreadExit {
     fn drop(&mut self) {
         unsafe {
-            if VM.is_null() {
+            let mut env = std::ptr::null_mut();
+            let status =
+                (**self.vm).GetEnv.unwrap()(self.vm, &mut env, ndk_sys::JNI_VERSION_1_6 as _);
+            if status == ndk_sys::JNI_EDETACHED {
                 return;
             }
-            if let Some(detach_current_thread) = (**VM).DetachCurrentThread {
-                let res = detach_current_thread(VM);
-                if res != ndk_sys::JNI_OK as i32 {
-                    console_error(
-                        b"miniquad: DetachCurrentThread failed on thread exit\0".as_ptr() as _,
-                    );
-                }
+            if status != ndk_sys::JNI_OK as i32 {
+                console_error(b"miniquad: GetEnv failed on thread exit\0".as_ptr() as _);
+                return;
+            }
+            let res = (**self.vm).DetachCurrentThread.unwrap()(self.vm);
+            if res != ndk_sys::JNI_OK as i32 {
+                console_error(
+                    b"miniquad: DetachCurrentThread failed on thread exit\0".as_ptr() as _,
+                );
             }
         }
     }
@@ -361,35 +351,42 @@ thread_local! {
         const { std::cell::RefCell::new(None) };
 }
 
-/// Get the JNI Env for the current thread, attaching it to the JVM only
-/// if it is not already attached.
+/// Get the current thread's JNI environment.
 ///
-/// Uses `GetEnv` to check attachment first: a thread the JVM already
-/// owns (for example the UI thread delivering a JNI callback) is always
-/// already attached, and this is then a cheap no-op that never touches
-/// `AttachCurrentThread`/`DetachCurrentThread`. A thread this crate
-/// creates itself (for example the render thread spawned in `run`) is
-/// `JNI_EDETACHED` on its first call here: this attaches it and records
-/// a thread-local [`DetachOnThreadExit`] guard, so the thread is
-/// detached automatically, exactly once, when it exits (including on a
-/// panic unwind) — without ever detaching a JVM-owned thread. #150.
+/// If this function attaches a detached thread, thread-local cleanup detaches
+/// it on exit. This includes user-created threads. Already-attached JVM
+/// threads keep their existing attachment.
+///
+/// # Safety
+///
+/// The JVM must be initialized and must remain live until the thread exits.
 pub unsafe fn attach_jni_env() -> *mut ndk_sys::JNIEnv {
+    let vm = VM;
+    assert!(!vm.is_null(), "JVM is not initialized");
     let mut env: *mut ::core::ffi::c_void = std::ptr::null_mut();
-    let get_env = (**VM).GetEnv.unwrap();
-    let status = get_env(VM, &mut env, ndk_sys::JNI_VERSION_1_6 as _);
+    let get_env = (**vm).GetEnv.unwrap();
+    let status = get_env(vm, &mut env, ndk_sys::JNI_VERSION_1_6 as _);
 
     if status == ndk_sys::JNI_EDETACHED {
         let mut attached_env: *mut ndk_sys::JNIEnv = std::ptr::null_mut();
-        let attach_current_thread = (**VM).AttachCurrentThread.unwrap();
-        let res = attach_current_thread(VM, &mut attached_env, std::ptr::null_mut());
-        assert!(res == ndk_sys::JNI_OK as i32);
+        let attach_current_thread = (**vm).AttachCurrentThread.unwrap();
+        let res = attach_current_thread(vm, &mut attached_env, std::ptr::null_mut());
+        assert_eq!(res, ndk_sys::JNI_OK as i32, "AttachCurrentThread failed");
+        assert!(!attached_env.is_null(), "AttachCurrentThread returned null");
 
-        DETACH_ON_THREAD_EXIT.with(|guard| *guard.borrow_mut() = Some(DetachOnThreadExit));
+        DETACH_ON_THREAD_EXIT.with(|guard| {
+            let mut guard = guard.borrow_mut();
+            // Replacing a guard after manual detach would detach the new attachment.
+            if guard.is_none() {
+                *guard = Some(DetachOnThreadExit { vm });
+            }
+        });
 
         return attached_env;
     }
 
-    assert!(status == ndk_sys::JNI_OK as i32);
+    assert_eq!(status, ndk_sys::JNI_OK as i32, "GetEnv failed");
+    assert!(!env.is_null(), "GetEnv returned null");
     env as *mut ndk_sys::JNIEnv
 }
 
@@ -440,7 +437,11 @@ unsafe fn query_display_density() -> f32 {
     }
 
     let density = get_float_field(env, metrics, density_field);
-    if density > 0.0 { density } else { 1.0 }
+    if density > 0.0 {
+        density
+    } else {
+        1.0
+    }
 }
 
 pub struct AndroidClipboard {}
@@ -833,33 +834,71 @@ extern "C" {
     ) -> *mut ndk_sys::AAssetManager;
 }
 
+struct AssetLocalFrame(*mut ndk_sys::JNIEnv);
+
+impl Drop for AssetLocalFrame {
+    fn drop(&mut self) {
+        unsafe {
+            (**self.0).PopLocalFrame.unwrap()(self.0, std::ptr::null_mut());
+        }
+    }
+}
+
 pub(crate) unsafe fn load_asset(filepath: *const ::core::ffi::c_char, out: *mut android_asset) {
     let env = attach_jni_env();
+    if (**env).PushLocalFrame.unwrap()(env, 2) != ndk_sys::JNI_OK as i32 {
+        console_error(b"miniquad: asset JNI local frame allocation failed\0".as_ptr() as _);
+        (**env).ExceptionDescribe.unwrap()(env);
+        (**env).ExceptionClear.unwrap()(env);
+        return;
+    }
+    // Keep the AssetManager alive until AAsset_close; release both local refs on exit.
+    let _frame = AssetLocalFrame(env);
 
     let get_method_id = (**env).GetMethodID.unwrap();
     let get_object_class = (**env).GetObjectClass.unwrap();
     let call_object_method = (**env).CallObjectMethod.unwrap();
 
+    let class = get_object_class(env, ACTIVITY);
+    if class.is_null() {
+        console_error(b"miniquad: asset Activity class lookup failed\0".as_ptr() as _);
+        (**env).ExceptionDescribe.unwrap()(env);
+        (**env).ExceptionClear.unwrap()(env);
+        return;
+    }
     let mid = (get_method_id)(
         env,
-        get_object_class(env, ACTIVITY),
+        class,
         b"getAssets\0".as_ptr() as _,
         b"()Landroid/content/res/AssetManager;\0".as_ptr() as _,
     );
+    if mid.is_null() {
+        console_error(b"miniquad: getAssets method lookup failed\0".as_ptr() as _);
+        (**env).ExceptionDescribe.unwrap()(env);
+        (**env).ExceptionClear.unwrap()(env);
+        return;
+    }
     let asset_manager = (call_object_method)(env, ACTIVITY, mid);
+    if asset_manager.is_null() {
+        console_error(b"miniquad: getAssets returned null\0".as_ptr() as _);
+        (**env).ExceptionDescribe.unwrap()(env);
+        (**env).ExceptionClear.unwrap()(env);
+        return;
+    }
     let mgr = AAssetManager_fromJava(env, asset_manager);
+    if mgr.is_null() {
+        console_error(b"miniquad: native AssetManager lookup failed\0".as_ptr() as _);
+        (**env).ExceptionDescribe.unwrap()(env);
+        (**env).ExceptionClear.unwrap()(env);
+        return;
+    }
     let asset = ndk_sys::AAssetManager_open(mgr, filepath, ndk_sys::AASSET_MODE_BUFFER as _);
     if asset.is_null() {
-        // No asset at this path. `out` stays zeroed: the caller sees a
-        // null `content` and reports a load error.
         return;
     }
 
     let length = ndk_sys::AAsset_getLength64(asset);
     if !crate::fs::android_asset_length_in_range(length) {
-        // content_length is a C int: a negative or over-i32::MAX length
-        // can never be reported correctly. Reject before allocating or
-        // reading anything. #149.
         ndk_sys::AAsset_close(asset);
         return;
     }
@@ -880,10 +919,6 @@ pub(crate) unsafe fn load_asset(filepath: *const ::core::ffi::c_char, out: *mut 
     };
     ndk_sys::AAsset_close(asset);
 
-    // `android_asset_read_outcome` is the host-tested decision for this
-    // part of #149: `None` means free the buffer and report an error
-    // (including a short read); `Some(n)` means report exactly `n`
-    // read bytes.
     match crate::fs::android_asset_read_outcome(length, read) {
         Some(reported_len) => {
             (*out).content_length = reported_len as _;

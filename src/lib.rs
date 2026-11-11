@@ -187,6 +187,8 @@ pub mod window {
     pub fn order_quit() {
         let mut d = native_display().lock().unwrap();
         d.quit_ordered = true;
+        #[cfg(target_os = "android")]
+        (d.native_requests)(native::Request::ScheduleUpdate);
     }
 
     /// Shortcut for `order_quit`. Will add a legacy attribute at some point.
@@ -204,6 +206,8 @@ pub mod window {
     pub fn request_quit() {
         let mut d = native_display().lock().unwrap();
         d.quit_requested = true;
+        #[cfg(target_os = "android")]
+        (d.native_requests)(native::Request::ScheduleUpdate);
     }
 
     /// Cancels a pending quit request, either initiated

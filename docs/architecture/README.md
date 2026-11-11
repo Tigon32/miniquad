@@ -25,6 +25,13 @@ when the architecture changes.
 
 ## Source and qualification limits
 
+The owner requested a WebGPU migration in [#154](https://github.com/Tigon32/miniquad/issues/154).
+[MADR 0015](../adr/0015-proof-gated-webgpu-migration.md) proposes two isolated integrations
+and equivalent proof tests before a production backend is selected.
+The dotted component edges and optional lifecycle block describe this proposal.
+They do not describe an implemented WebGPU backend.
+The current WebGL and ABI v3 path remains unchanged.
+
 The optional [embedding module](../browser-embedding.md) creates a runtime frame
 inside a host container. The host owns semantic HTML controls. The runtime frame
 owns one classic bridge, canvas, WASM instance, and GPU context.

@@ -15,6 +15,10 @@ if (!canvas) {
 var gl;
 var webgl_context_lost = false;
 var webgl_depth_texture_supported = false;
+// WebGL2 (GLES3) requires a sized internalformat for depth textures (for
+// example DEPTH_COMPONENT16), unlike the unsized DEPTH_COMPONENT the WebGL1
+// WEBGL_depth_texture extension requires. See glTexImage2D below.
+var webgl2_context = false;
 
 var clipboard = null;
 
@@ -102,6 +106,7 @@ function init_webgl(version) {
             throw new Error("WebGL2 context is unavailable");
         }
         webgl_depth_texture_supported = true;
+        webgl2_context = true;
     } else {
         throw new Error("Unsupported WebGL version: " + version);
     }
@@ -775,6 +780,19 @@ var importObject = {
                 (format === gl.DEPTH_COMPONENT || format === gl.DEPTH_STENCIL ||
                  internalFormat === gl.DEPTH_COMPONENT || internalFormat === gl.DEPTH_STENCIL)) {
                 throw new Error("WebGL1 depth textures are unavailable on this browser");
+            }
+            // The compiled WASM sends the unsized DEPTH_COMPONENT internalformat
+            // required by the WebGL1 WEBGL_depth_texture extension. WebGL2/GLES3
+            // instead requires a sized internalformat for depth attachments; some
+            // engines tolerate the unsized value, but newer WebKit enforces the
+            // spec and leaves the attachment non-renderable (observed: WebKit 27.2
+            // reports "Framebuffer is incomplete: Attachment is not renderable" on
+            // glClear/glDrawElementsInstanced). Translate to the sized form only
+            // on a real WebGL2 context, so the WebGL1 extension path is unchanged.
+            if (webgl2_context && internalFormat === gl.DEPTH_COMPONENT) {
+                if (type === gl.UNSIGNED_SHORT) internalFormat = gl.DEPTH_COMPONENT16;
+                else if (type === gl.UNSIGNED_INT) internalFormat = gl.DEPTH_COMPONENT24;
+                else if (type === gl.FLOAT) internalFormat = gl.DEPTH_COMPONENT32F;
             }
             gl.texImage2D(target, level, internalFormat, width, height, border, format, type,
                 pixels ? getArray(pixels, Uint8Array, texture_size(internalFormat, width, height)) : null);

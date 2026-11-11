@@ -19,6 +19,13 @@ See [MADR 0003](adr/0003-use-asd-ste100-for-communication.md).
 | **Embedding host** | The web page that owns controls and a container for an optional Miniquad runtime frame. | Browser bridge |
 | **Runtime frame** | A same-origin iframe that owns one Miniquad application, its canvas, and its browser state. | Security boundary |
 | **WebGL** | The browser graphics API that sends drawing commands to the GPU. | WebAssembly |
+| **WebGPU** | The explicit browser GPU API used by the proposed graphics migration. It is not a WebGL compatibility backend. | WebGL, WebAssembly |
+| **WGSL** | The shader language used by WebGPU. | GLSL, MSL |
+| **GPU adapter** | A WebGPU interface that exposes an available graphics implementation, its features, and its limits. | GPU device |
+| **GPU device** | The WebGPU interface that owns resources and submits work through its queue. | HTML canvas element |
+| **Device loss** | A terminal loss of a WebGPU device. The application must report the loss and stop using the device. | Automatic recovery |
+| **Software adapter** | A graphics implementation that performs GPU API work in software. A passing test does not qualify hardware behavior. | Hardware GPU |
+| **Compatibility backend** | A legacy graphics path that an application selects explicitly during migration. | Silent fallback |
 | **Graphics context** | The state and access that a graphics backend uses for GPU operations. | HTML canvas element |
 | **GPU buffer** | Memory on the GPU that holds data for drawing. | JavaScript ArrayBuffer |
 | **Buffer update** | An operation that changes data in a GPU buffer. The API contract defines the exact action. | A CPU memory write |
@@ -29,13 +36,16 @@ See [MADR 0003](adr/0003-use-asd-ste100-for-communication.md).
 | **Rendering pipeline** | The shaders and render state that the GPU uses for drawing. | CI pipeline |
 | **Frame** | One completed visual update. | Physics simulation step |
 | **CI check** | A test or build check that runs automatically. | Proof of browser behavior |
+| **Worktree** | A Git working directory with its own HEAD and index. Linked worktrees share repository objects and branch references. | Branch |
+| **Worktree owner** | The contributor or agent assigned as the single writer for a task worktree. | PR author |
 | **Integration PR** | A pull request that adds selected upstream changes to this fork. | Original upstream PR |
 | **SSE (server-side execution)** | Game simulation or other work that runs on a server. | Intel SSE instructions or HTTP Server-Sent Events |
 | **BDD** | Behavior-driven development. It records user behavior in test scenarios. | A guarantee that all tests pass |
 | **STE-aligned draft** | Text written with the project controlled-English rules. | Verified ASD-STE100 compliance |
 | **Hexagonal-prism voxel** | An optional voxel shape: a flat-top hexagon cell, extruded by one integer layer height. It is separate from the default cubic voxel. | Cubic voxel |
 | **Support tier** | The policy value for a platform: QUALIFIED, TARGETED, LEGACY, or UNSUPPORTED. See the [platform support policy](platform-support-policy.md). | Test status (Pass, Fail, Not tested, Blocked) |
-| **Axial coordinate** | A cell position `(q, r)` on a flat-top hexagon grid, used with an integer layer for a hexagonal-prism voxel. | Cube coordinate, offset coordinate |
+| **Axial coordinate** | A cell position `(q, r)` on a flat-top or pointy-top hexagon grid. No layer is required: a 2D hex layout uses the position alone, and a hexagonal-prism voxel adds an integer layer. | Cube coordinate, offset coordinate |
+| **2D hex layout** | An optional, pixel-only 2D module that maps an axial coordinate to a cell center, corners, and neighbors for one chosen orientation (flat-top or pointy-top), with no layer and no voxel. | Hexagonal-prism voxel |
 
 ## Add a term
 

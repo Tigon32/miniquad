@@ -42,14 +42,23 @@ mod tests {
         ]
     }
 
-    /// Both crates compute a cell center or corner from the same
-    /// `(3q, 2r+q)` integer lattice (section 1.5), but one path is
-    /// `f64`-then-`f32` and the other is plain `f32`: an honest
-    /// tolerance, not bit-exact agreement, is this test's claim. The
-    /// relative term covers the larger absolute rounding step at a
-    /// large sample coordinate (for example `q = 65_535`).
-    fn assert_world_close(a: f32, b: f32, what: &str) {
-        let tolerance = 1.0e-3 + a.abs().max(b.abs()) * 2.0e-6;
+    /// `x` is calculated from the same integer lattice scaled by a power
+    /// of two (`radius * 0.5`) on both sides, so it is bit-equal at
+    /// `radius = 1.0` (contract section 2: "`x` is bit-equal").
+    fn assert_x_bit_equal(a: f32, b: f32, what: &str) {
+        assert_eq!(
+            a, b,
+            "{what}: 2D/3D x values must be bit-equal ({a} vs {b})"
+        );
+    }
+
+    /// `z`/`v` scales the lattice by `sqrt(3) / 2`, an irrational
+    /// constant: the 2D path rounds it from `f64`, the 3D path uses a
+    /// fixed `f32` literal, so the two can differ by a representable
+    /// rounding step. Contract section 2 bounds this at
+    /// `4 * f32::EPSILON * max(1, |z|)`.
+    fn assert_z_within_contract_tolerance(a: f32, b: f32, what: &str) {
+        let tolerance = 4.0 * f32::EPSILON * a.abs().max(b.abs()).max(1.0);
         assert!(
             (a - b).abs() <= tolerance,
             "{what} mismatch: 2D/3D values {a} vs {b} (tolerance {tolerance})"
@@ -69,8 +78,8 @@ mod tests {
 
             // The 3D contract maps world (x, z) to 2D (u, v) as
             // u = x, v = z (docs/hex-voxel-contract.md section 1.10).
-            assert_world_close(x2, x3, &format!("center x at ({q}, {r})"));
-            assert_world_close(y2, z3, &format!("center v/z at ({q}, {r})"));
+            assert_x_bit_equal(x2, x3, &format!("center x at ({q}, {r})"));
+            assert_z_within_contract_tolerance(y2, z3, &format!("center v/z at ({q}, {r})"));
         }
     }
 
@@ -88,8 +97,12 @@ mod tests {
             for k in 0..6 {
                 let (x2, y2) = corners_2d[k];
                 let [x3, _y3, z3] = corners_3d[k];
-                assert_world_close(x2, x3, &format!("corner {k} x at ({q}, {r})"));
-                assert_world_close(y2, z3, &format!("corner {k} v/z at ({q}, {r})"));
+                assert_x_bit_equal(x2, x3, &format!("corner {k} x at ({q}, {r})"));
+                assert_z_within_contract_tolerance(
+                    y2,
+                    z3,
+                    &format!("corner {k} v/z at ({q}, {r})"),
+                );
             }
         }
     }
@@ -98,21 +111,50 @@ mod tests {
     fn neighbor_delta_table_matches_3d_side_faces() {
         use miniquad_voxel::hex::HexFace;
 
-        let origin_2d = HexCoord::new(0, 0).expect("(0, 0) is in bounds");
-        let origin_3d = HexCell::new(0, 0, 0).expect("(0, 0, 0) is in bounds");
+        // Contract section 1.10: the origin, both interior samples
+        // `(-3, 2)` and `(7, -5)`, and both ends of the shared
+        // `HEX_COORD_MIN..=HEX_COORD_MAX` bound.
+        let base_cells = [(0, 0), (-3, 2), (7, -5), (-65_536, 0), (65_535, 0)];
 
-        for (k, face) in HexFace::SIDES.iter().enumerate() {
-            let neighbor_2d = origin_2d
-                .neighbor(k)
-                .expect("side 0..6 from the origin stays in bounds");
-            let neighbor_3d = origin_3d
-                .neighbor(*face)
-                .expect("every side face from the origin stays in bounds");
+        for (q, r) in base_cells {
+            let origin_2d = HexCoord::new(q, r).expect("base coordinate is in bounds");
+            let origin_3d = HexCell::new(q, r, 0).expect("base coordinate is in bounds");
+
+            for (k, face) in HexFace::SIDES.iter().enumerate() {
+                let neighbor_2d = match origin_2d.neighbor(k) {
+                    Ok(neighbor) => neighbor,
+                    Err(_) => continue,
+                };
+                let neighbor_3d = match origin_3d.neighbor(*face) {
+                    Ok(neighbor) => neighbor,
+                    Err(_) => continue,
+                };
+
+                assert_eq!(
+                    (neighbor_2d.q(), neighbor_2d.r()),
+                    (neighbor_3d.q(), neighbor_3d.r()),
+                    "2D side {k} neighbor of ({q}, {r}) disagrees with 3D face {face:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn cell_at_recovers_cell_from_3d_center() {
+        // Contract section 1.10: `cell_at` at the 3D center `(x, z)`
+        // round-trips back to the originating `(q, r)`.
+        for (q, r) in sample_cells() {
+            let cell_3d = HexCell::new(q, r, 0).expect("sample coordinate is in bounds");
+            let [x3, _y3, z3] = cell_3d.center();
+
+            let recovered = unit_layout()
+                .cell_at((x3, z3))
+                .expect("a 3D cell center always resolves to a 2D cell");
 
             assert_eq!(
-                (neighbor_2d.q(), neighbor_2d.r()),
-                (neighbor_3d.q(), neighbor_3d.r()),
-                "2D side {k} neighbor disagrees with 3D face {face:?}"
+                (recovered.q(), recovered.r()),
+                (q, r),
+                "cell_at did not recover ({q}, {r}) from 3D center ({x3}, {z3})"
             );
         }
     }

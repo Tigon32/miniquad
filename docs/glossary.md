@@ -35,7 +35,8 @@ See [MADR 0003](adr/0003-use-asd-ste100-for-communication.md).
 | **STE-aligned draft** | Text written with the project controlled-English rules. | Verified ASD-STE100 compliance |
 | **Hexagonal-prism voxel** | An optional voxel shape: a flat-top hexagon cell, extruded by one integer layer height. It is separate from the default cubic voxel. | Cubic voxel |
 | **Support tier** | The policy value for a platform: QUALIFIED, TARGETED, LEGACY, or UNSUPPORTED. See the [platform support policy](platform-support-policy.md). | Test status (Pass, Fail, Not tested, Blocked) |
-| **Axial coordinate** | A cell position `(q, r)` on a flat-top hexagon grid, used with an integer layer for a hexagonal-prism voxel. | Cube coordinate, offset coordinate |
+| **Axial coordinate** | A cell position `(q, r)` on a flat-top or pointy-top hexagon grid. No layer is required: a 2D hex layout uses the position alone, and a hexagonal-prism voxel adds an integer layer. | Cube coordinate, offset coordinate |
+| **2D hex layout** | An optional, pixel-only 2D module that maps an axial coordinate to a cell center, corners, and neighbors for one chosen orientation (flat-top or pointy-top), with no layer and no voxel. | Hexagonal-prism voxel |
 
 ## Add a term
 

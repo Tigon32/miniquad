@@ -339,9 +339,10 @@ impl HexLayout {
             }
         };
 
-        let mut candidates: Vec<(i64, i64)> = vec![(rounded_q, rounded_r)];
-        for &(dq, dr) in &SIDE_DELTA {
-            candidates.push((rounded_q + i64::from(dq), rounded_r + i64::from(dr)));
+        let mut candidates = [(0_i64, 0_i64); 7];
+        candidates[0] = (rounded_q, rounded_r);
+        for (slot, &(dq, dr)) in candidates[1..].iter_mut().zip(SIDE_DELTA.iter()) {
+            *slot = (rounded_q + i64::from(dq), rounded_r + i64::from(dr));
         }
 
         let mut best = candidates[0];
@@ -452,6 +453,24 @@ mod tests {
     }
 
     // --- Literal 3D agreement (section 1.10) ---------------------------
+
+    /// Locks the module's private `KX`/`KZ`/`KU`/`KV` tables against the
+    /// literal integers of contract section 1.5, typed in here directly
+    /// (not through `flat_top_lattice`/`pointy_top_lattice`). This is the
+    /// independent oracle: the test below reuses the module's own helpers
+    /// for the center/corner formula, so without this lock a corrupted
+    /// private table could still agree with itself.
+    #[test]
+    fn contract_literal_lattice_tables_match_module_tables() {
+        const CONTRACT_KX: [i64; 6] = [2, 1, -1, -2, -1, 1];
+        const CONTRACT_KZ: [i64; 6] = [0, 1, 1, 0, -1, -1];
+        const CONTRACT_KU: [i64; 6] = [1, 0, -1, -1, 0, 1];
+        const CONTRACT_KV: [i64; 6] = [1, 2, 1, -1, -2, -1];
+        assert_eq!(KX, CONTRACT_KX, "KX must match contract section 1.5");
+        assert_eq!(KZ, CONTRACT_KZ, "KZ must match contract section 1.5");
+        assert_eq!(KU, CONTRACT_KU, "KU must match contract section 1.5");
+        assert_eq!(KV, CONTRACT_KV, "KV must match contract section 1.5");
+    }
 
     #[test]
     fn literal_3d_agreement_flat_top_center_and_corners() {

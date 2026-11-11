@@ -79,4 +79,5 @@ Run the companion unit tests, native and WASM compile checks, and `node scripts/
 Browser appearance is not proved by pure geometry tests.
 
 This decision stays **Proposed** until implementation evidence is reviewed.
-The parent integrator adds this record to the [decision index](README.md) and the glossary.
+This record is already in the [decision index](README.md) and the [glossary](../glossary.md)
+(Axial coordinate, 2D hex layout).

@@ -78,6 +78,49 @@ test("external starter renders under a deployment subpath and changes real WASM 
     expect(errors).toEqual([]);
 });
 
+test("external starter shows a visible error when WASM startup fails", async ({ page }) => {
+    const errors = [];
+    page.on("pageerror", error => errors.push(error.message));
+    await page.route("**/app.wasm", route => route.abort());
+    await page.goto(address);
+    await expect(page.locator("#status")).toHaveAttribute("data-state", "error");
+    await expect(page.locator("#status")).toBeVisible();
+    await expect(page.locator("#status")).toContainText(/failed|error|load|fetch|network/i);
+    await expect(page.locator("#host iframe")).toHaveCount(0);
+    expect(errors).toEqual([]);
+});
+
+test.describe("high-DPI external consumer", () => {
+    test.use({ deviceScaleFactor: 2 });
+
+    test("draws, resizes, and accepts canvas and keyboard control focus", async ({ page }, testInfo) => {
+        const errors = [];
+        page.on("pageerror", error => errors.push(error.message));
+        await page.setViewportSize({ width: 800, height: 900 });
+        await page.goto(address);
+        await expect(page.locator("#status")).toHaveAttribute("data-state", "running");
+        expect(await page.evaluate(() => devicePixelRatio)).toBe(2);
+        const canvas = page.frameLocator("#host iframe").locator("#glcanvas");
+        await canvas.focus();
+        await expect(canvas).toBeFocused();
+        const speed = page.locator("#speed");
+        await speed.focus();
+        const beforeSpeed = Number(await speed.inputValue());
+        await page.keyboard.press("ArrowRight");
+        expect(Number(await speed.inputValue())).toBeGreaterThan(beforeSpeed);
+        const beforeWidth = await canvas.evaluate(canvas => canvas.width);
+        await page.setViewportSize({ width: 320, height: 900 });
+        await expect.poll(() => canvas.evaluate(canvas => canvas.width)).toBeLessThan(beforeWidth);
+        const image = PNG.sync.read(await canvas.screenshot());
+        const center = (Math.floor(image.height / 2) * image.width + Math.floor(image.width / 2)) * 4;
+        expect([...image.data.subarray(center, center + 3)]).not.toEqual(backgroundPixel(image));
+        await testInfo.attach("starter-dpr-2.png", {
+            body: await page.screenshot({ fullPage: true }), contentType: "image/png"
+        });
+        expect(errors).toEqual([]);
+    });
+});
+
 for (const width of [320, 1280, 1440]) {
     test(`starter supports host preferences and reduced motion at ${width}px`, async ({ page }, testInfo) => {
         const errors = [];

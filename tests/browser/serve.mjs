@@ -1,6 +1,8 @@
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createVoxelProxyHandler } from "./voxel-proxy.mjs";
 
 const root = process.cwd();
 const files = new Map([
@@ -20,27 +22,41 @@ const files = new Map([
 ]);
 const host = "127.0.0.1";
 const port = 4173;
-const server = createServer(async (request,response) => {
-  const pathname = new URL(request.url, "http://"+host).pathname;
-  if (pathname === "/health") {
-    response.writeHead(200, {"content-type":"text/plain","cache-control":"no-store"});
-    response.end("ok");
-    return;
-  }
-  const asset=files.get(pathname);
-  if (!asset || request.method !== "GET") {
-    response.writeHead(404,{"content-type":"text/plain"});
-    response.end("Not found");
-    return;
-  }
-  try {
-    const data=await readFile(resolve(root,asset.file));
-    response.writeHead(200,{"content-type":asset.type,"content-length":data.byteLength,"cache-control":"no-store"});
-    response.end(data);
-  } catch (error) {
-    console.error("Cannot serve",pathname,error.message);
-    response.writeHead(500,{"content-type":"text/plain"});
-    response.end("Asset missing");
-  }
-});
-server.listen(port,host,()=>console.log("Browser fixture at http://"+host+":"+port));
+
+/**
+ * Build the browser fixture server without starting it. Tests use this
+ * to run the same routing on an ephemeral port instead of the fixed
+ * port reserved for the real browser fixture.
+ */
+export function createBrowserFixtureServer({ voxelProxy = createVoxelProxyHandler() } = {}) {
+  return createServer(async (request,response) => {
+    const pathname = new URL(request.url, "http://"+host).pathname;
+    if (await voxelProxy(request, response, pathname)) return;
+    if (pathname === "/health") {
+      response.writeHead(200, {"content-type":"text/plain","cache-control":"no-store"});
+      response.end("ok");
+      return;
+    }
+    const asset=files.get(pathname);
+    if (!asset || request.method !== "GET") {
+      response.writeHead(404,{"content-type":"text/plain"});
+      response.end("Not found");
+      return;
+    }
+    try {
+      const data=await readFile(resolve(root,asset.file));
+      response.writeHead(200,{"content-type":asset.type,"content-length":data.byteLength,"cache-control":"no-store"});
+      response.end(data);
+    } catch (error) {
+      console.error("Cannot serve",pathname,error.message);
+      response.writeHead(500,{"content-type":"text/plain"});
+      response.end("Asset missing");
+    }
+  });
+}
+
+const isEntryPoint = process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1]);
+if (isEntryPoint) {
+  const server = createBrowserFixtureServer();
+  server.listen(port,host,()=>console.log("Browser fixture at http://"+host+":"+port));
+}

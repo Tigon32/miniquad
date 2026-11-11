@@ -3,7 +3,7 @@
 * Date: 2026-11-11
 * Scope: `companions/draw/` (the `miniquad-draw` crate) and this guide
 * Related issue: [#123](https://github.com/Tigon32/miniquad/issues/123)
-* Related decision: MADR 0009 — "Keep browser adoption tools outside the core library" (proposed). Read from `docs/adr/0009-optional-browser-adoption-layer.md` at commit `87e8e50` on another branch; this ADR is not yet present on `feat/drawing-companion` and so is not linked here, to keep `node scripts/check-docs.mjs` passing. It drafted the optional-package boundary this crate fills.
+* Related decision: [MADR 0009 — Keep browser adoption tools outside the core library](adr/0009-optional-browser-adoption-layer.md) (proposed).
 * Source reviewed: `Tigon32/miniquad`, branch `feat/drawing-companion`, built on `454792c46febefc476e1df153a5efed8bbb2ef79`
 * Writing review: **STE-aligned draft**. Full dictionary review not done.
 
@@ -97,6 +97,42 @@ dropped automatically, because releasing miniquad GPU resources needs
   premultiplied blending composites predictably when shapes overlap,
   without a separate "unmultiply" step.
 
+## Comparison evidence and artifact receipt
+
+On 2026-11-11, the GitHub API reported that `nical/lyon` was not archived.
+Its last push was on 2026-11-05.
+At [source `c3e869fa385876552972bf88402c815718e6e2cd`](https://github.com/nical/lyon/tree/c3e869fa385876552972bf88402c815718e6e2cd),
+[`lyon_tessellation` declares](https://github.com/nical/lyon/blob/c3e869fa385876552972bf88402c815718e6e2cd/crates/tessellation/Cargo.toml)
+version `1.0.23` and licence `MIT OR Apache-2.0`.
+Its default feature is `std`. It depends on `lyon_path` and `num-traits`.
+Serialization adds optional dependencies.
+This project did not build that package for WASM or measure an adapter to it.
+Do not treat its dependency size or WASM support as verified here.
+
+The internal showcase was built from source
+`ba0ab9ff30c6b9fc96ddc018370a0ee5a067da2d` on macOS arm64.
+The command was
+`cargo build --release --target wasm32-unknown-unknown --manifest-path companions/draw/Cargo.toml --example showcase`.
+The tools were `rustc 1.99.0 (b940084d7 2026-09-28)` and Node.js `v26.10.0`.
+Node `zlib.gzipSync` used level 9. `brotliCompressSync` used its default settings.
+
+| Asset | Raw bytes | gzip bytes | Brotli bytes |
+| --- | ---: | ---: | ---: |
+| `showcase.wasm` | 216107 | 66999 | 56078 |
+| `js/gl.js` | 78278 | 17273 | 14467 |
+
+SHA-256:
+
+```text
+showcase.wasm  01fd927c83a12e472beb2a775d409f9bcf8fbcf8fff62cddbd36acdb2b38e74a
+js/gl.js       b04bb784b87b17c8fe328b6f0a0b1cefdc50283a90d6d7c89b0a16e8521696b8
+```
+
+These are complete example assets, not an isolated package cost or a speed measurement.
+The same compiled showcase passed pixel and resize checks in Chromium, Firefox,
+and desktop WebKit. A matched alternative-library build remains open in #123.
+The package is a usable prototype, not a measured winner over Lyon.
+
 ## Selection rationale: narrow adapter vs. a maintained tessellation library
 
 Issue #123 requires comparing this package's own implementation against a
@@ -107,7 +143,7 @@ maintained drawing/tessellation library before selecting an approach.
 | Scope | Bounded: triangles, axis-aligned rectangles, thick polylines with butt caps, circles, cubic curves with bounded adaptive subdivision | Broad: general polygon fill (even-odd/non-zero), miter/round/bevel joins, dashed strokes, arbitrary path construction |
 | Dependencies added | Zero beyond `miniquad` (path dependency) | One or more crates (tessellation, geometry types), pulled into any project that selects this package |
 | API surface | Narrow, five geometry builders plus a batch and a GPU adapter | Much larger path/tessellator API; a project typically also writes its own GPU upload and batching layer |
-| Maintenance status | New code in this repository; this guide is the only maintenance record so far | Actively maintained upstream project with its own release history (not independently re-verified for this review; see Limits) |
+| Maintenance status | New code in this repository | Repository is not archived; observed upstream activity on 2026-11-05. This is not a maintenance guarantee. |
 | Fit to the existing `RenderingBackend` | Built directly against the trait reviewed in `src/graphics.rs` (vertex/index buffers, `PipelineParams`, `apply_scissor_rect`) | Would need a separate integration layer to turn tessellator output into `miniquad` buffers and pipelines; not part of the library itself |
 | Antialiasing | None. Edges are hard; no coverage-based or MSAA-aware stroke/fill | Depends on the chosen tessellator and renderer integration; some projects add MSAA or signed-distance-field strokes |
 

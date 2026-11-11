@@ -238,11 +238,10 @@ Integration adds these checks to both browser CI lanes.
   WASM-only half of MADR 0008's vertical-slice acceptance criteria.
   Issue #29 must stay open until mode B (or a documented decision to
   drop it) is addressed.
-- **No context-loss or teardown path.** Unlike the `miniquad-draw`
-  companion's `Renderer::destroy`, this example does not implement
-  explicit GPU resource teardown or a remount contract. A future
-  integration through the browser-adoption layer (issue #124) needs
-  this before the example can be safely mounted/unmounted repeatedly.
+- **No explicit Rust GPU teardown.** The example does not call the
+  GPU deletion methods. The browser embedding host owns and disposes
+  its complete runtime frame and context. This does not establish a
+  native teardown contract or prove immediate browser memory reclamation.
 - **No HUD in this crate.** The "screen-space 2D HUD" frame step from
   MADR 0008 is intentionally deferred to the external embedding host;
   this example draws nothing in that role. A future slice should link

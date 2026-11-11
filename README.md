@@ -44,11 +44,13 @@ for an immutable Git revision and deployment under a subpath.
 | Direct GPU drawing, buffers, shaders, and WASM | Miniquad |
 | Basic paths in an existing JavaScript application | Consider Canvas 2D before a WASM rewrite |
 | Reusable lines, curves, circles, and batches | Optional [drawing companion](docs/drawing-companion.md) |
+| A bounded offline voxel example | Optional [voxel companion](docs/offline-voxel.md) |
 | Embed a scene with mount, pause, and disposal | Optional [browser module](docs/browser-embedding.md) |
 | HTML controls, colors, and motion preferences | [Host preference adapter](docs/host-preferences.md) |
 
-Miniquad does not supply a game engine or a voxel world.
-The optional voxel work remains in [#29](https://github.com/Tigon32/miniquad/issues/29).
+Miniquad core does not supply a game engine or a voxel world.
+The voxel companion is an offline prototype. Server mode and full qualification
+remain in [#29](https://github.com/Tigon32/miniquad/issues/29).
 Design-process tools can check a host page, but they do not supply a renderer.
 No design-tool runtime or `Tokens.swift` file is required.
 Fork release qualification remains separate under [#19](https://github.com/Tigon32/miniquad/issues/19).

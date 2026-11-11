@@ -42,6 +42,7 @@ pub struct GlCache {
     pub stencil: Option<StencilState>,
     pub color_write: ColorMask,
     pub cull_face: CullFace,
+    pub depth_write: bool,
     pub attributes: [Option<CachedAttribute>; MAX_VERTEX_ATTRIBUTES],
 }
 

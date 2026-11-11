@@ -1,16 +1,15 @@
 # 2D hex layout contract
 
-* Status: **Proposed** (design contract; no implementation on `master`)
+* Status: **Proposed** (layout API merged; browser example is in PR #172)
 * Decision: [MADR 0012](adr/0012-optional-2d-hex-layouts.md)
-* Issue: [#133](https://github.com/Tigon32/miniquad/issues/133) (layout and selection)
+* Issues: [#133](https://github.com/Tigon32/miniquad/issues/133) (layout and selection), [#134](https://github.com/Tigon32/miniquad/issues/134) (browser example)
 * Source base: `9379de78757b393cbf4e82843bd06fb0ba01cc68`
 * 3D reference: `docs/hex-voxel-contract.md` at `7183afcad706b7a4c7e0b0ea697f6f3d44ff676c`, sections 1.3 to 1.5 and 1.10
 * Writing review: **STE-aligned draft**. Full ASD-STE100 dictionary review not done.
 
 This document is the frozen interface for the optional 2D hex layout.
 Section 1 is the layout contract for #133.
-This file holds only the pure layout/picking contract (#133).
-The browser example and its tests (#134) have a separate contract and are not part of this file.
+Sections 3 and 4 are the browser example and its tests for #134.
 Do not change a frozen signature without a revision of this document.
 This document is not evidence that the code exists or passes tests.
 
@@ -271,15 +270,256 @@ node scripts/check-docs.mjs
 
 Native compilation is not native runtime proof. Pure tests do not prove browser appearance.
 
-## 3. Risks and limits
+## 3. Browser example contract (#134)
+
+### 3.1 Files
+
+| File | Content |
+| --- | --- |
+| `companions/draw/examples/hex_board.rs` | Scene, exports, and probes. One `[[example]]` entry in `companions/draw/Cargo.toml`. |
+| `tests/browser/hex-2d.html` | Host page with the HTML controls of section 3.5 |
+| `experiments/hex-2d-browser/tests/hex-2d.spec.mjs` | Browser tests of section 4 |
+| `experiments/hex-2d-browser/**` | Private fixtures and server, port `4292` only |
+| `docs/hex-2d.md` | Downstream guide |
+
+The example uses only `miniquad_draw::hex`, `Batch`, `Renderer`, `Color`, and `Transform2D`.
+It does not copy layout math. It has no simulation, pathfinding, terrain, network, or GL HUD.
+
+### 3.2 Board
+
+* Board: all cells `(q, r)` with `HexCoord::new(0, 0).distance(cell) <= 3`.
+  This gives exactly 37 cells, from `-3` to `3` on each axis. Limit `BOARD_MAX_CELLS = 37`.
+* Build order: `q` from `-3` to `3`, then `r` from `-3` to `3`. Skip cells with distance `> 3`.
+* Logical canvas size `(w, h) = screen_size / dpi_scale`. Set `conf.high_dpi = true`.
+* `radius = min(40, floor(min(w, h) / 13))`. `origin = (floor(w / 2), floor(h / 2))`.
+  The flat-top board is `11 × radius` wide and about `12.13 × radius` high. Pointy-top swaps the two values.
+* If `min(w, h) < 104` (radius below 8), the state is **too small**. Draw the clear color only.
+  Keep the selection. Recalculate the layout on each `resize_event` and at the next frame.
+* Fill radius: `radius - 3`. The 3 px inset gives a gutter of `5.20` px (`6 × 0.866`) between adjacent fills at each radius.
+  The gutter shows the clear color. Thus the example does not depend on bit-equal fan edges.
+* Draw each cell with `Batch::circle((0.0, 0.0), radius - 3.0, 6, color, layout.cell_transform(cell)?)`.
+* Selected cell: fill with the selected color. Then draw a marker:
+  `Batch::circle((0.0, 0.0), 0.4 * radius, 6, marker, layout.cell_transform(cell)?)`.
+  The marker is the shape cue. Selection does not depend on color only.
+* No outline and no alpha blending. All colors are opaque. Painter order: cells in build order, then the marker.
+  The example does not use `Batch::polyline`, so the butt-cap and unjoined-corner limit of section 1.9 does not apply to it.
+* Per frame: one `Batch`, one `Renderer::draw`. Vertices: `37 × 7 + 7 = 266`. Indices: `38 × 18 = 684`. Triangles: 228 (selected) or 222.
+
+### 3.3 Colors
+
+sRGB, 8 bits for each channel, opaque. Contrast ratios are WCAG 2 relative-luminance values from a design calculation.
+
+| Theme | Clear and gutter | Cell | Selected fill | Marker | Cell/clear | Selected/cell | Marker/selected |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `0` light | `#FFFFFF` | `#7D90A8` | `#0A2F6E` | `#FFFFFF` | 3.27 | 3.91 | 12.77 |
+| `1` dark | `#101418` | `#56667A` | `#B8D8FF` | `#101418` | 3.15 | 4.00 | 12.60 |
+| `2` high contrast | `#000000` | `#FFFFFF` | `#FFD400` | `#000000` | 21.00 | 1.43 | 14.67 |
+
+In high contrast, the selected fill is near the cell color. The black marker identifies the selection.
+The host selects the theme with `js/host-preferences.mjs`: `forced-colors: active` or
+`prefers-contrast: more` gives `2`, else `prefers-color-scheme: dark` gives `1`, else `0`.
+Forced colors do not change canvas pixels. The HTML controls use system colors in forced colors.
+
+### 3.4 Exports and probes (this example only)
+
+All exports use scalars only. State is in `static` atomics (`AtomicU32`, `AtomicI32`).
+No export returns or stores a pointer to `Stage` or to WASM memory. These exports are not part of ABI v3.
+
+| Export | Result |
+| --- | --- |
+| `hex_board_set_orientation(o: u32) -> i32` | `0` flat-top, `1` pointy-top: returns `0`. Else `1`, no change. |
+| `hex_board_set_theme(t: u32) -> i32` | `0`, `1`, `2`: returns `0`. Else `1`, no change. |
+| `hex_board_select(q: i32, r: i32) -> i32` | Board cell: `0`, selection set. Else `1`, selection not changed. |
+| `hex_board_clear_selection() -> i32` | Always `0` |
+| `hex_board_request_release() -> i32` | `0` first request, `1` if a request already exists |
+| `hex_probe_cell_at(x_bits: u32, y_bits: u32) -> i32` | Logical-pixel `f32` bits, current layout. `0` board cell, `1` outside board or outside the bound, `2` invalid input or too small. No selection change. |
+| `hex_probe_last_q() -> i32`, `hex_probe_last_r() -> i32` | Cell of the last `hex_probe_cell_at` result `0` |
+| `hex_probe_selected_valid() -> u32` | `1` or `0` |
+| `hex_probe_selected_q() -> i32`, `hex_probe_selected_r() -> i32` | Selected cell (`0, 0` if none) |
+| `hex_probe_last_input() -> u32` | Last pointer or select result: `0` none, `1` cell, `2` outside board, `3` invalid, `4` too small |
+| `hex_probe_layout_radius_bits() -> u32` | `f32` bits of the current radius (`0` if too small) |
+| `hex_probe_layout_origin_x_bits() -> u32`, `..._y_bits() -> u32` | `f32` bits of the current origin |
+| `hex_probe_orientation() -> u32` | `0` or `1` |
+| `hex_probe_cells_drawn() -> u32` | `37` or `0` |
+| `hex_probe_triangles() -> u32` | Triangles in the last frame |
+| `resources_live() -> u32` | `1` while the `Renderer` exists, `0` after release |
+| `hex_board_release_done() -> u32` | `1` after the release frame |
+
+Commands change atomics. The next `update` or `draw` applies them.
+`hex_probe_cell_at` reads the layout atomics and makes a `HexLayout`. It is pure.
+
+### 3.5 Pointer input
+
+* Left `mouse_button_down_event(x, y)`: `logical = (x / dpi_scale, y / dpi_scale)`, then `layout.cell_at`.
+* A board cell sets the selection and `last_input = 1`. A cell outside the board, or `CoordinateOutOfRange`,
+  sets `last_input = 2` and does not change the selection. Another `HexError` sets `3`. Too small sets `4`.
+* The browser bridge removes the canvas and container offset. The test of section 4.4 checks this.
+
+### 3.6 HTML host and keyboard
+
+Host document order:
+
+1. `<h1>2D hex board</h1>`
+2. `<fieldset>` with `<legend>Orientation</legend>`: two native radio inputs, `Flat-top` (checked) and `Pointy-top`.
+3. `<fieldset>` with `<legend>Select a cell</legend>`: `<label>q <input type="number" min="-3" max="3" step="1" value="0"></label>`,
+   the same for `r`, a `Select cell` button, and a `Clear selection` button.
+4. `<button>Release scene</button>`
+5. `<div id="scene">`: the runtime frame of MADR 0009, `aria-hidden="true"`, `tabindex="-1"` on the frame.
+6. `<p id="hex-status" role="status" aria-live="polite">`
+
+* The scene is pointer-only. All functions also work from the HTML controls. The frame ignores keyboard input.
+* Tab order: radios, `q`, `r`, `Select cell`, `Clear selection`, `Release scene`, then the next page element.
+  Arrow keys change the radio value (native behavior). Enter or Space activates a button.
+  Enter in `q` or `r` activates `Select cell`. Focus does not enter the frame. No element traps Tab.
+* `:focus-visible` gives a 3 px solid outline in `currentColor` with a 2 px offset. Do not remove it.
+* `Select cell` with a non-integer or empty value, or a cell outside the board (for example `q=3 r=3`):
+  status shows the error. The selection does not change. The input gets `aria-invalid="true"` until the next valid select.
+* Status text, one line each:
+  * `Scene: starting` / `Scene: running` / `Scene: board too small` / `Scene: released` / `Scene: error <message>`
+  * `Orientation: flat-top` or `Orientation: pointy-top`
+  * `Selected: q=<q> r=<r>` or `Selected: none`
+  * `Last input: none` / `Last input: cell q=<q> r=<r>` / `Last input: outside board` / `Last input: invalid value`
+* The host updates the status after each control action, and after each `pointerup` in `#scene`
+  when the runtime frame count increases by 1. The host does not poll in a loop.
+* Layout: `#scene` is square (`aspect-ratio: 1`), `width: min(480px, 100vw - 32px)`.
+  At a viewport width of `600` px or more, the controls are at the left and the scene at the right.
+  Below `600` px, the controls are above the scene in one column. Nothing scrolls horizontally at `320` px.
+* Empty state: before startup and after release, draw nothing. The status shows the scene state.
+
+### 3.7 Release protocol
+
+1. If `app.state` is `paused`, call `app.resume()`.
+2. Call `hex_board_request_release()`. It stores one atomic request.
+3. The next `draw` calls `Renderer::destroy`, sets `resources_live = 0` and `hex_board_release_done = 1`, and draws nothing more.
+4. The host waits for `resources_live() == 0`, for a maximum of 2000 ms, one check for each animation frame.
+   At timeout, the status shows `Scene: error release timeout`. The host continues to step 5.
+5. The host calls `app.dispose()`. Status: `Scene: released`.
+
+Never export a raw `Stage` pointer. Disposal does not prove immediate memory reclamation.
+
+### 3.8 WebGL builds
+
+* Two builds of the same source: WebGL1 is the default. WebGL2 uses `HEX_BOARD_WEBGL=2` at compile time (`option_env!`)
+  and sets `conf.platform.webgl_version = WebGLVersion::WebGL2`.
+* Output names: `hex_board_webgl1.wasm` and `hex_board_webgl2.wasm`.
+* A fallback from WebGL2 to WebGL1 is a test failure, not a pass.
+
+## 4. Browser tests (#134)
+
+### 4.1 Environment
+
+* Server on `127.0.0.1:4292`. Chromium, Firefox, and WebKit, each with WebGL1 and WebGL2 runs.
+  Record browser version and OS. A missing engine is **blocked**. Desktop WebKit does not prove iOS Safari.
+* Init script in each frame: wrap `HTMLCanvasElement.prototype.getContext` and record each requested type
+  and its result. Count `createBuffer`/`deleteBuffer`, `createProgram`/`deleteProgram`, and `createTexture`/`deleteTexture`.
+* Assert the context: WebGL1 run, a non-null `"webgl"` context and no `WebGL2RenderingContext`.
+  WebGL2 run, a non-null `"webgl2"` context and `instanceof WebGL2RenderingContext`.
+* Network: record all requests. Only same-origin HTML, JS, and WASM requests are allowed.
+
+### 4.2 Standard layout for pixel and pointer tests
+
+* `#scene` at page offset left `37` px and top `53` px (host padding), `480 × 480` CSS px.
+* Expected layout: `radius = 36`, `origin = (240, 240)`. Assert it through the layout probes first.
+* Backing-store sample = `floor(logical × dpr)` on each axis, for `dpr` 1 and 2.
+  Assert canvas `width == 480 × dpr`.
+* Tolerance: each channel within `8` of the expected 8-bit value. Sample only points at least 2 logical px from a fill edge.
+
+### 4.3 Pixel samples (theme `0`, then repeat each orientation in theme `1` and `2`)
+
+Selected cell `(-2, 1)` through `hex_board_select(-2, 1)`.
+
+| Orientation | Logical point | Expected |
+| --- | --- | --- |
+| FlatTop | `(240, 240)` center `(0,0)` | cell |
+| FlatTop | `(430, 333.53)` 5 px inside the fill corner of `(3,0)` | cell |
+| FlatTop | `(439, 333.53)` 6 px outside the fill corner of `(3,0)` | clear |
+| FlatTop | `(267, 255.59)` gutter of `(0,0)` and `(1,0)` | clear |
+| FlatTop | `(132, 240)` center `(-2,1)` | marker |
+| FlatTop | `(154, 240)` | selected fill |
+| PointyTop | `(240, 240)` | cell |
+| PointyTop | `(333.53, 430)` 5 px inside the fill corner of `(3,0)` | cell |
+| PointyTop | `(333.53, 439)` | clear |
+| PointyTop | `(255.59, 267)` gutter of `(0,0)` and `(1,0)` | clear |
+| PointyTop | `(146.47, 186)` center `(-2,1)` | marker |
+| PointyTop | `(146.47, 208)` | selected fill |
+
+The selected fill extends from the marker corner (`14.4` px) to the fill corner (`33` px).
+`hex_probe_cells_drawn() == 37`. `hex_probe_triangles() == 228`.
+
+### 4.4 Pointer selection
+
+Use `page.mouse.click` at page point `(37 + x, 53 + y)` for logical `(x, y)`. Repeat at `dpr` 1 and 2.
+After each click, wait for one frame, then read the selection probes. Repeat each click 3 times. Results are equal.
+
+| Orientation | Logical `(x, y)` | Kind | Selected |
+| --- | --- | --- | --- |
+| FlatTop | `(240, 240)` | center | `(0, 0)` |
+| FlatTop | `(132, 240)` | center, negative `q` | `(-2, 1)` |
+| FlatTop | `(276, 240)` | vertex tie | `(0, 0)` |
+| FlatTop | `(294, 240)` | edge tie | `(1, -1)` |
+| FlatTop | `(186, 240)` | edge tie | `(-1, 0)` |
+| FlatTop | `(204, 240)` | vertex tie | `(-1, 0)` |
+| FlatTop | `(470, 240)` | outside board | no change, `last_input = 2` |
+| PointyTop | `(240, 276)` | vertex tie | `(0, 0)` |
+| PointyTop | `(240, 294)` | edge tie | `(0, 1)` |
+| PointyTop | `(240, 186)` | edge tie | `(-1, 0)` |
+| PointyTop | `(240, 204)` | vertex tie | `(-1, 0)` |
+| PointyTop | `(146, 186)` | near center, negative `q` | `(-2, 1)` |
+| PointyTop | `(240, 470)` | outside board | no change, `last_input = 2` |
+
+Each edge of `(0, 0)`, both orientations: the point at `0.8 × 31.177` px from the center in the side direction
+(section 1.3), rounded to integer logical px, selects `(0, 0)`. The point at `1.2 × 31.177` px selects `neighbor(k)`.
+Compare each click result with `hex_probe_cell_at` at the same logical point.
+
+Resize: set `#scene` to `360 × 360`. Expect `radius = 27`, `origin = (180, 180)`.
+Clicks at `(180, 180)` and `(99, 180)` (flat-top) select `(0, 0)` and `(-2, 1)`. Repeat at `dpr` 1 and 2.
+Too small: set `#scene` to `96 × 96`. Expect `hex_probe_cells_drawn() == 0`, status `Scene: board too small`,
+selection kept, and a click gives `last_input = 4`.
+
+### 4.5 Keyboard and accessibility
+
+* From the page start, Tab visits the order of section 3.6. One more Tab after `Release scene` leaves the controls.
+  Shift+Tab returns in reverse order. Focus never goes into the frame.
+* Each focused control has a visible outline (computed `outline-style` not `none`).
+* Select `q=-3 r=0` with the keyboard: status `Selected: q=-3 r=0`, probe agrees.
+  Select `q=3 r=3`: status shows an error, `aria-invalid="true"`, selection not changed.
+* Width `320` px: no horizontal scroll (`scrollWidth <= clientWidth`), the controls are above the scene.
+* Emulate `prefers-color-scheme: dark` and `forced-colors: active`. Assert theme `1` and theme `2` pixels.
+
+### 4.6 Release and resource bounds
+
+* Three cycles on one page: mount, wait for 3 frames, select a cell, release (section 3.7), dispose.
+* After each release: `resources_live() == 0` within 2000 ms, `hex_board_release_done() == 1`,
+  and live buffers, programs, and textures created by the scene are `0`.
+  If Miniquad creates objects before the scene, record that baseline with evidence and subtract it.
+* Run one cycle with `app.pause()` before release. The protocol resumes and completes.
+* Do not claim leak freedom or memory reclamation from a stable WASM memory size.
+
+### 4.7 Downstream consumer
+
+* `experiments/hex-2d-consumer/` (section 2) also draws the 37-cell board with `Batch::circle` in a small `EventHandler`.
+  Record the dependency path, source SHA, and exact commands. Native compilation is not native runtime proof.
+
+### 4.8 Commands to record
+
+```sh
+node experiments/hex-2d-browser/build.mjs
+./node_modules/.bin/playwright test --config experiments/hex-2d-browser/playwright.config.mjs
+cargo build --release --target wasm32-unknown-unknown --manifest-path companions/draw/Cargo.toml --example hex_board
+HEX_BOARD_WEBGL=2 cargo build --release --target wasm32-unknown-unknown --manifest-path companions/draw/Cargo.toml --example hex_board
+npm run lint:js
+node scripts/check-docs.mjs
+```
+
+Record each test that did not run, with the reason.
+
+## 5. Risks and limits
 
 * The fan rim of `Batch::circle` is not bit-equal to the canonical corners. The gutter hides this.
   An application without a gutter that needs exact seams uses the triangle recipe of section 1.9.
 * `Batch::polyline` has butt caps and no joins. A closed hex outline shows corner defects.
 * Exact pixel-space ties occur only where the lattice values are exact. Other near-edge points are deterministic, not geometric ties.
-* The cross-contract test needs `miniquad_voxel::hex`. Without it, record the test as **blocked**.
-  (This base already carries `companions/voxel`, so the test is expected to run, not be blocked.)
+* The high-contrast selected fill has a low contrast with the cell color. The marker is the cue.
+* The cross-contract test needs `miniquad_voxel::hex`. It runs on this base, which contains
+  `companions/voxel`. On a base without it, record the test as **blocked**.
 * Anti-aliasing can change edge pixels. The samples stay at least 2 logical px from an edge.
-
-The browser example contract, its tests, and the browser-only risk notes (high-contrast fill
-cue, resize/status polling, etc.) are issue #134 and are not part of this file.

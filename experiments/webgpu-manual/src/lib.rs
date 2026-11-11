@@ -205,6 +205,24 @@ pub extern "C" fn mq_proof_key_event(code_ptr: usize, code_len: usize, down: u32
     }
 }
 
+/// Reports an unexpected host-side (JavaScript) error reached after the
+/// WASM module loaded, as a real Rust-reported `internal` failure
+/// (contract section 5: only `wasm-load-failed`/`contract-mismatch` may
+/// use reporter `"host"`). `host.js` calls this instead of fabricating a
+/// status itself, then re-reads `mq_proof_status` for the real result.
+/// `message_ptr`/`message_len` were allocated by `mq_proof_alloc`; this
+/// export claims and frees them. A no-op once already terminal
+/// (`fail_internal`'s guard), and a no-op before `mq_proof_init` succeeds
+/// (no `State` yet; `mq_proof_status` still reports `contract-mismatch`
+/// in that narrow window).
+#[no_mangle]
+pub extern "C" fn mq_proof_host_error(message_ptr: usize, message_len: usize) {
+    let bytes = alloc::claim(message_ptr as *mut u8, message_len).unwrap_or_default();
+    let message = text::validate_incoming_text(&bytes)
+        .unwrap_or("the host reported an error with an invalid message encoding");
+    with_state(|s| s.fail_internal(message));
+}
+
 #[no_mangle]
 pub extern "C" fn mq_proof_focus_event(focused: u32) {
     with_state(|s| s.on_focus_event(focused != 0));

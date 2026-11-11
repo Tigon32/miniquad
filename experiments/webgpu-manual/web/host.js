@@ -110,12 +110,6 @@ function cutToByteLimit(bytes, limit) {
     return bytes.subarray(0, end);
 }
 
-// The last status Rust reported successfully. Contract section 5: only
-// "wasm-load-failed" and "contract-mismatch" may have reporter "host"; if
-// reading a later status fails, `host.status()` serves this instead of
-// fabricating a new reporter-"host" status for a Rust-side condition.
-let lastRustStatus = null;
-
 function readStatus() {
     wasm.exports.mq_proof_status(statusOutPtr);
     const header = new DataView(memoryBuffer(), statusOutPtr, 8);
@@ -123,9 +117,17 @@ function readStatus() {
     const len = header.getUint32(4, true);
     const bytes = new Uint8Array(memoryBuffer(), ptr, len);
     const text = new TextDecoder("utf-8", {fatal: true}).decode(bytes);
-    const parsed = JSON.parse(text);
-    lastRustStatus = parsed;
-    return parsed;
+    return JSON.parse(text);
+}
+
+// Routes an unexpected host-side (JavaScript) error into Rust as a real
+// `internal` failure (contract section 5: only `wasm-load-failed` and
+// `contract-mismatch` may have reporter "host"). This must never be
+// substituted with a cached old status: a cached status can have a
+// running/success shape, silently hiding a real new failure.
+function reportHostError(message) {
+    const {ptr, len} = allocText(message);
+    wasm.exports.mq_proof_host_error(ptr, len);
 }
 
 // -- Host object (contract section 4) -------------------------------------
@@ -137,11 +139,14 @@ const host = {
         if (!wasm) return fallbackStatus;
         try {
             return readStatus();
-        } catch {
-            // Rust already exists, so a read failure here is not a
-            // reportable "host" status (contract section 5); serve the
-            // last status Rust reported instead of inventing one.
-            return lastRustStatus || fallbackStatus;
+        } catch (error) {
+            // A read failure here is not itself a reportable "host"
+            // status (contract section 5). Route it into Rust as a real
+            // "internal" failure, then read Rust's real (now-failed)
+            // status; never serve a stale cached status, which could
+            // still have a running/success shape.
+            reportHostError(String((error && error.message) || error));
+            return readStatus();
         }
     },
     requestReadback() {
@@ -542,10 +547,6 @@ async function start() {
 start().catch(error => {
     // `wasm` is only assigned once the module instantiates; the two
     // "wasm-load-failed" branches above already return before this point.
-    // An error reaching here after `wasm` exists is an unexpected host
-    // bug, not a reportable status (contract section 5: only
-    // "wasm-load-failed" and "contract-mismatch" may have reporter
-    // "host"), so it is logged, not turned into a fabricated status.
     if (!wasm) {
         fallbackStatus = hostStatus("failed", {
             code: "wasm-load-failed",
@@ -553,5 +554,12 @@ start().catch(error => {
         });
         return;
     }
+    // The module loaded, so this is an unexpected host bug, not a
+    // reportable "host" status (contract section 5: only
+    // "wasm-load-failed" and "contract-mismatch" may have reporter
+    // "host"). Route it into Rust as a real "internal" failure instead of
+    // silently leaving whatever status was last in place, which could
+    // still be a running/success shape.
     console.error("mq-proof-manual: unexpected error after the WASM module loaded", error);
+    reportHostError(String((error && error.message) || error));
 });

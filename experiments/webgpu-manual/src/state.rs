@@ -847,4 +847,25 @@ mod tests {
         assert!(json.contains("\"phase\":\"running\""));
         assert!(json.contains("\"canvasFormat\":\"bgra8unorm\""));
     }
+
+    #[test]
+    fn fail_internal_replaces_a_running_status_with_a_real_rust_reported_failure() {
+        // A host-ingress path (`mq_proof_host_error`) calls `fail_internal`
+        // for an unexpected post-load host error. The resulting status
+        // must be reporter "rust"/code "internal", not a cached
+        // running/success status (contract section 5: only
+        // "wasm-load-failed"/"contract-mismatch" may use reporter "host";
+        // every other failure, including an unexpected host bug, must be
+        // Rust's own terminal status, not a stale success shape).
+        let mut state = running_state();
+        assert_eq!(state.phase, Phase::Running);
+        state.fail_internal("an unexpected host error");
+        assert_eq!(state.phase, Phase::Failed);
+        let json = state.status_json();
+        assert!(json.contains("\"reporter\":\"rust\""));
+        assert!(json.contains("\"phase\":\"failed\""));
+        assert!(json.contains("\"code\":\"internal\""));
+        assert!(json.contains("\"message\":\"an unexpected host error\""));
+        assert!(!json.contains("\"phase\":\"running\""));
+    }
 }

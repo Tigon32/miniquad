@@ -25,7 +25,9 @@ node tests/webgpu-proof/run-proof.mjs --candidate manual --lane firefox-default
 node tests/webgpu-proof/run-proof.mjs --candidate manual --lane webkit-default
 ```
 
-The runner needs the installed `@playwright/test` `1.56.1` browsers and a built `dist/` folder.
+The runner needs the repository-pinned `@playwright/test` browsers and a built `dist/` folder.
+The receipt records the pinned and installed Playwright versions and the browser version.
+A receipt with `matchesPin: false` is not valid proof evidence.
 It writes `target/webgpu-proof/<candidate>-<lane>-<browser>.json`.
 It exits with code 1 if a case fails, if a case does not run, or if the lane has no result.
 Set `WEBGPU_PROOF_STEP_TIMEOUT_MS` to change the deadline for each wait. The default is 20000.

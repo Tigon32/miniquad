@@ -175,7 +175,7 @@ impl From<TextureFormat> for MTLPixelFormat {
     fn from(format: TextureFormat) -> Self {
         match format {
             TextureFormat::RGBA8 => MTLPixelFormat::RGBA8Unorm,
-            //TODO: Depth16Unorm ?
+            // Equal to the macOS view depthStencilPixelFormat; pipelines copy that format.
             TextureFormat::Depth => MTLPixelFormat::Depth32Float_Stencil8,
             TextureFormat::RGBA16F => MTLPixelFormat::RGBA16Float,
             _ => todo!(),
@@ -587,7 +587,6 @@ impl RenderingBackend for MetalContext {
         depth: Option<f32>,
         stencil: Option<i32>,
     ) {
-        // TODO: begin_pass/end_pass works, but is far from optimal
         self.begin_default_pass(PassAction::Clear {
             color,
             depth,
@@ -1425,7 +1424,8 @@ impl RenderingBackend for MetalContext {
         assert!(self.index_buffer.is_some());
         let index_buffer = self.index_buffer.unwrap();
 
-        assert!(base_element == 0); // TODO: figure indexBufferOffset/baseVertex
+        // Non-zero base_element is not supported yet: Tigon32/miniquad#143.
+        assert!(base_element == 0);
         unsafe {
             msg_send_![render_encoder, drawIndexedPrimitives:MTLPrimitiveType::Triangle
                        indexCount:num_elements as u64
@@ -1439,12 +1439,9 @@ impl RenderingBackend for MetalContext {
         }
     }
 
-    fn delete_shader(&mut self, _shader: ShaderId) {
-        // TODO: place holder
-    }
-    fn delete_pipeline(&mut self, _pipeline: Pipeline) {
-        // TODO: place holder
-    }
+    // Metal objects are not released yet: Tigon32/miniquad#144.
+    fn delete_shader(&mut self, _shader: ShaderId) {}
+    fn delete_pipeline(&mut self, _pipeline: Pipeline) {}
 
     fn commit_frame(&mut self) {
         // Flush the deferred `endEncoding` from the last

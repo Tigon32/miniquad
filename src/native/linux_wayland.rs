@@ -1246,7 +1246,7 @@ where
                             .pointer_context
                             .set_cursor(&mut display.client, cursor_visible.then_some(cursor_icon));
                     }
-                    // TODO: implement the other events
+                    // SetWindowSize is not handled: #152.
                     _ => (),
                 }
             }

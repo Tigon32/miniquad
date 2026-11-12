@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Miniquad and plain WebGL2 comparison</title>
+  <style>
+    html, body { margin: 0; width: 640px; height: 400px; overflow: hidden; background: #050816; }
+    canvas { display: block; width: 640px; height: 400px; }
+  </style>
+</head>
+<body>
+  <canvas id="glcanvas" width="640" height="400" tabindex="1"></canvas>
+  <script>
+    const nativeGetContext = HTMLCanvasElement.prototype.getContext;
+    HTMLCanvasElement.prototype.getContext = function(type, attributes) {
+      if (type !== "webgl2") return nativeGetContext.call(this, type, attributes);
+      const context = nativeGetContext.call(this, type, {
+        ...attributes,
+        alpha: true,
+        antialias: false,
+        premultipliedAlpha: false,
+        preserveDrawingBuffer: true,
+        powerPreference: "high-performance"
+      });
+      if (context && "drawingBufferColorSpace" in context) {
+        context.drawingBufferColorSpace = "srgb";
+      }
+      return context;
+    };
+
+    const nativeRequestAnimationFrame = window.requestAnimationFrame.bind(window);
+    window.__comparisonTiming = { samples: [], intervals: [], frames: 0, lastTime: null };
+    window.requestAnimationFrame = function(callback) {
+      return nativeRequestAnimationFrame((time) => {
+        const start = performance.now();
+        callback(time);
+        const duration = performance.now() - start;
+        const timing = window.__comparisonTiming;
+        timing.samples.push(duration);
+        timing.intervals.push(timing.lastTime === null ? null : time - timing.lastTime);
+        timing.lastTime = time;
+        timing.frames += 1;
+      });
+    };
+
+    window.__comparisonWaitFrames = async function(count = 1) {
+      const target = window.__comparisonTiming.frames + count;
+      while (window.__comparisonTiming.frames < target) {
+        await new Promise((resolve) => nativeRequestAnimationFrame(resolve));
+      }
+    };
+    window.__comparisonResetTiming = function() {
+      window.__comparisonTiming.samples = [];
+      window.__comparisonTiming.intervals = [];
+      window.__comparisonTiming.frames = 0;
+      window.__comparisonTiming.lastTime = null;
+    };
+    async function readPixels() {
+      if (window.__comparisonArm === "miniquad") {
+        const exports = window.wasm_exports;
+        exports.comparison_request_capture();
+        await window.__comparisonWaitFrames(1);
+        for (let attempt = 0; attempt < 10; attempt += 1) {
+          if (exports.comparison_capture_ready() === 1) {
+            const pointer = exports.comparison_capture_ptr();
+            const length = exports.comparison_capture_len();
+            if (length !== 640 * 400 * 4) {
+              throw new Error(`unexpected Miniquad capture length: ${length}`);
+            }
+            return new Uint8Array(exports.memory.buffer, pointer, length).slice();
+          }
+          await new Promise((resolve) => nativeRequestAnimationFrame(resolve));
+        }
+        throw new Error("Miniquad offscreen capture did not complete");
+      }
+      return window.__comparisonReadTargetPixels();
+    }
+    window.__comparisonReadPixels = async function() {
+      return Array.from(await readPixels());
+    };
+    window.__comparisonReadPixelsBase64 = async function() {
+      const pixels = await readPixels();
+      let binary = "";
+      for (let offset = 0; offset < pixels.length; offset += 32768) {
+        binary += String.fromCharCode(...pixels.subarray(offset, offset + 32768));
+      }
+      return btoa(binary);
+    };
+    window.__comparisonReadSample = async function(x, y) {
+      const pixels = await readPixels();
+      const offset = (y * 640 + x) * 4;
+      return Array.from(pixels.subarray(offset, offset + 4));
+    };
+    window.__comparisonSetKnownBad = function(enabled) {
+      if (window.__comparisonArm === "miniquad") {
+        window.wasm_exports.comparison_set_known_bad(enabled ? 1 : 0);
+      } else {
+        window.__comparisonPlainSetKnownBad(enabled);
+      }
+    };
+    window.__comparisonKnownBad = async function() {
+      const before = await readPixels();
+      window.__comparisonSetKnownBad(true);
+      await window.__comparisonWaitFrames(2);
+      const after = await readPixels();
+      window.__comparisonSetKnownBad(false);
+      await window.__comparisonWaitFrames(2);
+      let differentPixels = 0;
+      let maxChannelDifference = 0;
+      for (let offset = 0; offset < after.length; offset += 4) {
+        let changed = false;
+        for (let channel = 0; channel < 3; channel += 1) {
+          const delta = Math.abs(after[offset + channel] - before[offset + channel]);
+          maxChannelDifference = Math.max(maxChannelDifference, delta);
+          if (delta > 0) changed = true;
+        }
+        if (changed) differentPixels += 1;
+      }
+      return { differentPixels, maxChannelDifference };
+    };
+    window.__comparisonContextInfo = function() {
+      const context = window.gl;
+      const attributes = context.getContextAttributes();
+      const extension = context.getExtension("WEBGL_debug_renderer_info");
+      return {
+        version: context.getParameter(context.VERSION),
+        shadingLanguageVersion: context.getParameter(context.SHADING_LANGUAGE_VERSION),
+        attributes,
+        drawingBufferColorSpace: context.drawingBufferColorSpace ?? null,
+        vendor: extension ? context.getParameter(extension.UNMASKED_VENDOR_WEBGL) : null,
+        renderer: extension ? context.getParameter(extension.UNMASKED_RENDERER_WEBGL) : null
+      };
+    };
+  </script>
+  <script src="/js/gl.js"></script>
+  <script>
+    const arm = new URLSearchParams(location.search).get("arm");
+    if (arm === "plain") {
+      import("/plain.mjs");
+    } else {
+      load("/comparison.wasm").then(() => {
+        window.__comparisonArm = "miniquad";
+        window.__comparisonSetLayerMask = (mask) => window.wasm_exports.comparison_set_layer_mask(mask);
+        window.__comparisonReady = true;
+      }).catch((error) => {
+        window.__comparisonError = String(error);
+      });
+    }
+  </script>
+</body>
+</html>

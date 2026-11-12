@@ -1077,8 +1077,20 @@ test("issue #29 measurement receipt: offline and mixed voxel runtime", async ({ 
         mode,
       });
 
+      await page.waitForFunction(() => window.app.frame.contentWindow.miniquadRuntime.frames > 2);
       if (mode === "mixed") {
-        await page.waitForFunction(() => document.querySelector("#status").textContent === "Connected.");
+        await page.waitForFunction(
+          () => {
+            const status = document.querySelector("#status").textContent;
+            return status === "Connected." || status === "Server is not available. Changes are not saved.";
+          },
+          undefined,
+          { timeout: 15000 },
+        );
+        const status = await page.locator("#status").textContent();
+        if (status !== "Connected.") {
+          throw new Error(`mixed measurement did not connect: ${status}; failures=${failures.join("; ")}`);
+        }
       }
       await page.waitForFunction(
         (count) => window.app.frame.contentWindow.__voxelMeasurement.frames.length >= count,

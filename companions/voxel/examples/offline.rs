@@ -42,10 +42,13 @@ use miniquad_voxel::camera::OrbitCamera;
 use miniquad_voxel::chunk::ChunkDims;
 use miniquad_voxel::math::{Mat4, Vec3};
 use miniquad_voxel::mesh::{build_chunk_mesh, MeshBuffers, Vertex as VoxelVertex};
-use miniquad_voxel::sim::{scene_sprite_position, SCENE_SEED};
+use miniquad_voxel::sim::SCENE_SEED;
 use miniquad_voxel::terrain::{generate_chunk, PALETTE};
 use miniquad_voxel::world::{ChunkCoord, World};
 use std::sync::atomic::{AtomicU32, Ordering};
+
+#[path = "support/scene.rs"]
+mod scene;
 
 /// Version of the optional app-parameters surface.
 const PARAMS_VERSION: u32 = 1;
@@ -421,7 +424,9 @@ impl EventHandler for Stage {
         // (vertical bob) composed with a slow circling motion so both
         // an "animated height" and a "moving sprite" are demonstrated
         // by the same object, per the issue #29 adoption sequence.
-        let sprite_pos = scene_sprite_position(t as f32, |x, z| column_height(&self.world, x, z));
+        let sprite_pos = scene::sprite_position(t as f32, CHUNK_DIMS, |x, z| {
+            column_height(&self.world, x, z)
+        });
         let model = Mat4([
             1.0,
             0.0,

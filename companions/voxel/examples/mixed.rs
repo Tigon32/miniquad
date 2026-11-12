@@ -47,12 +47,13 @@ use miniquad_voxel::hud::{self, Geometry, Mode, Revision, Status};
 use miniquad_voxel::math::{Mat4, Vec3};
 use miniquad_voxel::mesh::{build_chunk_mesh, MeshBuffers, Vertex as VoxelVertex};
 use miniquad_voxel::protocol;
-use miniquad_voxel::sim::{
-    scene_sprite_position, Command, Sim, SCENE_CHUNK_COORDS, SCENE_CHUNK_DIMS,
-};
+use miniquad_voxel::sim::{Command, Sim, SCENE_CHUNK_COORDS, SCENE_CHUNK_DIMS};
 use miniquad_voxel::terrain::PALETTE;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU8, Ordering};
 use std::sync::Mutex;
+
+#[path = "support/scene.rs"]
+mod scene;
 
 // ---------------------------------------------------------------------
 // Bounded staging buffers and mailbox (module statics; see the
@@ -1046,7 +1047,8 @@ impl EventHandler for Stage {
         let t = (date::now() - self.start_time) * speed as f64;
         // The offline and mixed examples use the same path and
         // terrain-relative height so their rendered scenes stay equal.
-        let sprite_pos = scene_sprite_position(t as f32, |x, z| vx_column_height(x, z));
+        let sprite_pos =
+            scene::sprite_position(t as f32, SCENE_CHUNK_DIMS, |x, z| vx_column_height(x, z));
         let model = Mat4([
             1.0,
             0.0,

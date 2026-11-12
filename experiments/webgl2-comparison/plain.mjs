@@ -64,22 +64,60 @@ void main() {
   frag_color = texture(tex, uv);
 }`;
 
+function meshHash(vertices, indices) {
+  let hash = 0xcbf29ce484222325n;
+  const buffer = new ArrayBuffer(4);
+  const view = new DataView(buffer);
+  const update = (byte) => {
+    hash ^= BigInt(byte);
+    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+  };
+  for (const value of vertices) {
+    view.setFloat32(0, value, true);
+    for (const byte of new Uint8Array(buffer)) update(byte);
+  }
+  for (const index of indices) {
+    update(index & 0xff);
+    update((index >>> 8) & 0xff);
+  }
+  return hash.toString(16).padStart(16, "0");
+}
+
 function makeSceneMesh(gl, fixture) {
   const vao = gl.createVertexArray();
   const vertices = gl.createBuffer();
   const indices = gl.createBuffer();
   if (!vao || !vertices || !indices) throw new Error("WebGL2 did not create scene buffers");
+  const vertexData = new Float32Array(fixture.vertices);
+  const indexData = new Uint16Array(fixture.indices);
   gl.bindVertexArray(vao);
   gl.bindBuffer(gl.ARRAY_BUFFER, vertices);
-  gl.bufferData(gl.ARRAY_BUFFER, new Float32Array(fixture.vertices), gl.STATIC_DRAW);
+  gl.bufferData(gl.ARRAY_BUFFER, vertexData, gl.STATIC_DRAW);
   gl.bindBuffer(gl.ELEMENT_ARRAY_BUFFER, indices);
-  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, new Uint16Array(fixture.indices), gl.STATIC_DRAW);
+  gl.bufferData(gl.ELEMENT_ARRAY_BUFFER, indexData, gl.STATIC_DRAW);
   gl.enableVertexAttribArray(0);
   gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 24, 0);
   gl.enableVertexAttribArray(1);
   gl.vertexAttribPointer(1, 4, gl.FLOAT, false, 24, 8);
   gl.bindVertexArray(null);
-  return { vao, vertices, indices };
+  const counts = {
+    occupiedCells: fixture.cells.length,
+    voxelLevels: fixture.cells.reduce((total, cell) => total + cell.height, 0),
+    pathPoints: fixture.path.length,
+    arrows: fixture.arrows.length,
+    vectorItems: fixture.path.length + fixture.arrows.length,
+  };
+  return {
+    vao,
+    vertices,
+    indices,
+    metadata: {
+      ...counts,
+      meshFnv64: meshHash(vertexData, indexData),
+      vertexCount: vertexData.length / 6,
+      indexCount: indexData.length,
+    },
+  };
 }
 
 function makeDisplayMesh(gl) {
@@ -204,6 +242,7 @@ async function start() {
 
   window.__comparisonArm = "plain-webgl2";
   window.__comparisonFixture = fixture;
+  window.__comparisonMeshInfo = () => sceneMesh.metadata;
   window.__comparisonSetLayerMask = (mask) => {
     layerMask = mask & 0b111;
   };

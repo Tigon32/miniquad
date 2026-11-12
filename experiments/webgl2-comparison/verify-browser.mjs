@@ -16,6 +16,25 @@ const sourceSha = process.env.MINIQUAD_SOURCE_SHA || execFileSync(
   ["rev-parse", "HEAD"],
   { cwd: root, encoding: "utf8" }
 ).trim();
+const runStartedAt = new Date().toISOString();
+const powerSource = execFileSync("pmset", ["-g", "batt"], { encoding: "utf8" })
+  .match(/Now drawing from '([^']+)'/);
+const lowPowerMode = execFileSync("pmset", ["-g", "custom"], { encoding: "utf8" })
+  .match(/AC Power:[\s\S]*?\blowpowermode\s+(\d+)/);
+assert.ok(powerSource, "macOS did not report the active power source");
+assert.ok(lowPowerMode, "macOS did not report the AC low-power setting");
+const host = {
+  os: `macOS ${execFileSync("sw_vers", ["-productVersion"], { encoding: "utf8" }).trim()}`,
+  architecture: execFileSync("uname", ["-m"], { encoding: "utf8" }).trim(),
+  cpu: execFileSync("sysctl", ["-n", "machdep.cpu.brand_string"], { encoding: "utf8" }).trim(),
+  powerSource: powerSource[1],
+  lowPowerMode: lowPowerMode[1] === "0" ? "disabled" : "enabled",
+  backgroundWorkload: "not instrumented",
+};
+const toolchain = {
+  rustc: execFileSync("rustup", ["run", "stable", "rustc", "-Vv"], { encoding: "utf8" }).trim(),
+  cargo: execFileSync("rustup", ["run", "stable", "cargo", "-V"], { encoding: "utf8" }).trim(),
+};
 const pixelCount = fixture.width * fixture.height;
 const tolerancePercentLimit = Math.floor(pixelCount * 0.001);
 let server;
@@ -176,13 +195,20 @@ async function assetSizes(arm) {
       raw: data.byteLength,
       gzip: gzipSync(data).byteLength,
       brotli: brotliCompressSync(data).byteLength,
+      sha256: createHash("sha256").update(data).digest("hex"),
     };
   }));
   return {
     raw: files.reduce((total, file) => total + file.raw, 0),
     gzip: files.reduce((total, file) => total + file.gzip, 0),
     brotli: files.reduce((total, file) => total + file.brotli, 0),
-    files: files.map(({ path, raw, gzip, brotli }) => ({ path, raw, gzip, brotli })),
+    files: files.map(({ path, raw, gzip, brotli, sha256 }) => ({
+      path,
+      raw,
+      gzip,
+      brotli,
+      sha256,
+    })),
   };
 }
 
@@ -252,25 +278,24 @@ async function verifyArm(context, arm) {
 
   const metadata = await page.evaluate(() => {
     if (window.__comparisonArm === "plain-webgl2") {
-      return {
-        ...window.__comparisonFixture.counts,
-        meshFnv64: window.__comparisonFixture.meshFnv64,
-      };
+      return window.__comparisonMeshInfo();
     }
     const exports = window.wasm_exports;
     return {
-      occupiedCells: exports.comparison_occupied_cells(),
-      voxelLevels: exports.comparison_voxel_levels(),
-      pathPoints: exports.comparison_path_points(),
-      arrows: exports.comparison_arrows(),
-      vectorItems: exports.comparison_vector_items(),
+      counts: {
+        occupiedCells: exports.comparison_occupied_cells(),
+        voxelLevels: exports.comparison_voxel_levels(),
+        pathPoints: exports.comparison_path_points(),
+        arrows: exports.comparison_arrows(),
+        vectorItems: exports.comparison_vector_items(),
+      },
       meshFnv64: exports.comparison_mesh_hash64().toString(16).padStart(16, "0"),
     };
   });
-  assert.deepEqual(
-    Object.fromEntries(Object.entries(metadata).filter(([key]) => key !== "meshFnv64")),
-    fixture.counts
+  const actualCounts = metadata.counts ?? Object.fromEntries(
+    Object.entries(metadata).filter(([key]) => !["meshFnv64", "vertexCount", "indexCount"].includes(key))
   );
+  assert.deepEqual(actualCounts, fixture.counts);
   assert.equal(fnv64(fixture), fixture.meshFnv64);
   assert.equal(metadata.meshFnv64, fixture.meshFnv64);
 
@@ -345,9 +370,10 @@ async function verifyArm(context, arm) {
     assert.equal(pixels[offset], 255, `${arm} output alpha must be opaque`);
   }
 
-  const controlDiff = await page.evaluate(() => window.__comparisonKnownBad());
-  assert.ok(controlDiff.differentPixels >= 1024, `${arm} known-bad control changed too few pixels`);
-  assert.ok(controlDiff.differentPixels > tolerancePercentLimit, `${arm} control did not exceed the A/B limit`);
+  const controlPixels = Buffer.from(
+    await page.evaluate(() => window.__comparisonKnownBad()),
+    "base64"
+  );
 
   return {
     page,
@@ -357,7 +383,7 @@ async function verifyArm(context, arm) {
     pixels,
     samples,
     absentSamples,
-    controlDiff,
+    controlPixels,
   };
 }
 
@@ -393,6 +419,17 @@ try {
     parity.differentPixels <= tolerancePercentLimit,
     `browser pixel parity failed: ${parity.differentPixels} pixels differ (limit ${tolerancePercentLimit}, tolerance ${tolerance})`
   );
+  const controls = {
+    miniquad: difference(miniquad.pixels, miniquad.controlPixels, tolerance),
+    plain: difference(plain.pixels, plain.controlPixels, tolerance),
+  };
+  for (const [arm, control] of Object.entries(controls)) {
+    assert.ok(control.differentPixels >= 1024, `${arm} known-bad control changed too few pixels`);
+    assert.ok(
+      control.differentPixels > tolerancePercentLimit,
+      `${arm} known-bad control did not exceed the A/B limit`
+    );
+  }
   const nativeCapturePath = process.env.MINIQUAD_NATIVE_CAPTURE_PATH;
   assert.ok(nativeCapturePath, "set MINIQUAD_NATIVE_CAPTURE_PATH to a Metal capture");
   const nativeCapture = await readFile(nativeCapturePath);
@@ -443,6 +480,9 @@ try {
     if ((pair + 1) % 5 === 0) console.error(`Completed ${pair + 1}/20 A/B pairs`);
   }
   assert.deepEqual(timingErrors, [], "a timing run raised a browser page error");
+  const timingEnvironment = await timingPage.evaluate(() => ({
+    crossOriginIsolated: window.crossOriginIsolated,
+  }));
   await timingPage.close();
 
   const deltas = abPairs.map((pair) => pair.deltaMs);
@@ -486,9 +526,17 @@ try {
     miniquad: await sourceLines("experiments/webgl2-comparison/rust/src/main.rs"),
     plain: await sourceLines("experiments/webgl2-comparison/plain.mjs"),
   };
+  const nativeArtifactPath = "target/release/webgl2-comparison";
+  const wasmArtifactPath = "target/wasm32-unknown-unknown/release/webgl2-comparison.wasm";
+  const nativeArtifact = await readFile(join(root, nativeArtifactPath));
+  const wasmArtifact = await readFile(join(root, wasmArtifactPath));
 
   console.log(JSON.stringify({
     sourceSha,
+    runStartedAt,
+    runCompletedAt: new Date().toISOString(),
+    host,
+    toolchain,
     browser: await browser.version(),
     webglVersion: miniquad.info.version,
     shadingLanguageVersion: miniquad.info.shadingLanguageVersion,
@@ -504,10 +552,33 @@ try {
     nativeCapture: {
       path: nativeCapturePath,
       graphicsApi: "Metal",
+      target: "aarch64-apple-darwin",
       pixelFormat: "RGBA8, normalized from BGRA storage; top-left rows",
       width: fixture.width,
       height: fixture.height,
+      sha256: createHash("sha256").update(nativeCapture).digest("hex"),
       validation: nativeValidation,
+    },
+    artifacts: {
+      buildFlags: ["--release"],
+      native: {
+        path: nativeArtifactPath,
+        target: "aarch64-apple-darwin",
+        sha256: createHash("sha256").update(nativeArtifact).digest("hex"),
+      },
+      wasm: {
+        path: wasmArtifactPath,
+        target: "wasm32-unknown-unknown",
+        sha256: createHash("sha256").update(wasmArtifact).digest("hex"),
+      },
+      commands: {
+        native: "CARGO_TARGET_DIR=target rustup run stable cargo build --release --manifest-path experiments/webgl2-comparison/rust/Cargo.toml",
+        wasm: "CARGO_TARGET_DIR=target rustup run stable cargo build --release --target wasm32-unknown-unknown --manifest-path experiments/webgl2-comparison/rust/Cargo.toml",
+      },
+    },
+    executionTargets: {
+      miniquad: "wasm32-unknown-unknown",
+      plain: "browser JavaScript",
     },
     crossApiDifference: {
       descriptiveOnly: true,
@@ -515,8 +586,11 @@ try {
       differentPixelPercent: (crossApiPixels.differentPixels / pixelCount) * 100,
     },
     controls: {
-      miniquad: miniquad.controlDiff,
-      plain: plain.controlDiff,
+      ...controls,
+    },
+    geometry: {
+      miniquad: miniquad.metadata,
+      plain: plain.metadata,
     },
     samples: {
       miniquad: miniquad.samples,
@@ -537,6 +611,7 @@ try {
       medianPairedDeltaMs: median(deltas),
       confidenceInterval95Ms: bootstrapMedianInterval(deltas, bootstrapSeed),
       perArm: timingSummary,
+      environment: timingEnvironment,
     },
     assets: assetTransfer,
     sourceLoc,

@@ -167,6 +167,19 @@ impl Mat4 {
         }
         Mat4(out)
     }
+
+    /// Transforms a point (implicit `w = 1`) and returns its clip-
+    /// space `(x, y, z, w)`, column-major convention. Used by
+    /// `examples/mixed.rs` to project the sprite centre into canvas
+    /// pixels for `vx_sprite_pixel`.
+    pub fn transform_point(&self, p: Vec3) -> (f32, f32, f32, f32) {
+        let m = &self.0;
+        let x = m[0] * p.x + m[4] * p.y + m[8] * p.z + m[12];
+        let y = m[1] * p.x + m[5] * p.y + m[9] * p.z + m[13];
+        let z = m[2] * p.x + m[6] * p.y + m[10] * p.z + m[14];
+        let w = m[3] * p.x + m[7] * p.y + m[11] * p.z + m[15];
+        (x, y, z, w)
+    }
 }
 
 #[cfg(test)]

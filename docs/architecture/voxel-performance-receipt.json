@@ -1,0 +1,78 @@
+{
+  "sourceSha": "cefa64d108693b3dbed81914462db7cfb3a3c350",
+  "result": "Measurement test passed; performance conclusion is inconclusive.",
+  "commands": [
+    "rustup run stable cargo build --release --bin vx-server --manifest-path companions/voxel/Cargo.toml",
+    "rustup run stable cargo build --release --target wasm32-unknown-unknown --example offline --manifest-path companions/voxel/Cargo.toml",
+    "rustup run stable cargo build --release --target wasm32-unknown-unknown --example mixed --manifest-path companions/voxel/Cargo.toml",
+    "MINIQUAD_HEADFUL=1 MINIQUAD_BROWSER=chromium MINIQUAD_MEASURE_VOXEL=1 npx playwright test --config=tests/browser/voxel-mixed.playwright.config.mjs --grep \"issue #29 measurement receipt\""
+  ],
+  "environment": {
+    "os": "macOS 26.7.1, arm64",
+    "device": "MacBook Pro, Apple M3 Pro",
+    "browser": "Chromium 141.0.7390.37",
+    "renderer": "SwiftShader software WebGL",
+    "rustc": "1.99.1",
+    "node": "v26.10.0",
+    "viewport": "800x500 CSS pixels",
+    "deviceScaleFactor": 1
+  },
+  "workload": {
+    "pairs": 10,
+    "order": "Alternating offline-mixed and mixed-offline",
+    "warmupFrames": 60,
+    "measuredFrames": 120,
+    "scene": "Frozen terrain and sprite; HUD excluded from image comparison"
+  },
+  "assets": {
+    "offline": {
+      "wasmGzipBytes": 69416,
+      "javascriptGzipBytes": 33590,
+      "wasmAndJavascriptGzipBytes": 103006
+    },
+    "mixed": {
+      "wasmGzipBytes": 86605,
+      "javascriptGzipBytes": 33590,
+      "wasmAndJavascriptGzipBytes": 120195
+    }
+  },
+  "measurements": {
+    "offline": {
+      "firstFrameMs": { "median": 129.598, "min": 12.5, "max": 184.032 },
+      "frameIntervalP95Ms": { "median": 50.1, "min": 17.6, "max": 258.6 },
+      "frameIntervalP99Ms": { "median": 99.9, "min": 33, "max": 345.4 },
+      "wasmMemoryBytes": 2097152,
+      "jsHeapPeakBytes": { "median": 5349585, "min": 5338665, "max": 5382241 },
+      "jsHeapSteadyBytes": { "median": 5339341, "min": 5297749, "max": 5369889 },
+      "requestBodyBytes": 0,
+      "responseBodyBytes": 0,
+      "serverRssBytes": null
+    },
+    "mixed": {
+      "firstFrameMs": { "median": 98.4, "min": 68.9, "max": 441.386 },
+      "frameIntervalP95Ms": { "median": 50.7, "min": 17.7, "max": 245.6 },
+      "frameIntervalP99Ms": { "median": 115.7, "min": 33.6, "max": 283.6 },
+      "wasmMemoryBytes": 1966080,
+      "jsHeapPeakBytes": { "median": 5975125, "min": 5907033, "max": 6853677 },
+      "jsHeapSteadyBytes": { "median": 5915633, "min": 5844889, "max": 6338457 },
+      "requestBodyBytes": { "median": 1038, "min": 856, "max": 3144 },
+      "responseBodyBytes": { "median": 2674, "min": 2434, "max": 5104 },
+      "serverRssBytes": { "median": 1441792, "min": 1310720, "max": 1540096 }
+    }
+  },
+  "parity": {
+    "result": "passed",
+    "pairs": 10,
+    "maxDifferingPixels": 146,
+    "pixelsPerImage": 400000,
+    "maxDifferingFraction": 0.000365,
+    "maximumAllowedFraction": 0.005
+  },
+  "limits": [
+    "Frame timing uses SwiftShader and does not qualify Apple M3 Pro GPU performance.",
+    "CPU time, GPU time, GPU memory, and input-to-visible latency were unavailable.",
+    "Gzip sizes compress each file separately; the fixture does not gzip HTTP responses.",
+    "Network counts are body bytes and exclude HTTP headers. The test uses local loopback, not a representative network.",
+    "Frame-interval and first-frame spreads are large. No speed gain is established."
+  ]
+}

@@ -53,13 +53,35 @@ Capture source SHA, browser version, device, build flags, compressed WASM+JS byt
 
 Before selecting an external meshing crate, record its license, version, maintenance status, feature/dependency impact, target support and measured correctness. Do not add a game engine to the core crate. Do not mark issue #29 complete until both vertical slices and executable browser scenarios have been tested with source-linked receipts.
 
+## Revision 1: mixed-mode transport (2026-11-11)
+
+The offline slice exists in `companions/voxel/` (PR #125). This revision selects the mode B prototype before code. The [voxel protocol](../architecture/voxel-protocol.md) is the interface contract.
+
+| Option | Result |
+| --- | --- |
+| WebSocket | Rejected for v1. It needs a handshake, framing, masking, and ping rules. No approved dependency supplies this. Do not write a general WebSocket server. |
+| HTTP snapshot polling, Rust `std` server | **Selected.** One request at a time, `Connection: close`, strict bounded parser, binary frames. |
+| Node gateway to a Rust child | Accepted only as a same-origin test forwarder. It copies bytes and has no simulation. |
+| Streamed video (option C) | Deferred. No client-GPU limit justifies it. |
+
+Decisions:
+
+1. A shared pure Rust `Sim` (world, speed, revision) and `protocol` codec run in the native server and in browser WASM. Offline mode applies the same `Command` values locally.
+2. The server binary uses only `std`. `miniquad` becomes a dev-dependency of the companion, so the library and server have zero dependencies. Lyon and `block-mesh` are permitted only in benchmarks, not at runtime.
+3. Core ABI v3 does not change. The mixed client uses optional application exports with fixed-size staging buffers. No export holds a pointer to `Stage`.
+4. Server mode never falls back to local generation. If the server is not available, the client shows the status and keeps the last snapshot read-only.
+5. The scene draws a bounded seven-segment HUD in the frame. Semantic HTML controls stay in the embedding host.
+6. GPU release is explicit: an `AtomicBool` request, one release in the next `draw`, and `resources_live = 0` before the host disposes the frame.
+7. The server is a local loopback prototype. It is not an Internet service. It has no TLS, authentication, or access control claims.
+
+Review perspectives: the SME selected polling because one in-flight request removes reordering. The adversary required body, header, and time limits, duplicate replay, and no silent fallback. The advisor removed WebSocket, TLS, a scene graph, and physics. The judge accepts this design as **Proposed** until the browser and server evidence passes.
+
 ## Open questions
 
-- Which transparent-face and lighting rules are required for the initial slice?
+- Which transparent-face and lighting rules are required after the first slice?
 - What are the measured maximum acceptable chunk sizes on target devices?
-- Which transport produces the simplest bounded protocol behavior for B?
-- Can the same visible output be maintained with both execution modes?
+- Does polling latency meet the input-to-visible target? Measure before a WebSocket review.
 
 ## Evidence status
 
-No implementation, benchmark, browser run or accepted dependency selection is represented by this MADR. The decision remains proposed and issue #29 remains open.
+The offline slice has unit and browser evidence in PR #125. Mode B has no implementation or measurement. The decision remains proposed and issue #29 remains open.

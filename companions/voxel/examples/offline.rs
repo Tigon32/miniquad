@@ -42,20 +42,19 @@ use miniquad_voxel::camera::OrbitCamera;
 use miniquad_voxel::chunk::ChunkDims;
 use miniquad_voxel::math::{Mat4, Vec3};
 use miniquad_voxel::mesh::{build_chunk_mesh, MeshBuffers, Vertex as VoxelVertex};
+use miniquad_voxel::sim::SCENE_SEED;
 use miniquad_voxel::terrain::{generate_chunk, PALETTE};
 use miniquad_voxel::world::{ChunkCoord, World};
 use std::sync::atomic::{AtomicU32, Ordering};
 
+#[path = "support/scene.rs"]
+mod scene;
+
 /// Version of the optional app-parameters surface.
 const PARAMS_VERSION: u32 = 1;
 
-/// Deterministic world seed, so the offline scene is reproducible
-/// across runs (and matches the fixed-seed test expectation in MADR
-/// 0008's vertical-slice acceptance section).
-const WORLD_SEED: u32 = 20261111;
-
 const DEFAULT_SPEED_BITS: u32 = 0x3F80_0000; // f32::to_bits(1.0)
-const DEFAULT_SPRITE_RGBA8: u32 = 0xFF3050FF; // opaque warm red
+const DEFAULT_SPRITE_RGBA8: u32 = 0x3075_C8FF; // opaque blue
 const DEFAULT_BACKGROUND_RGBA8: u32 = 0x10_18_24_FF; // opaque near-black blue
 
 static SPEED_BITS: AtomicU32 = AtomicU32::new(DEFAULT_SPEED_BITS);
@@ -129,6 +128,7 @@ const CHUNK_COORDS: [ChunkCoord; 2] = [ChunkCoord::new(-1, 0, 0), ChunkCoord::ne
 struct Stage {
     ctx: Box<dyn RenderingBackend>,
 
+    world: World,
     terrain_pipeline: Pipeline,
     terrain_bindings: Bindings,
     terrain_index_count: i32,
@@ -153,14 +153,14 @@ impl Stage {
             .expect("fixed demo world configuration is valid");
         let [coord_a, coord_b] = CHUNK_COORDS;
         let chunk_a = generate_chunk(
-            WORLD_SEED,
+            SCENE_SEED,
             CHUNK_DIMS,
             coord_a.x * CHUNK_DIMS.x as i32,
             coord_a.z * CHUNK_DIMS.z as i32,
         )
         .expect("fixed demo chunk dimensions are within bounds");
         let chunk_b = generate_chunk(
-            WORLD_SEED,
+            SCENE_SEED,
             CHUNK_DIMS,
             coord_b.x * CHUNK_DIMS.x as i32,
             coord_b.z * CHUNK_DIMS.z as i32,
@@ -304,6 +304,7 @@ impl Stage {
         let world_center_z = (CHUNK_DIMS.z as f32) * 0.5;
         Stage {
             ctx,
+            world,
             terrain_pipeline,
             terrain_bindings,
             terrain_index_count,
@@ -317,7 +318,7 @@ impl Stage {
             ),
             dragging: false,
             last_mouse: (0.0, 0.0),
-            screen_size: (800.0, 600.0),
+            screen_size: (800.0, 500.0),
             start_time: date::now(),
         }
     }
@@ -338,6 +339,15 @@ fn append_mesh(dst: &mut MeshBuffers, src: &MeshBuffers, x_offset: f32) {
     }
     dst.indices.reserve(src.indices.len());
     dst.indices.extend(src.indices.iter().map(|i| i + base));
+}
+
+fn column_height(world: &World, x: i32, z: i32) -> i32 {
+    for y in (0..CHUNK_DIMS.y as i32).rev() {
+        if world.is_solid(CHUNK_COORDS[0], x, y, z) {
+            return y;
+        }
+    }
+    -1
 }
 
 const ARROW_KEY_STEP: f32 = 0.03;
@@ -414,14 +424,9 @@ impl EventHandler for Stage {
         // (vertical bob) composed with a slow circling motion so both
         // an "animated height" and a "moving sprite" are demonstrated
         // by the same object, per the issue #29 adoption sequence.
-        let world_center_x = CHUNK_DIMS.x as f32;
-        let world_center_z = (CHUNK_DIMS.z as f32) * 0.5;
-        let radius = 3.0;
-        let sprite_pos = Vec3::new(
-            world_center_x + (t as f32).cos() * radius,
-            (CHUNK_DIMS.y as f32) * 0.35 + (t as f32 * 1.7).sin() * 0.6,
-            world_center_z + (t as f32).sin() * radius,
-        );
+        let sprite_pos = scene::sprite_position(t as f32, CHUNK_DIMS, |x, z| {
+            column_height(&self.world, x, z)
+        });
         let model = Mat4([
             1.0,
             0.0,
@@ -457,6 +462,9 @@ impl EventHandler for Stage {
 fn main() {
     let conf = conf::Conf {
         window_title: "miniquad-voxel offline".to_owned(),
+        window_width: 800,
+        window_height: 500,
+        high_dpi: true,
         ..Default::default()
     };
     miniquad::start(conf, move || Box::new(Stage::new()));

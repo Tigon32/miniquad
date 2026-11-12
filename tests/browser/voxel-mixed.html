@@ -1,0 +1,141 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="data:,">
+  <title>Mixed-mode voxel test fixture</title>
+</head>
+<body>
+  <!--
+    Test fixture for issue #29's mixed (mode B) vertical slice. This
+    page is served only by this crate's own owned Playwright spec
+    (tests/browser/voxel-mixed.spec.mjs) via a bounded, ephemeral
+    in-process HTTP server; it is not wired into
+    tests/browser/serve.mjs (core/server fixture, parent-owned). See
+    that spec's header comment for the exact route map a parent
+    integration needs to serve this fixture from the shared server.
+
+    DOM layout follows the corrected HUD/UI contract's host
+    requirements: a status live region (state/revision only, coalesced
+    to at most 1 update/sec by the host poller itself, not by this
+    markup), a labeled sprite-speed range input, Add/Remove block
+    buttons, and a server-only Reconnect button. The in-canvas
+    seven-segment HUD itself is drawn by the WASM example, not by any
+    DOM element here.
+  -->
+  <div id="scene" style="width: 800px; height: 500px"></div>
+  <div id="status" role="status" aria-live="polite"></div>
+  <div id="revision" aria-live="polite">no snapshot yet</div>
+  <label>
+    Sprite speed
+    <input id="speed" type="range" min="0" max="2" step="0.1" value="1">
+  </label>
+  <button id="add-block" type="button">Add block</button>
+  <button id="remove-block" type="button">Remove block</button>
+  <button id="reconnect" type="button">Reconnect now</button>
+  <div id="discarded-count" aria-hidden="true">0</div>
+  <script type="module">
+    // Wires this fixture's DOM controls to a mounted mixed-example
+    // app's `vx_*` staging exports, per the HUD/UI contract: the
+    // speed slider drives both `app.setParameters({speed})` (a purely
+    // local visual control) and a native `SetSpeed` command queued for
+    // the server; Add/Remove act on the documented x=8,z=4 column;
+    // Reconnect only resets the host poller's backoff. Exposed as
+    // `window.wireVoxelMixedHost` so the owning spec controls exactly
+    // when wiring starts (after `app.ready`), rather than racing it.
+    import { createVoxelNetClient, VoxelNetStatus } from "/voxel-host.mjs";
+    import { formatHostRevision } from "/voxel-revision.mjs";
+
+    const statusText = {
+      [VoxelNetStatus.CONNECTING]: "Connecting to the server.",
+      [VoxelNetStatus.ONLINE]: "Connected.",
+      [VoxelNetStatus.OFFLINE]: "Server is not available. Changes are not saved.",
+      [VoxelNetStatus.VERSION_ERROR]: "The server protocol version is not supported. No retry.",
+    };
+
+    window.wireVoxelMixedHost = function wireVoxelMixedHost(app, syncUrl) {
+      const win = app.frame.contentWindow;
+      const exports = () => win.miniquadRuntime.exports;
+      const memory = () => win.wasm_memory;
+
+      // Full, uncapped host revision text (distinct from the drawn
+      // HUD's six-digit cell, which caps display at `rEEEEEE` for
+      // rev >= 1_000_000): read after every status change and after
+      // every applied frame, since `vx_world_rev()`/`vx_has_snapshot()`
+      // only change as a side effect of `vx_net_in_commit`.
+      function refreshRevisionText() {
+        const el = document.querySelector("#revision");
+        if (!el) return;
+        const hasSnapshot = exports().vx_has_snapshot() !== 0;
+        const rawRev = exports().vx_world_rev();
+        el.textContent = formatHostRevision(hasSnapshot, rawRev);
+      }
+
+      function buildRequest() {
+        const len = exports().vx_net_build_request();
+        if (len === 0) return null;
+        const ptr = exports().vx_net_out_ptr();
+        return new Uint8Array(memory().buffer, ptr, len).slice();
+      }
+      // Wire protocol `Kind` byte values (see
+      // `companions/voxel/src/protocol.rs`'s `Kind::to_byte`/
+      // `ErrorCode`): not re-exported as JS constants, so named here
+      // for the one decision `onFrame` needs to make.
+      const FRAME_KIND_ERROR = 18;
+      const ERROR_CODE_VERSION = 1;
+
+      function onFrame(frame) {
+        const ptr = exports().vx_net_in_ptr();
+        new Uint8Array(memory().buffer, ptr, frame.length).set(frame);
+        const result = exports().vx_net_in_commit(frame.length);
+        if (result === 0) {
+          // A frame was actually decoded and answered by the server:
+          // tell the poller so, or it never reports anything but
+          // "connecting" on the success path (`reportOnline`/
+          // `reportVersionError` are never called from anywhere
+          // else), leaving `NET_STATUS_SET` false forever and
+          // `Stage::update`'s offline branch applying every queued
+          // input locally instead of over the wire.
+          const kind = exports().vx_net_last_frame_kind();
+          if (kind === FRAME_KIND_ERROR && exports().vx_net_last_error_code() === ERROR_CODE_VERSION) {
+            client.reportVersionError();
+          } else {
+            client.reportOnline();
+          }
+        }
+        refreshRevisionText();
+      }
+      function onStatus(status) {
+        const codes = { connecting: 0, online: 1, offline: 2, "version-error": 3 };
+        exports().vx_net_set_status(codes[status]);
+        const el = document.querySelector("#status");
+        if (el) el.textContent = statusText[status] ?? status;
+        refreshRevisionText();
+      }
+
+
+      const client = createVoxelNetClient({ url: syncUrl, buildRequest, onFrame, onStatus });
+
+      document.querySelector("#speed").addEventListener("input", (event) => {
+        const value = Number(event.target.value);
+        app.setParameters({ speed: value });
+        exports().vx_input(2, 0, Math.round(value * 1000), 0, 0);
+      });
+      document.querySelector("#add-block").addEventListener("click", () => {
+        const topY = exports().vx_column_height(8, 4);
+        exports().vx_input(1, 1, 8, topY + 1, 4);
+      });
+      document.querySelector("#remove-block").addEventListener("click", () => {
+        const topY = exports().vx_column_height(8, 4);
+        if (topY >= 0) exports().vx_input(1, 0, 8, topY, 4);
+      });
+      document.querySelector("#reconnect").addEventListener("click", () => {
+        client.reconnectNow();
+      });
+
+      return client;
+    };
+  </script>
+</body>
+</html>

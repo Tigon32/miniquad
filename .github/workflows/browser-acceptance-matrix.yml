@@ -59,6 +59,17 @@ jobs:
           node scripts/create-browser-project.mjs "$RUNNER_TEMP/miniquad-browser-starter" --source path --miniquad-path "$GITHUB_WORKSPACE" --name miniquad-browser-starter
           node "$RUNNER_TEMP/miniquad-browser-starter/scripts/build.mjs"
           echo "MINIQUAD_STARTER_PATH=$RUNNER_TEMP/miniquad-browser-starter" >> "$GITHUB_ENV"
+      - name: Build the private mixed-voxel fixture (#29)
+        # The native vx-server binary and the three mixed WASM builds
+        # (default WebGL1, an explicit --target-dir WebGL1 copy, and a
+        # separate webgl2-feature WebGL2 build) are needed by
+        # tests/browser/voxel-mixed.playwright.config.mjs below; root
+        # CI does not build them (see that file's header comment).
+        run: |
+          cargo build --release --bin vx-server --manifest-path companions/voxel/Cargo.toml
+          cargo build --release --target wasm32-unknown-unknown --example mixed --manifest-path companions/voxel/Cargo.toml
+          cargo build --release --target wasm32-unknown-unknown --example mixed --manifest-path companions/voxel/Cargo.toml --target-dir companions/voxel/target-gl1
+          cargo build --release --target wasm32-unknown-unknown --example mixed --manifest-path companions/voxel/Cargo.toml --features webgl2 --target-dir companions/voxel/target-gl2
       - name: Install pinned Playwright browser engines and host dependencies
         run: npx playwright install --with-deps chromium firefox webkit
       - name: Build a Git-pinned generated drawing consumer
@@ -76,6 +87,13 @@ jobs:
           MINIQUAD_BROWSER=chromium npx playwright test --config experiments/draw-starter-consumption/playwright.config.mjs || status=1
           xvfb-run -a env MINIQUAD_HEADFUL=1 MINIQUAD_BROWSER=firefox npx playwright test --config experiments/draw-starter-consumption/playwright.config.mjs || status=1
           xvfb-run -a env MINIQUAD_HEADFUL=1 MINIQUAD_BROWSER=webkit npx playwright test --config experiments/draw-starter-consumption/playwright.config.mjs || status=1
+          exit "$status"
+      - name: Run the private mixed-voxel fixture in three engines (#29)
+        run: |
+          status=0
+          MINIQUAD_BROWSER=chromium npx playwright test --config=tests/browser/voxel-mixed.playwright.config.mjs || status=1
+          xvfb-run -a env MINIQUAD_HEADFUL=1 MINIQUAD_BROWSER=firefox npx playwright test --config=tests/browser/voxel-mixed.playwright.config.mjs || status=1
+          xvfb-run -a env MINIQUAD_HEADFUL=1 MINIQUAD_BROWSER=webkit npx playwright test --config=tests/browser/voxel-mixed.playwright.config.mjs || status=1
           exit "$status"
       - name: Store traces when an engine fails
         if: ${{ failure() && !env.ACT }}

@@ -1,4 +1,6 @@
 /target
+/target-gl1
+/target-gl2
 /target-webgl1
 /target-webgl2
 /target-cubic

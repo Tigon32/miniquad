@@ -89,6 +89,19 @@ jobs:
           cargo fmt --manifest-path companions/voxel/Cargo.toml -- --check
           cargo build --release --target wasm32-unknown-unknown --manifest-path companions/voxel/Cargo.toml --example offline
           cargo run --manifest-path tests/hex-picker-consumer/Cargo.toml
+      - name: Build the private mixed-voxel fixture (#29)
+        # The native vx-server binary and the three mixed WASM builds
+        # (default WebGL1, an explicit --target-dir WebGL1 copy, and a
+        # separate webgl2-feature WebGL2 build) are not needed by any
+        # other step; tests/browser/voxel-mixed.playwright.config.mjs
+        # serves them and is invoked explicitly below (see that file's
+        # header comment: root's playwright.config.mjs intentionally
+        # does not discover *.privatefixture.mjs).
+        run: |
+          cargo build --release --bin vx-server --manifest-path companions/voxel/Cargo.toml
+          cargo build --release --target wasm32-unknown-unknown --example mixed --manifest-path companions/voxel/Cargo.toml
+          cargo build --release --target wasm32-unknown-unknown --example mixed --manifest-path companions/voxel/Cargo.toml --target-dir companions/voxel/target-gl1
+          cargo build --release --target wasm32-unknown-unknown --example mixed --manifest-path companions/voxel/Cargo.toml --features webgl2 --target-dir companions/voxel/target-gl2
           cargo build --target wasm32-unknown-unknown --manifest-path tests/hex-picker-consumer/Cargo.toml
           node scripts/create-browser-project.mjs "$RUNNER_TEMP/miniquad-browser-starter" --source path --miniquad-path "$GITHUB_WORKSPACE" --name miniquad-browser-starter
           node "$RUNNER_TEMP/miniquad-browser-starter/scripts/build.mjs"
@@ -174,6 +187,13 @@ jobs:
           else
             MINIQUAD_BROWSER=chromium npx playwright test --config experiments/draw-starter-consumption/playwright.config.mjs
           fi
+      - name: Run the private mixed-voxel fixture (#29)
+        # tests/browser/voxel-mixed.playwright.config.mjs serves the
+        # real vx-server + mixed WASM artifacts built above; this is
+        # the Chromium-only PR lane, matching the smoke-test step above.
+        # The workflow_dispatch (manual, all-engine) run is covered by
+        # browser-acceptance-matrix.yml instead, not here.
+        run: MINIQUAD_BROWSER=chromium npx playwright test --config=tests/browser/voxel-mixed.playwright.config.mjs
       - name: Store revision-specific size and timing baseline receipts
         if: ${{ always() && !env.ACT }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

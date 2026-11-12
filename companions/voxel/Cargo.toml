@@ -13,12 +13,20 @@ for Miniquad. Not part of the Miniquad core crate. See docs/offline-voxel.md.
 """
 publish = false
 
+# The library target (sim, protocol, chunk/world/mesh/terrain/camera/math)
+# depends on nothing but `std`. `miniquad` is a dev-dependency only: the
+# `offline` and `mixed` examples are the sole consumers of
+# `miniquad::RenderingBackend`. This keeps `vx-server` (a `[[bin]]`) and
+# a plain `cargo build --lib` free of any GPU/windowing dependency.
 [dependencies]
+
+[dev-dependencies]
 miniquad = { path = "../../" }
 
 [features]
-# Request a WebGL2 context for offline_hex instead of the WebGL1 default.
-# No dependency change: this only toggles conf.platform.webgl_version.
+# Selects WebGL2 in the `mixed` and `offline` examples. Defaults stay on
+# WebGL1 (GLSL 100 shaders are shared; see docs/architecture/voxel-protocol.md,
+# "Rendering and GPU resources").
 webgl2 = []
 # Build offline with the hex example's cell dimensions for issue #131
 # measurement. The default cubic example stays unchanged.
@@ -31,3 +39,11 @@ path = "examples/offline.rs"
 [[example]]
 name = "offline_hex"
 path = "examples/offline_hex.rs"
+
+[[example]]
+name = "mixed"
+path = "examples/mixed.rs"
+
+[[bin]]
+name = "vx-server"
+path = "src/bin/vx_server.rs"

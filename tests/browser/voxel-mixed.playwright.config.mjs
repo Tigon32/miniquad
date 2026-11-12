@@ -47,7 +47,7 @@ export default defineConfig({
   // upload test-results/ on failure also capture this fixture's
   // traces/screenshots without a new, separately-owned artifact step.
   outputDir: "../../test-results/voxel-mixed",
-  timeout: 45000,
+  timeout: process.env.MINIQUAD_MEASURE_VOXEL === "1" ? 300_000 : 45000,
   expect: { timeout: 20000 },
   retries: 0,
   workers: 1,

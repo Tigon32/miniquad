@@ -47,7 +47,9 @@ use miniquad_voxel::hud::{self, Geometry, Mode, Revision, Status};
 use miniquad_voxel::math::{Mat4, Vec3};
 use miniquad_voxel::mesh::{build_chunk_mesh, MeshBuffers, Vertex as VoxelVertex};
 use miniquad_voxel::protocol;
-use miniquad_voxel::sim::{Command, Sim, SCENE_CHUNK_COORDS, SCENE_CHUNK_DIMS};
+use miniquad_voxel::sim::{
+    scene_sprite_position, Command, Sim, SCENE_CHUNK_COORDS, SCENE_CHUNK_DIMS,
+};
 use miniquad_voxel::terrain::PALETTE;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, AtomicU8, Ordering};
 use std::sync::Mutex;
@@ -1042,40 +1044,9 @@ impl EventHandler for Stage {
 
         let speed = f32::from_bits(SPEED_BITS.load(Ordering::Relaxed));
         let t = (date::now() - self.start_time) * speed as f64;
-        let world_center_x = SCENE_CHUNK_DIMS.x as f32;
-        let world_center_z = (SCENE_CHUNK_DIMS.z as f32) * 0.5;
-        // At the test suite's frozen `speed: 0`, `t` is always 0, so
-        // `angle` below is always `PHASE_OFFSET`. `radius`/`PHASE_OFFSET`
-        // are chosen (not just `radius` alone) so the frozen sprite
-        // lands near world column (2, 6): this scene's fixed seed
-        // gives that column a low natural height
-        // (`vx_column_height(2, 6)` == 5, confirmed empirically) with
-        // open sky along the real camera-to-sprite ray (verified by
-        // ray-marching the exact `OrbitCamera` eye/target geometry),
-        // so the sprite is visible by default, while column (3, 6)
-        // raised to full height sits squarely on that same ray and
-        // blocks it (see the private occlusion test).
-        const PHASE_OFFSET: f32 = 2.758_065_1;
-        let radius = 6.146_543_7;
-        let angle = t as f32 + PHASE_OFFSET;
-        let sprite_x = world_center_x + angle.cos() * radius;
-        let sprite_z = world_center_z + angle.sin() * radius;
-        // Floats a fixed margin above the real terrain surface at the
-        // sprite's own (rounded) column, so the sprite is never
-        // embedded inside solid ground: `terrain::generate_chunk` can
-        // make any column solid all the way up to `SCENE_CHUNK_DIMS.y
-        // - 1`, and before the `src/graphics/gl.rs` depth-test fix
-        // this embedding was invisible (the sprite drew through
-        // everything regardless of real depth), masking the bug.
-        // `vx_column_height` returns `-1` for an empty column, so the
-        // margin still floats the sprite just above bedrock there.
-        const SPRITE_HEIGHT_MARGIN: f32 = 1.5;
-        let ground_y = vx_column_height(sprite_x.round() as i32, sprite_z.round() as i32) as f32;
-        let sprite_pos = Vec3::new(
-            sprite_x,
-            ground_y + SPRITE_HEIGHT_MARGIN + (t as f32 * 1.7).sin() * 0.6,
-            sprite_z,
-        );
+        // The offline and mixed examples use the same path and
+        // terrain-relative height so their rendered scenes stay equal.
+        let sprite_pos = scene_sprite_position(t as f32, |x, z| vx_column_height(x, z));
         let model = Mat4([
             1.0,
             0.0,
@@ -1300,6 +1271,8 @@ fn push_glyph_segments(
 fn main() {
     let conf = conf::Conf {
         window_title: "miniquad-voxel mixed".to_owned(),
+        window_width: 800,
+        window_height: 500,
         // `Conf::default()`'s `high_dpi` is `false` (CSS-pixel-sized
         // framebuffer, stretched by the browser on a Retina/high-DPR
         // display): the HUD spec's "draw in physical pixels" and this

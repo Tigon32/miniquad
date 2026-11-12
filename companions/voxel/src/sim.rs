@@ -9,6 +9,7 @@
 //! [`Sim::state_hash`] for semantic parity.
 
 use crate::chunk::{Chunk, ChunkDims, AIR};
+use crate::math::Vec3;
 use crate::terrain;
 use crate::world::{ChunkCoord, World, WorldError};
 
@@ -22,11 +23,35 @@ pub const SCENE_CHUNK_DIMS: ChunkDims = ChunkDims::new(8, 12, 8);
 pub const SCENE_CHUNK_COORDS: [ChunkCoord; 2] =
     [ChunkCoord::new(0, 0, 0), ChunkCoord::new(1, 0, 0)];
 
+/// Horizontal radius of the shared demo sprite path, in voxel units.
+pub const SCENE_SPRITE_RADIUS: f32 = 6.146_543_7;
+
+/// Starting angle of the shared demo sprite path, in radians.
+pub const SCENE_SPRITE_PHASE_OFFSET: f32 = 2.758_065_1;
+
+/// Vertical distance between the sprite and the top of its terrain column.
+pub const SCENE_SPRITE_HEIGHT_MARGIN: f32 = 1.5;
+
 /// The maximum number of resident chunks the shared scene allows.
 pub const MAX_RESIDENT_CHUNKS: usize = 4;
 
 /// The largest permitted `SetSpeed` value, in milli-units (2.000x).
 pub const MAX_SPEED_MILLI: u16 = 2000;
+
+/// Returns the shared demo sprite position at time `t`, using the
+/// terrain height at the sprite's current column.
+pub fn scene_sprite_position(t: f32, mut column_height: impl FnMut(i32, i32) -> i32) -> Vec3 {
+    let angle = t + SCENE_SPRITE_PHASE_OFFSET;
+    let x = SCENE_CHUNK_DIMS.x as f32 + angle.cos() * SCENE_SPRITE_RADIUS;
+    let z = SCENE_CHUNK_DIMS.z as f32 * 0.5 + angle.sin() * SCENE_SPRITE_RADIUS;
+    Vec3::new(
+        x,
+        column_height(x.round() as i32, z.round() as i32) as f32
+            + SCENE_SPRITE_HEIGHT_MARGIN
+            + (t * 1.7).sin() * 0.6,
+        z,
+    )
+}
 
 /// A command accepted by [`Sim::apply`]. 8 bytes on the wire; see
 /// [`crate::protocol`] for the encoded record layout.
@@ -300,6 +325,16 @@ fn resolve_scene_voxel(x: i16, y: i16, z: i16) -> Option<(ChunkCoord, (u32, u32,
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_sprite_position_uses_the_same_terrain_relative_column() {
+        let position = scene_sprite_position(0.0, |x, z| {
+            assert_eq!((x, z), (2, 6));
+            5
+        });
+
+        assert!((position.y - 6.5).abs() < f32::EPSILON);
+    }
 
     #[test]
     fn new_scene_has_two_resident_chunks_and_rev_zero() {

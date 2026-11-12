@@ -366,9 +366,19 @@ async function verifyArm(context, arm) {
     "base64"
   );
   assert.equal(pixels.length, pixelCount * 4);
+  let nonBackgroundPixels = 0;
   for (let offset = 3; offset < pixels.length; offset += 4) {
     assert.equal(pixels[offset], 255, `${arm} output alpha must be opaque`);
+    const colorOffset = offset - 3;
+    if (
+      pixels[colorOffset] !== fixture.background[0] ||
+      pixels[colorOffset + 1] !== fixture.background[1] ||
+      pixels[colorOffset + 2] !== fixture.background[2]
+    ) {
+      nonBackgroundPixels += 1;
+    }
   }
+  assert.ok(nonBackgroundPixels > 0, `${arm} output is empty`);
 
   const controlPixels = Buffer.from(
     await page.evaluate(() => window.__comparisonKnownBad()),
@@ -381,6 +391,7 @@ async function verifyArm(context, arm) {
     metadata,
     maxSameArmDifference,
     pixels,
+    nonBackgroundPixels,
     samples,
     absentSamples,
     controlPixels,
@@ -587,6 +598,10 @@ try {
     },
     controls: {
       ...controls,
+    },
+    nonBackgroundPixels: {
+      miniquadWasm: miniquad.nonBackgroundPixels,
+      plain: plain.nonBackgroundPixels,
     },
     geometry: {
       miniquad: miniquad.metadata,

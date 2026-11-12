@@ -1,0 +1,409 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>2D hex board</title>
+  <style>
+    /* docs/hex-2d-contract.md section 3.6: layout, focus-visible outline,
+       and the responsive breakpoint at 600px (two columns) and the
+       no-horizontal-scroll requirement down to 320px. */
+    html, body {
+      margin: 0;
+      padding: 16px;
+      background: Canvas;
+      color: CanvasText;
+      font: 16px/1.4 system-ui, sans-serif;
+      box-sizing: border-box;
+    }
+    * { box-sizing: border-box; }
+    :focus-visible {
+      outline: 3px solid currentColor;
+      outline-offset: 2px;
+    }
+    .layout {
+      display: flex;
+      flex-direction: column;
+      gap: 16px;
+      max-width: 100%;
+    }
+    @media (min-width: 600px) {
+      .layout { flex-direction: row; align-items: flex-start; }
+      .controls { flex: 0 0 auto; width: 260px; }
+      .scene-wrap { flex: 1 1 auto; }
+    }
+    fieldset { margin: 0 0 12px; }
+    #scene {
+      aspect-ratio: 1;
+      /* `100vw - 32px` ignored the controls column's own width and the
+         row gap in the >=600px layout, so a viewport between ~600px and
+         ~788px (32px padding + 260px controls + 16px gap + 480px scene)
+         overflowed and scrolled horizontally. `scene-wrap` is already
+         sized correctly by the flex layout above (the remaining space
+         next to the fixed-width controls column, or the full column
+         width below 600px), so a size relative to it fits every width,
+         including the no-scroll requirement at 320px. */
+      width: min(480px, 100%);
+      background: #222;
+    }
+    #hex-status {
+      white-space: pre-line;
+      font-family: ui-monospace, monospace;
+    }
+  </style>
+</head>
+<body>
+  <h1>2D hex board</h1>
+  <div class="layout">
+    <div class="controls">
+      <fieldset>
+        <legend>Orientation</legend>
+        <label><input type="radio" name="orientation" value="0" checked> Flat-top</label>
+        <label><input type="radio" name="orientation" value="1"> Pointy-top</label>
+      </fieldset>
+      <fieldset>
+        <legend>Select a cell</legend>
+        <label>q <input type="number" id="select-q" min="-3" max="3" step="1" value="0"></label>
+        <label>r <input type="number" id="select-r" min="-3" max="3" step="1" value="0"></label>
+        <button type="button" id="select-cell">Select cell</button>
+        <button type="button" id="clear-selection">Clear selection</button>
+      </fieldset>
+      <button type="button" id="release-scene">Release scene</button>
+    </div>
+    <div class="scene-wrap">
+      <div id="scene" aria-hidden="true" tabindex="-1"></div>
+      <p id="hex-status" role="status" aria-live="polite">Scene: starting
+Orientation: flat-top
+Selected: none
+Last input: none</p>
+    </div>
+  </div>
+  <script type="module">
+    import { mount } from "/js/miniquad.mjs";
+    import { createHostPreferences } from "/js/host-preferences.mjs";
+
+    const WEBGL2 = new URLSearchParams(location.search).get("webgl") === "2";
+    const wasmURL = WEBGL2 ? "/hex_board_webgl2.wasm" : "/hex_board_webgl1.wasm";
+
+    const scene = document.querySelector("#scene");
+    const status = document.querySelector("#hex-status");
+    const orientationInputs = document.querySelectorAll('input[name="orientation"]');
+    const selectQ = document.querySelector("#select-q");
+    const selectR = document.querySelector("#select-r");
+    const selectButton = document.querySelector("#select-cell");
+    const clearButton = document.querySelector("#clear-selection");
+    const releaseButton = document.querySelector("#release-scene");
+
+    let sceneState = "starting";
+    let orientation = 0;
+    let selected = null;
+    let lastInput = "none";
+    let lastError = "";
+    // Section 3.2 state recalculates on every `resize_event` (Rust side).
+    // The JS host mirrors that by polling `hex_probe_cells_drawn()` after
+    // each resize, so "board too small" stays correct without the host
+    // polling in a loop at other times (section 3.6's "does not poll in a
+    // loop" applies to normal operation, not a bounded post-resize check).
+    let pendingOrientation = null;
+
+    function renderStatus() {
+      const sceneLine = sceneState === "error"
+        ? "Scene: error " + lastError
+        : "Scene: " + sceneState;
+      const orientationLine = "Orientation: " + (orientation === 1 ? "pointy-top" : "flat-top");
+      const selectedLine = selected ? "Selected: q=" + selected.q + " r=" + selected.r : "Selected: none";
+      let lastLine;
+      if (lastInput === "none") lastLine = "Last input: none";
+      else if (lastInput === "outside") lastLine = "Last input: outside board";
+      else if (lastInput === "invalid") lastLine = "Last input: invalid value";
+      else lastLine = "Last input: cell q=" + lastInput.q + " r=" + lastInput.r;
+      const text = [sceneLine, orientationLine, selectedLine, lastLine].join("\n");
+      // Opus reviewer advisory: the bounded post-resize poll (see below)
+      // calls `renderStatus()` on every frame for up to ~2 s, but the
+      // text is usually unchanged between those calls. Writing the same
+      // string to a `role="status"` live region repeatedly can cause
+      // some screen readers to re-announce it; only write (and let the
+      // live region announce) when the text actually changed.
+      if (status.textContent !== text) status.textContent = text;
+    }
+    renderStatus();
+
+    function exportsOf() {
+      return app.frame?.contentWindow?.miniquadRuntime?.exports ?? null;
+    }
+
+    function readSelection() {
+      const wasm = exportsOf();
+      if (!wasm) return;
+      selected = wasm.hex_probe_selected_valid() === 1
+        ? { q: wasm.hex_probe_selected_q(), r: wasm.hex_probe_selected_r() }
+        : null;
+    }
+
+    function readLastInput() {
+      const wasm = exportsOf();
+      if (!wasm) return;
+      const code = wasm.hex_probe_last_input();
+      if (code === 1) lastInput = { q: wasm.hex_probe_selected_q(), r: wasm.hex_probe_selected_r() };
+      else if (code === 2) lastInput = "outside";
+      else if (code === 3 || code === 4) lastInput = "invalid";
+      else lastInput = "none";
+    }
+
+    // Section 3.3 theme selection, reusing the shared js/host-preferences.mjs
+    // adapter (no duplicated matchMedia/preference framework). The board has
+    // no animation, so `application` here is a small adapter seam, not the
+    // real mount() handle: it keeps the shared adapter's reduced-motion
+    // pause()/resume() calls as inert no-ops instead of pausing the real
+    // scene, which section 3.3 does not ask for. `document.documentElement`
+    // has no `--miniquad-foreground`/`--miniquad-background` custom
+    // properties, so the adapter's unrelated palette read finds no keys and
+    // never calls (the unsupported) setParameters.
+    let currentTheme = 0;
+    function computeTheme(state) {
+      if (state.forcedColors || state.contrast === "more") return 2;
+      if (state.colorScheme === "dark") return 1;
+      return 0;
+    }
+    function sceneIsLive() {
+      return sceneState === "running" || sceneState === "board too small";
+    }
+    function applyTheme(nextTheme) {
+      currentTheme = nextTheme;
+      // While the scene is live: not before `app.ready`, and not after
+      // release (section 3.4's exports are only meaningful for a live
+      // `Renderer`). "Board too small" still has a live `Renderer` (only
+      // the hex layer is not drawn), so a theme change received in that
+      // state must still reach `hex_board_set_theme`; otherwise it is
+      // lost and never re-sent once the board becomes large enough again.
+      if (!sceneIsLive()) return;
+      exportsOf()?.hex_board_set_theme(currentTheme);
+    }
+    const prefs = createHostPreferences({
+      element: document.documentElement,
+      application: { pause() {}, resume() {}, supportsParameters: false },
+      onError: console.error,
+      view: window
+    });
+    currentTheme = computeTheme(prefs.getState());
+    prefs.subscribe(state => applyTheme(computeTheme(state)));
+
+    const app = mount({
+      container: scene,
+      wasmURL,
+      title: "2D hex board scene"
+    });
+    // mount()'s internal iframe (js/miniquad.mjs) has no tabindex, so it can
+    // become a stray Tab stop with no reliable way out (observed in WebKit:
+    // Tab toggles focus onto the iframe repeatedly, with nothing focusable
+    // inside it to receive focus and move on). Section 3.6/4.5 require Tab
+    // to never enter the frame; tabindex="-1" keeps the iframe out of the
+    // sequential focus order in every engine without touching js/miniquad.mjs.
+    if (app.frame) app.frame.tabIndex = -1;
+
+    app.ready
+      .then(() => {
+        sceneState = "running";
+        // Apply the current theme (recomputed above, live) and any
+        // orientation control change the user made before `app.ready`
+        // resolved (the radio's own `change` listener runs immediately
+        // and updates the JS `orientation` variable, but `exportsOf()`
+        // returned null before the runtime existed, so the WASM call was
+        // silently dropped until now).
+        const wasm = exportsOf();
+        wasm?.hex_board_set_theme(currentTheme);
+        if (pendingOrientation !== null) {
+          wasm?.hex_board_set_orientation(pendingOrientation);
+          pendingOrientation = null;
+        }
+        renderStatus();
+        // The mounted scene runs in its own iframe document, so a
+        // `pointerup` dispatched on the canvas inside that iframe never
+        // bubbles out to this page's #scene div (iframe documents are
+        // separate event-propagation trees). Attach the listener directly
+        // on the inner document once it exists, matching section 3.6's
+        // "pointerup in #scene" intent (the visible scene region).
+        const innerDoc = app.frame?.contentDocument;
+        innerDoc?.addEventListener("pointerup", onScenePointerUp);
+      })
+      .catch(error => {
+        sceneState = "error";
+        lastError = error.message || String(error);
+        renderStatus();
+      });
+
+    // Section 3.2: the Rust side recalculates the layout (and the
+    // too-small state) on every `resize_event` and at the next frame.
+    // The host status must follow. The resize event, the iframe's own
+    // resize handling, and the runtime's next frame are 3 separate async
+    // hops, so "the next frame" is not always the very first frame tick
+    // observed after the window `resize` fires (confirmed slow in
+    // Firefox under load). Poll for a bounded window (about 2 s)
+    // instead of quitting after one frame tick; this is still a single
+    // bounded check per resize, not the continuous polling loop section
+    // 3.6 excludes from normal operation.
+    window.addEventListener("resize", () => {
+      if (!sceneIsLive()) return;
+      let lastFrames = app.frame?.contentWindow?.miniquadRuntime?.frames ?? 0;
+      const deadline = performance.now() + 2000;
+      const poll = () => {
+        const frames = app.frame?.contentWindow?.miniquadRuntime?.frames ?? 0;
+        if (frames > lastFrames) {
+          lastFrames = frames;
+          const wasm = exportsOf();
+          const wasTooSmall = sceneState === "board too small";
+          if (wasm && wasm.hex_probe_cells_drawn() === 0) sceneState = "board too small";
+          else if (wasTooSmall) sceneState = "running";
+          // A theme preference received while too small is applied once
+          // the board is live again (see `applyTheme`'s comment).
+          if (wasTooSmall && sceneState === "running") {
+            exportsOf()?.hex_board_set_theme(currentTheme);
+          }
+          renderStatus();
+        }
+        if (performance.now() < deadline) requestAnimationFrame(poll);
+      };
+      requestAnimationFrame(poll);
+    });
+
+    function onScenePointerUp() {
+      let lastFrames = app.frame?.contentWindow?.miniquadRuntime?.frames ?? 0;
+      const poll = () => {
+        const frames = app.frame?.contentWindow?.miniquadRuntime?.frames ?? 0;
+        if (frames > lastFrames) {
+          readSelection();
+          readLastInput();
+          const wasm = exportsOf();
+          const wasTooSmall = sceneState === "board too small";
+          if (wasm && wasm.hex_probe_cells_drawn() === 0) sceneState = "board too small";
+          else if (wasTooSmall) sceneState = "running";
+          if (wasTooSmall && sceneState === "running") wasm?.hex_board_set_theme(currentTheme);
+          renderStatus();
+          return;
+        }
+        requestAnimationFrame(poll);
+      };
+      requestAnimationFrame(poll);
+    }
+
+    for (const input of orientationInputs) {
+      input.addEventListener("change", () => {
+        orientation = Number(input.value);
+        const wasm = exportsOf();
+        if (wasm) wasm.hex_board_set_orientation(orientation);
+        // Not yet ready: remember the choice so `app.ready` applies it
+        // (see the comment there) instead of silently dropping it.
+        else pendingOrientation = orientation;
+        renderStatus();
+      });
+    }
+
+    function parseCoordinate(input) {
+      if (input.value.trim() === "") return null;
+      const value = Number(input.value);
+      if (!Number.isInteger(value)) return null;
+      return value;
+    }
+
+    selectButton.addEventListener("click", () => {
+      const q = parseCoordinate(selectQ);
+      const r = parseCoordinate(selectR);
+      const wasm = exportsOf();
+      if (q === null || r === null || !wasm) {
+        selectQ.setAttribute("aria-invalid", "true");
+        selectR.setAttribute("aria-invalid", "true");
+        lastInput = "invalid";
+        renderStatus();
+        return;
+      }
+      const result = wasm.hex_board_select(q, r);
+      if (result === 0) {
+        selectQ.removeAttribute("aria-invalid");
+        selectR.removeAttribute("aria-invalid");
+        readSelection();
+        lastInput = { q, r };
+      } else {
+        selectQ.setAttribute("aria-invalid", "true");
+        selectR.setAttribute("aria-invalid", "true");
+        lastInput = "outside";
+      }
+      renderStatus();
+    });
+
+    // Section 3.6: "Enter in q or r activates Select cell."
+    function selectOnEnter(event) {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        selectButton.click();
+      }
+    }
+    selectQ.addEventListener("keydown", selectOnEnter);
+    selectR.addEventListener("keydown", selectOnEnter);
+
+
+    clearButton.addEventListener("click", () => {
+      const wasm = exportsOf();
+      wasm?.hex_board_clear_selection();
+      selected = null;
+      renderStatus();
+    });
+
+    // Section 3.6/3.7: once the scene is released (or a release times
+    // out and is disposed anyway), the controls can no longer do
+    // anything useful; disabling them stops a stray click from showing
+    // a misleading "Last input: invalid value" for what is really
+    // "there is no scene any more", and keeps the status itself as the
+    // single source of truth for the released/error state.
+    function disableControlsAfterRelease() {
+      for (const input of orientationInputs) input.disabled = true;
+      selectQ.disabled = true;
+      selectR.disabled = true;
+      selectButton.disabled = true;
+      clearButton.disabled = true;
+      releaseButton.disabled = true;
+    }
+
+    releaseButton.addEventListener("click", async () => {
+      // `app.state` only reflects pause/resume calls made through this
+      // `app` handle; the underlying scene can also be paused directly
+      // (for example by a host visibility-change handler outside this
+      // page). `resume()` is idempotent when already running, so call
+      // it unconditionally rather than gating on the possibly-stale
+      // local `app.state`, to guarantee the real render loop is active
+      // before requesting release (otherwise wasm-side cleanup that
+      // runs per-frame would never happen, and release would time out).
+      if (app.state === "running" || app.state === "paused") app.resume();
+      const wasm = exportsOf();
+      wasm?.hex_board_request_release();
+      const deadline = Date.now() + 2000;
+      const waitReleased = () => new Promise(resolve => {
+        const check = () => {
+          const live = exportsOf()?.resources_live?.() ?? 0;
+          if (live === 0 || Date.now() > deadline) {
+            resolve(live === 0);
+            return;
+          }
+          requestAnimationFrame(check);
+        };
+        requestAnimationFrame(check);
+      });
+      const released = await waitReleased();
+      // Section 3.7 step 5 still runs ("the host continues to step 5")
+      // even after a timeout, so disposal always happens. But a timeout
+      // is a real error the host must keep visible: the status must not
+      // be silently overwritten with "Scene: released" right after, so
+      // only the success path sets that status.
+      app.dispose();
+      prefs.dispose();
+      if (released) {
+        sceneState = "released";
+      } else {
+        sceneState = "error";
+        lastError = "release timeout";
+      }
+      disableControlsAfterRelease();
+      renderStatus();
+    });
+  </script>
+</body>
+</html>

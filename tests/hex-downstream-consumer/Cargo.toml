@@ -1,0 +1,16 @@
+[package]
+name = "hex-downstream-consumer"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+license = "MIT OR Apache-2.0"
+publish = false
+description = """
+Fresh downstream crate for issue #131. Depends on miniquad-voxel only by
+path and uses only its public hex and hex_pick items (no source copy),
+to prove the hexagonal-prism geometry/picker API is consumable outside
+the Miniquad tree. Builds for native and wasm32-unknown-unknown.
+"""
+
+[dependencies]
+miniquad-voxel = { path = "../../companions/voxel" }

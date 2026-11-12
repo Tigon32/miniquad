@@ -64,6 +64,10 @@ jobs:
         run: cargo clippy --lib -- -D clippy::correctness
       - name: Rust library tests
         run: cargo test --lib
+      - name: WebGPU proof Rust state tests
+        run: |
+          cargo test --locked --manifest-path experiments/webgpu-manual/Cargo.toml --lib
+          cargo test --locked --manifest-path experiments/webgpu-wgpu/Cargo.toml --lib
       - name: WASM library check
         run: cargo check --target wasm32-unknown-unknown --lib
       - name: Build WASM example
@@ -74,6 +78,11 @@ jobs:
           cargo fmt --manifest-path companions/draw/Cargo.toml -- --check
           cargo build --release --target wasm32-unknown-unknown --manifest-path companions/draw/Cargo.toml --example showcase
           cargo build --release --locked --target wasm32-unknown-unknown --manifest-path experiments/drawing-comparison/external-consumer/Cargo.toml --example consume
+      - name: Test and build the 2D hex layout (issue 133)
+        run: |
+          cargo build --manifest-path experiments/hex-2d-consumer/Cargo.toml
+          cargo build --target wasm32-unknown-unknown --manifest-path experiments/hex-2d-consumer/Cargo.toml
+          cargo test --manifest-path experiments/hex-2d-cross-contract/Cargo.toml
       - name: Build a fresh external browser consumer
         run: |
           cargo test --manifest-path companions/voxel/Cargo.toml
@@ -131,6 +140,8 @@ jobs:
         run: npm ci --ignore-scripts --no-audit --no-fund
       - name: ESLint browser bridge
         run: npm run lint:js
+      - name: WebGPU proof harness unit tests
+        run: node --test tests/webgpu-proof/*.test.mjs experiments/webgpu-manual/tests/*.test.mjs
       - name: Restore browser binaries for the selected lane
         if: ${{ !env.ACT }}
         id: playwright-cache

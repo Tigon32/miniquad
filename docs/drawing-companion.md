@@ -23,6 +23,8 @@ applications that do not select this package.
 
 Use the [drawing starter recipe](browser-starter-drawing.md) to add this
 package to a generated external browser project without copying its implementation.
+For a bounded 2D hex board example and downstream setup, see the
+[2D hex guide](hex-2d.md).
 
 `companions/draw/` is a **standalone Rust crate**. It is not a Cargo
 workspace member of the root `miniquad` crate and the root `Cargo.toml`

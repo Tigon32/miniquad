@@ -135,3 +135,256 @@ audit trail rather than silently rewriting historical observations.
 
 These scan results are evidence of the enumerated checks, not a
 penetration test or an audit of all code, all browser engines, or native targets.
+
+## Verification addendum — 2026-11-11 (Playwright 1.65.0)
+
+This section records a separate, later change. It does not alter the
+2026-11-10 observations above.
+
+* Source for the baseline finding: [issue #155](https://github.com/Tigon32/miniquad/issues/155),
+  reviewed against `Tigon32/miniquad` public `master` at
+  `1364b6db83c5409cd1190856fbd5b1c8d1c5e0f3`.
+* Official release: [Playwright v1.65.0](https://github.com/microsoft/playwright/releases/tag/v1.65.0),
+  published 2026-11-05 by `dgozman`, commit `a1f35e1955976e84411f9c10358228a80b763ebe`.
+* `package.json` and `package-lock.json` now pin `@playwright/test` and
+  the resolved `playwright`/`playwright-core` dependency to `1.65.0`
+  (previously `1.56.1`).
+* Browser revisions selected by the updated `playwright-core` package
+  metadata (`node_modules/playwright-core/browsers.json`):
+  Chromium (Chrome for Testing) `158.0.8127.18` (build `1254`,
+  previously `141`/build `1194`), Firefox `159.0` (build `1572`,
+  previously `142`/build `1495`), WebKit `27.2` (build `2388`,
+  previously `26`/build `2215`).
+* `npx playwright install chromium firefox webkit` downloaded these
+  three new revisions to `~/Library/Caches/ms-playwright` on macOS
+  arm64. The prior revisions remain cached under their own version
+  directories; the cache key already includes the lockfile hash per
+  [MADR 0007](adr/0007-use-supported-and-secure-toolchains.md).
+* No compatibility break applicable to this project's config or tests
+  was found in the 1.65.0 release notes. The notable items (Bun test
+  runner, TypeScript `useDefineForClassFields`, inert-element action
+  waits, RFC 6265 cookie matching, "no tests found" shard failure) do
+  not apply: this project's suite is plain JavaScript (`.mjs`), runs
+  under Node, and does not assert on cookie or inert-element behavior.
+* Full local verification on macOS arm64, Node `v26.10.0`:
+  `node --check js/gl.js` and `node --check` on each `js/*.mjs` passed;
+  `npm run lint:js` (ESLint) passed with no findings; `node --test
+  tests/*.test.cjs tests/*.test.mjs` reported **220 passed, 0 failed**;
+  `cargo test --lib` reported **15 passed, 0 failed** (library crate,
+  macOS arm64 host target); `cargo check --target
+  wasm32-unknown-unknown --lib` and `cargo build --release --target
+  wasm32-unknown-unknown` for the `quad` and `offscreen` examples, the
+  `companions/draw` `showcase` example, the `companions/voxel`
+  `offline` example, and the `experiments/drawing-comparison/external-consumer`
+  `consume` example all built without error.
+* `npx playwright test` (all three projects, `workers: 1`, the
+  project's existing config) reported **168 passed, 0 failed** after
+  generating the external-starter fixture locally with `node
+  scripts/create-browser-project.mjs target/browser-starter --source
+  path --miniquad-path "$(pwd)" --name miniquad-browser-starter` and
+  `node target/browser-starter/scripts/build.mjs`, matching the step
+  the CI workflows already run before this lane. That fixture step is
+  a pre-existing environment requirement of `tests/browser/starter.spec.mjs`,
+  unrelated to the Playwright version; it is not part of this change.
+* This addendum updates only `@playwright/test`/`playwright-core` and
+  the browser revisions they select. No other npm production or
+  development dependency, CI workflow, Rust crate, or native binding
+  changed in this update. Issue #155 also flagged `cargo-audit`
+  0.22.2 → 0.23.0, CI runner image labels, `~/.cargo/config` vs
+  `config.toml`, the unpinned `shell.nix` `<nixpkgs>` input, and the
+  Apple default-graphics-backend and native-binding-crate items; those
+  remain open, undecided, and out of scope for this Playwright-only
+  change.
+* [Issue #156](https://github.com/Tigon32/miniquad/issues/156) proposes
+  a separate modern-platform-support and legacy-removal decision
+  (draft MADR 0016). This Playwright update does not remove, weaken, or
+  reinterpret any legacy browser or engine-capability test, and does
+  not assert that all previously supported browsers remain supported;
+  it only records the new Playwright-managed browser revisions above.
+
+## Verification addendum — 2026-11-11 (Nix input, native bindings, Apple default, MSRV/edition)
+
+This section records the remaining [issue #155](https://github.com/Tigon32/miniquad/issues/155)
+items not covered by the 2026-11-10 inventory or the Playwright 1.65.0
+addendum above: the unpinned `shell.nix` Nix input, the native
+binding-crate maintenance review, the Apple default-graphics-backend
+decision, and the MSRV/edition decision. It supersedes nothing above;
+read it together with the earlier sections. Source branch:
+`chore/toolchain-maintenance-completion` from `master` at
+`7593d86b6e0699d6c905058c0008799c3cce39e5`, reviewed 2026-11-11.
+
+**Evidence status:** source- and registry-observed review, plus isolated
+Nix evaluation and a successful `nix-shell` entry on Linux arm64. No
+native backend migration, Metal parity fix, or default-backend change
+is made or claimed by this addendum. No runtime or hardware
+qualification is claimed from this review.
+
+### Nix input pin
+
+`shell.nix` imported `<nixpkgs>`, a local Nix channel reference. That
+channel is not part of this repository, is not reviewed, and can
+select a different Nixpkgs revision on each machine. `shell.nix` now
+pins `builtins.fetchTarball` to commit
+`41992211735edd8f46bb3d443abf0bffcfd71870` on the
+[`release-26.05` branch](https://github.com/NixOS/nixpkgs/commits/release-26.05),
+the current Nixpkgs stable release branch on 2026-11-11 (checked
+against the [NixOS/nixpkgs branch list](https://github.com/NixOS/nixpkgs/branches)
+and the [Nix download page](https://nixos.org/download/), which
+reports Nix `2.35.4` as the current package-manager release). The file
+links to this update method. To update the pin:
+
+1. Select and review a commit from an official Nixpkgs release branch.
+2. Run `nix-prefetch-url --unpack --type sha256 <tarball-url>`.
+3. Convert the result with `nix --extra-experimental-features nix-command hash convert --to sri --hash-algo sha256 <base32-hash>`.
+4. Update both values in `shell.nix`. Record the source and review here.
+5. Run `nix-instantiate shell.nix` and `nix-shell --pure shell.nix --run "cargo --version"`.
+
+The `buildInputs` package set (`rustc`, `cargo`, `libGL`, `xorg.libX11`,
+`xorg.libXi`, `libxkbcommon`) and the `shellHook` are unchanged.
+Resolved package versions now depend on the pinned revision and target
+system, not a local channel. This does not change the core library MSRV.
+
+**Correction (same slice, before delivery):** an earlier version of
+this pin used `sha256 = "29da24390fcc...8259c09bc31"`, a plain
+`shasum -a 256` of the downloaded `.tar.gz` **bytes**.
+`builtins.fetchTarball`'s `sha256` checks the hash of the **unpacked
+NAR** (Nix Archive) of the tree, not the compressed tarball bytes;
+those are two different hashes, and the raw-tarball value fails. That
+wrong value was replaced before delivery.
+
+**Test status: verified, with isolated-container evidence.** No
+`nix`/`nix-shell`/`nix-build`/`nix-prefetch-url` executable and no
+`/nix` store exist on the host review environment (`command -v nix
+nix-shell nix-build` and `ls /nix` both found nothing). Per
+owner authorization, the missing tool was supplied through the
+official `nixos/nix` image, run isolated: no host credentials, no
+host home directory, no Docker socket, not `--privileged`, and only
+`shell.nix` bind-mounted read-only into the container; the container
+needs outbound network access to fetch the pinned tarball from GitHub
+(`fetchTarball` requires this to evaluate the pin at all), nothing else
+from the host is exposed.
+
+* Image: `nixos/nix:latest`, pinned by digest after pull:
+  `nixos/nix@sha256:b49cb33f3a7e5cf3933ad8774529de0e3807ec5cf54987aa7ccdfb49f2fc55ed`
+  (`nix (Nix) 2.35.6` inside the container).
+* Correct hash source:
+  `nix-prefetch-url --unpack --type sha256
+  https://github.com/NixOS/nixpkgs/archive/41992211735edd8f46bb3d443abf0bffcfd71870.tar.gz`
+  returned base32 `17b382wvx7xfwk6kxg37d4fsp3blydjnbhk7cwwraby160hqlx55`,
+  converted with `nix --extra-experimental-features nix-command hash
+  convert --to sri --hash-algo sha256 17b382wvx7xfwk6kxg37d4fsp3blydjnbhk7cwwraby160hqlx55`
+  to SRI `sha256-pXSKITDBL5U5Z2fCZWXzdI2rHWlnvD7N5K6fvrlAY50=`. `shell.nix`
+  now pins this corrected value.
+* **Old-hash failure (before this correction), in the same isolated
+  container:** `nix-instantiate --eval -E "let p = import ./shell.nix;
+  in builtins.attrNames p"` against the raw-tar-hash version failed
+  with `error: NAR hash mismatch in input
+  'https://github.com/NixOS/nixpkgs/archive/41992211735edd8f46bb3d443abf0bffcfd71870.tar.gz?narHash=...'
+  expected 'sha256-KdokOQ/MbosbmapOpppgTn15xO549h47d7P4JZwJvDE=' but got
+  'sha256-pXSKITDBL5U5Z2fCZWXzdI2rHWlnvD7N5K6fvrlAY50='`. The "got"
+  value in that error is exactly the SRI form of the correct
+  `nix-prefetch-url --unpack` hash above, which independently confirms
+  the correction.
+* **New-hash pass, same container, same command:** the same
+  `nix-instantiate --eval` call against the corrected `shell.nix`
+  returned the `mkShell` derivation's attribute-name list (for example
+  `"buildInputs"`, `"shellHook"`, `"outPath"`, …) with no error.
+  `nix-instantiate shell.nix` (full derivation instantiation, not only
+  attribute evaluation) also passed and produced
+  `/nix/store/iydscldqrpzvxqihwdvc9jina2gxd71q-nix-shell.drv`, with two
+  non-blocking evaluation warnings that this Nixpkgs revision renamed
+  `xorg.libX11`→`libx11` and `xorg.libXi`→`libxi` (old attribute names
+  still resolve; `buildInputs` was not changed, since renaming package
+  attributes is outside this hash-correction fix).
+* **Full shell entry passed:** a second isolated run used the same
+  image digest and the final `shell.nix`, mounted read-only.
+  `nix-shell --pure /work/shell.nix --run 'cargo --version'` fetched
+  the pinned shell inputs from `https://cache.nixos.org`, entered the
+  shell, and returned `cargo 1.95.0 (f2d3ce0bd 2026-03-21)`.
+  This ran on Linux arm64. Other Nix host systems and an application
+  build inside the shell are **not tested**.
+* The isolated container and bind mount were removed (`--rm`); no
+  state persists outside this record.
+
+### Native binding-crate maintenance review
+
+Registry and advisory sources checked 2026-11-11 with the
+[crates.io API](https://crates.io/) and the
+[OSV API](https://api.osv.dev/) (`crates.io` ecosystem). No RustSec/OSV
+advisory exists for any of the three crates below (zero results from
+each `POST /v1/query` by package name).
+
+| Crate | Declared range | Latest within range | Latest published (any range) | Upstream status observed | Decision |
+| --- | --- | --- | --- | --- | --- |
+| `winapi` | `0.3` | `0.3.9` (2020-06-26) | `0.3.9` — no newer release under the `winapi` name | [retep998/winapi-rs](https://github.com/retep998/winapi-rs) is not archived; last push 2024-04-27; default branch is literally `0.3`; 272 open issues. Microsoft's `windows`/`windows-sys` crates are the actively developed successor, under a different crate name. | **Retain.** No advisory. A `winapi` → `windows-sys` change rewrites every Windows FFI call site; that is a native backend migration, out of this bounded slice (see AGENTS.md rule 4: an ABI/API change needs byte- and behavior-level tests on the applicable OS). Record as a deferred binding migration. |
+| `objc-rs` (package alias `objc`) | `0.2` | `0.2.8` (2025-01-21) | `0.3.2` (2026-07-25) | [raphamorim/objc-rs](https://github.com/raphamorim/objc-rs), "Maintained fork of objc crate". Active 0.3.x releases in 2026. | **Retain `0.2` for this slice.** Cargo already resolves the declared `"0.2"` requirement to the latest compatible `0.2.8` patch without a `Cargo.toml` change. `0.3.0` is a semver-major release; bumping past it needs an Apple-platform (`macos.rs`/`ios.rs`) compatibility review and a real-hardware build/run test (AGENTS.md rule 7), which is native backend work outside this slice. Record `0.3.x` availability as a deferred, reviewed future bump. |
+| `ndk-sys` | `0.2` | `0.2.2` (2021-11-22) | `0.6.0+11769913` (2024-04-26) | [rust-mobile/ndk](https://github.com/rust-mobile/ndk), actively maintained; 0.3–0.6 track newer bundled Android NDK versions and are breaking API jumps, not patches. | **Retain `0.2` for this slice.** The Android native backend is already recorded as **not tested**/unqualified in [native platform qualification](native-platform-qualification.md); an `ndk-sys` major bump needs a real Android SDK/NDK build and device test before it can be claimed compatible. Record as a deferred binding migration tied to Android qualification, not a bulk rewrite. |
+
+None of these three findings is a security fault. Per
+[MADR 0007](adr/0007-use-supported-and-secure-toolchains.md), age alone
+is not evidence of an applicable advisory, and this review does not
+assert one. No `Cargo.toml` dependency line changed in this addendum.
+
+### Apple default-graphics-backend decision
+
+`src/conf.rs` still selects `AppleGfxApi::OpenGl` as the default (see
+the `Defaults to AppleGfxApi::GL for legacy reasons` doc comment and
+`impl Default for Platform`). This addendum makes **no change** to
+that default or to the `AppleGfxApi` selector.
+
+[Issue #142](https://github.com/Tigon32/miniquad/issues/142),
+[#143](https://github.com/Tigon32/miniquad/issues/143), and
+[#144](https://github.com/Tigon32/miniquad/issues/144) were re-checked
+on 2026-11-11. Issue #144 is now closed after PR #166 merged as
+`8a96be961ba5f26a55d969c3343e400d77a1d931`. Its eight real-Metal resource
+tests passed on macOS arm64. Issues #142 and #143 remain **OPEN** for
+texture and draw/pass gaps. Draft MADR 0016 (proposed in [#156](https://github.com/Tigon32/miniquad/issues/156),
+not accepted) states this same gate:
+do not make Metal the default before #142, #143, and #144 pass on real
+hardware. This addendum does not accept MADR 0016; it only confirms,
+from the current issue tracker state, that its stated prerequisite
+gate is still unmet, so the existing OpenGL default is retained
+without a separate decision being required here.
+
+### MSRV and edition decision
+
+**Retain** Rust MSRV `1.70` and `edition = "2018"` for the core
+`miniquad` crate (`Cargo.toml`), and **retain** `edition = "2018"` for
+the generated consumer starter
+(`templates/browser/rust/Cargo.toml.template`). Neither file changed
+in this addendum.
+
+Rationale: edition 2021 only requires Rust 1.56+, so the MSRV would
+not force a change if the edition were bumped; but an edition change on
+the public library crate is a core-graph/compatibility decision in its
+own right (it changes implicit-capture closures, array `IntoIterator`
+behavior, and panic-macro semantics for any code the edition touches),
+and needs the same compatibility-build and real-target test pass as any
+other core-graph change (AGENTS.md rules 2–4). No language feature in
+the current `src/` tree requires edition 2021 or a newer MSRV. Raising
+either now, inside a toolchain-maintenance-only slice, would be an
+unreviewed, untested core-graph change, which [MADR 0007](adr/0007-use-supported-and-secure-toolchains.md)
+and this task's bound both forbid. The existing `.github/workflows/rust.yml`
+`msrv` job (installs and defaults to `1.70.0`) continues to enforce the
+retained MSRV; this addendum did not need to change it.
+
+### Remaining acceptance state for issue #155
+
+* Done in this addendum: pinned, documented, reviewable Nix input,
+  using the correct `fetchTarball` NAR hash, with isolated-container
+  old-fail/new-pass evaluation evidence (`nix-instantiate`); recorded
+  maintenance/compatibility decisions for `winapi`, `objc-rs`, and
+  `ndk-sys`; confirmed and preserved the Apple OpenGL default pending
+  #142/#143/#144; recorded an explicit MSRV/edition retain decision.
+* Already done (other PRs, not repeated here): Playwright 1.65.0,
+  `cargo-audit` 0.23.0, explicit CI runner OS images/labels, and
+  `config.toml` (#158); the Linux WebKit offscreen regression fix
+  (#162).
+* Still open, not claimed done: an actual `nix-shell --pure shell.nix
+  --run "cargo --version"` *build* of the pinned expression (only
+  `nix-instantiate` evaluation/instantiation ran, not a full package
+  build); the Metal parity work in #142/#143/#144 and any resulting
+  Apple default-backend change; the deferred `winapi`, `objc-rs`, and
+  `ndk-sys` major-version migrations; any native (Windows, Apple,
+  Android) hardware/runtime qualification, which this review does not
+  and cannot provide.

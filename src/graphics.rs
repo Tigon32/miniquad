@@ -436,6 +436,15 @@ impl TextureId {
     /// Wrap raw platform texture into a TextureId acceptable for miniquad
     /// Without allocating any miniquad memory and without letting miniquad
     /// manage the texture.
+    ///
+    /// Metal-specific note: on first use (any binding/`texture_params`/`texture_read_pixels`/
+    /// `texture_raw_id`/`delete_texture` call), miniquad reads the real width, height, pixel
+    /// format, and mipmap level count off the wrapped `MTLTexture` and builds its own sampler
+    /// for it — this sampler is the only object miniquad owns for a raw texture. miniquad never
+    /// retains or releases the wrapped `MTLTexture` itself, and `delete_texture` releases only
+    /// the synthesized sampler. `texture_resize` is unsupported for a raw texture (miniquad
+    /// cannot reallocate storage it does not own). See
+    /// docs/adr/0024-metal-texture-format-and-raw-texture-contract.md.
     pub fn from_raw_id(raw_id: RawId) -> TextureId {
         TextureId(TextureIdInner::Raw(raw_id))
     }
@@ -736,7 +745,6 @@ pub struct PipelineParams {
     pub primitive_type: PrimitiveType,
 }
 
-// TODO(next major version bump): should be PipelineId
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
 pub struct Pipeline(usize);
 
@@ -807,66 +815,55 @@ fn gl_usage(usage: &BufferUsage) -> GLenum {
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash)]
 pub struct BufferId(usize);
 
-/// `ElapsedQuery` is used to measure duration of GPU operations.
+/// Why an [`ElapsedQuery`] read did not give a measured value.
 ///
-/// Usual timing/profiling methods are difficult apply to GPU workloads as draw calls are submitted
-/// asynchronously effectively hiding execution time of individual operations from the user.
-/// `ElapsedQuery` allows to measure duration of individual rendering operations, as though the time
-/// was measured on GPU rather than CPU side.
+/// `ElapsedQuery` never returns a success-shaped `0` or `false` for an
+/// unsupported, pending, or disjoint query. Use this type to find out why a
+/// read did not give a value.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ElapsedQueryError {
+    /// The active [`Backend`], WebGL version, or browser extension set
+    /// gives no verified GPU timer-query path in this release.
+    /// [`ElapsedQuery::is_supported`] reports this state in advance.
+    Unsupported,
+    /// `end_query` ran, but the GPU has not finished the query yet. Poll
+    /// [`ElapsedQuery::is_available`] again before reading a result.
+    NotReady,
+    /// The GPU clock changed while the query was running (for example, a
+    /// power-state change). The browser's `GPU_DISJOINT_EXT` flag reported
+    /// this; discard the query and run a new one instead of trusting its
+    /// timing.
+    Disjoint,
+}
+
+/// Measures the duration of GPU operations between `begin_query` and
+/// `end_query`.
 ///
-/// The query is created using [`ElapsedQuery::new()`] function.
+/// This release gives a real, verified measurement only on a WebGL2
+/// context where the browser grants the `EXT_disjoint_timer_query_webgl2`
+/// extension. [`ElapsedQuery::is_supported`] reports the state of the
+/// active [`Backend`] first; native OpenGL, Metal, WebGL1, and a WebGL2
+/// context without the extension are explicit unsupported states. No
+/// method returns a `0` or `false` placeholder for an unsupported,
+/// pending, or disjoint query; see [`ElapsedQueryError`].
+///
+/// See [MADR 0023](https://github.com/Tigon32/miniquad/blob/master/docs/adr/0023-webgl2-gpu-timer-query.md),
+/// which supersedes [MADR 0021](https://github.com/Tigon32/miniquad/blob/master/docs/adr/0021-deprecate-unverified-elapsed-query.md),
+/// and [issue #145](https://github.com/Tigon32/miniquad/issues/145).
+///
 /// ```
-/// use miniquad::graphics::ElapsedQuery;
-/// // initialization
+/// use miniquad::graphics::{Backend, ElapsedQuery};
+/// // Native OpenGL has no verified timer-query path in this release.
+/// assert!(!ElapsedQuery::is_supported(Backend::OpenGl));
+/// // Metal never loads a GL timer-query entry point.
+/// assert!(!ElapsedQuery::is_supported(Backend::Metal));
+/// ```
+///
+/// ```should_panic
+/// # use miniquad::graphics::{Backend, ElapsedQuery};
 /// let mut query = ElapsedQuery::new();
+/// query.begin_query(Backend::Metal);
 /// ```
-/// Measurement is performed by calling [`ElapsedQuery::begin_query()`] and
-/// [`ElapsedQuery::end_query()`]
-///
-/// ```
-/// # use miniquad::graphics::ElapsedQuery;
-/// # let mut query = ElapsedQuery::new();
-///
-/// query.begin_query();
-/// // one or multiple calls to miniquad::GraphicsContext::draw()
-/// query.end_query();
-/// ```
-///
-/// Retreival of measured duration is only possible at a later point in time. Often a frame or
-/// couple frames later. Measurement latency can especially be high on WASM/WebGL target.
-///
-/// ```
-/// // couple frames later:
-/// # use miniquad::graphics::ElapsedQuery;
-/// # let mut query = ElapsedQuery::new();
-/// # query.begin_query();
-/// # query.end_query();
-/// if query.is_available() {
-///   let duration_nanoseconds = query.get_result();
-///   // use/display duration_nanoseconds
-/// }
-/// ```
-///
-/// And during finalization:
-/// ```
-/// // clean-up
-/// # use miniquad::graphics::ElapsedQuery;
-/// # let mut query = ElapsedQuery::new();
-/// # query.begin_query();
-/// # query.end_query();
-/// # if query.is_available() {
-/// #   let duration_nanoseconds = query.get_result();
-/// #   // use/display duration_nanoseconds
-/// # }
-/// query.delete();
-/// ```
-///
-/// It is only possible to measure single query at once.
-///
-/// On OpenGL/WebGL platforms implementation relies on [`EXT_disjoint_timer_query`] extension.
-///
-/// [`EXT_disjoint_timer_query`]: https://www.khronos.org/registry/OpenGL/extensions/EXT/EXT_disjoint_timer_query.txt
-///
 #[derive(Clone, Copy)]
 pub struct ElapsedQuery {
     gl_query: GLuint,
@@ -883,85 +880,108 @@ impl ElapsedQuery {
         ElapsedQuery { gl_query: 0 }
     }
 
-    /// Submit a beginning of elapsed-time query.
+    /// Reports whether `backend` gives a real GPU timer-query measurement.
     ///
-    /// Only a single query can be measured at any moment in time.
-    ///
-    /// Use [`ElapsedQuery::end_query()`] to finish the query and
-    /// [`ElapsedQuery::get_result()`] to read the result when rendering is complete.
-    ///
-    /// The query can be used again after retriving the result.
-    ///
-    /// Implemented as `glBeginQuery(GL_TIME_ELAPSED, ...)` on OpenGL/WebGL platforms.
-    ///
-    /// Use [`ElapsedQuery::is_supported()`] to check if functionality is available and the method can be called.
-    pub fn begin_query(&mut self) {
-        if self.gl_query == 0 {
-            unsafe { glGenQueries(1, &mut self.gl_query) };
+    /// Never panics and never calls an unloaded GL function pointer.
+    /// Native OpenGL and Metal always return `false`: this release scopes
+    /// the verified timer-query path to WebGL2 (issue #145). On WebGL this
+    /// probes the browser with the WebGL2 `EXT_disjoint_timer_query_webgl2`
+    /// feature-detection call; it returns `true` only on a WebGL2 context
+    /// where the browser grants that extension.
+    pub fn is_supported(backend: Backend) -> bool {
+        match backend {
+            Backend::Metal => false,
+            Backend::OpenGl => unsafe { crate::native::gl::gpu_timer_query_supported() },
         }
-        unsafe { glBeginQuery(GL_TIME_ELAPSED, self.gl_query) };
     }
 
-    /// Submit an end of elapsed-time query that can be read later when rendering is complete.
+    /// Starts measuring elapsed GPU time.
     ///
-    /// This function is usd in conjunction with [`ElapsedQuery::begin_query()`] and
-    /// [`ElapsedQuery::get_result()`].
+    /// # Panics
     ///
-    /// Implemented as `glEndQuery(GL_TIME_ELAPSED)` on OpenGL/WebGL platforms.
-    pub fn end_query(&mut self) {
+    /// Panics if `ElapsedQuery::is_supported(backend)` is `false`. Check it
+    /// first; a caller that does so never reaches this panic.
+    pub fn begin_query(&mut self, backend: Backend) {
+        assert!(
+            Self::is_supported(backend),
+            "ElapsedQuery is unsupported on this backend; check ElapsedQuery::is_supported() first"
+        );
+        unsafe {
+            if self.gl_query == 0 {
+                glGenQueries(1, &mut self.gl_query as *mut _);
+            }
+            glBeginQuery(GL_TIME_ELAPSED, self.gl_query);
+        }
+    }
+
+    /// Stops measuring elapsed GPU time.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `ElapsedQuery::is_supported(backend)` is `false`.
+    pub fn end_query(&mut self, backend: Backend) {
+        assert!(
+            Self::is_supported(backend),
+            "ElapsedQuery is unsupported on this backend; check ElapsedQuery::is_supported() first"
+        );
         unsafe { glEndQuery(GL_TIME_ELAPSED) };
     }
 
-    /// Retreieve measured duration in nanonseconds.
+    /// Reports whether the query has a measured result ready to read.
     ///
-    /// Note that the result may be ready only couple frames later due to asynchronous nature of GPU
-    /// command submission. Use [`ElapsedQuery::is_available()`] to check if the result is
-    /// available for retrieval.
-    ///
-    /// Use [`ElapsedQuery::is_supported()`] to check if functionality is available and the method can be called.
-    pub fn get_result(&self) -> u64 {
-        // let mut time: GLuint64 = 0;
-        // assert!(self.gl_query != 0);
-        // unsafe { glGetQueryObjectui64v(self.gl_query, GL_QUERY_RESULT, &mut time) };
-        // time
-        0
+    /// Returns [`ElapsedQueryError::Unsupported`] instead of a placeholder
+    /// `false` when `backend` has no timer-query path. Returns
+    /// [`ElapsedQueryError::Disjoint`] when the browser reports that the
+    /// GPU clock changed while the query ran; discard this query.
+    pub fn is_available(&self, backend: Backend) -> Result<bool, ElapsedQueryError> {
+        if !Self::is_supported(backend) {
+            return Err(ElapsedQueryError::Unsupported);
+        }
+        let mut available: GLint = 0;
+        unsafe { glGetQueryObjectiv(self.gl_query, GL_QUERY_RESULT_AVAILABLE, &mut available) };
+        if available == 0 {
+            // The disjoint flag is read-and-cleared; read it only once the
+            // result exists, not on every "not ready yet" poll.
+            return Ok(false);
+        }
+        if unsafe { crate::native::gl::gpu_timer_query_disjoint() } {
+            return Err(ElapsedQueryError::Disjoint);
+        }
+        Ok(true)
     }
 
-    /// Reports whenever elapsed timer is supported and other methods can be invoked.
-    pub fn is_supported() -> bool {
-        unimplemented!();
-        //unsafe { sapp_is_elapsed_timer_supported() }
+    /// Reads the measured GPU time, in nanoseconds.
+    ///
+    /// Returns [`ElapsedQueryError::Unsupported`] for a backend with no
+    /// timer-query path, [`ElapsedQueryError::NotReady`] when the query has
+    /// not finished, and [`ElapsedQueryError::Disjoint`] when the GPU clock
+    /// changed during the query. None of these states give a `0`
+    /// placeholder; a real zero-length query still gives `Ok(0)`.
+    pub fn get_result(&self, backend: Backend) -> Result<u64, ElapsedQueryError> {
+        match self.is_available(backend) {
+            Ok(true) => {}
+            Ok(false) => return Err(ElapsedQueryError::NotReady),
+            Err(error) => return Err(error),
+        }
+        let mut result: GLuint64 = 0;
+        unsafe { glGetQueryObjectui64v(self.gl_query, GL_QUERY_RESULT, &mut result) };
+        Ok(result)
     }
 
-    /// Reports whenever result of submitted query is available for retrieval with
-    /// [`ElapsedQuery::get_result()`].
+    /// Releases the underlying GPU query object.
     ///
-    /// Note that the result may be ready only couple frames later due to asynchrnous nature of GPU
-    /// command submission.
+    /// # Panics
     ///
-    /// Use [`ElapsedQuery::is_supported()`] to check if functionality is available and the method can be called.
-    pub fn is_available(&self) -> bool {
-        // let mut available: GLint = 0;
-
-        // // begin_query was not called yet
-        // if self.gl_query == 0 {
-        //     return false;
-        // }
-
-        //unsafe { glGetQueryObjectiv(self.gl_query, GL_QUERY_RESULT_AVAILABLE, &mut available) };
-        //available != 0
-
-        false
-    }
-
-    /// Delete query.
-    ///
-    /// Note that the query is not deleted automatically when dropped.
-    ///
-    /// Implemented as `glDeleteQueries(...)` on OpenGL/WebGL platforms.
-    pub fn delete(&mut self) {
-        unsafe { glDeleteQueries(1, &self.gl_query) }
-        self.gl_query = 0;
+    /// Panics if `ElapsedQuery::is_supported(backend)` is `false`.
+    pub fn delete(&mut self, backend: Backend) {
+        assert!(
+            Self::is_supported(backend),
+            "ElapsedQuery is unsupported on this backend; check ElapsedQuery::is_supported() first"
+        );
+        if self.gl_query != 0 {
+            unsafe { glDeleteQueries(1, &self.gl_query as *const _) };
+            self.gl_query = 0;
+        }
     }
 }
 
@@ -1170,6 +1190,10 @@ pub trait RenderingBackend {
     }
 
     /// Get OpenGL's GLuint texture ID or metals ObjcId
+    ///
+    /// Metal-specific note: for a texture wrapped with `TextureId::from_raw_id`, this returns
+    /// the same caller-owned `MTLTexture` pointer unchanged (miniquad never substitutes its own
+    /// object here). See `TextureId::from_raw_id`'s ownership note.
     unsafe fn texture_raw_id(&self, texture: TextureId) -> RawId;
 
     /// Update whole texture content
@@ -1195,13 +1219,59 @@ pub trait RenderingBackend {
     );
     fn texture_set_mag_filter(&mut self, texture: TextureId, filter: FilterMode);
     fn texture_set_wrap(&mut self, texture: TextureId, wrap_x: TextureWrap, wrap_y: TextureWrap);
-    /// Metal-specific note: if texture was created without `params.generate_mipmaps`
-    /// `generate_mipmaps` will do nothing.
+    /// Metal-specific note: panics if the texture was created without
+    /// `params.allocate_mipmaps`.
     ///
     /// Also note that if MipmapFilter is set to None, mipmaps will not be visible, even if
     /// generated.
     fn texture_generate_mipmaps(&mut self, texture: TextureId);
+    /// Reports whether [`RenderingBackend::texture_resize`] can be called for `texture`
+    /// without panicking. Callers that may run on Metal and accept a texture from elsewhere
+    /// should check this before calling `texture_resize` rather than relying on the panic.
+    ///
+    /// Default: always `true`.
+    ///
+    /// Metal-specific note: returns `false` for a texture wrapped with
+    /// `TextureId::from_raw_id` (miniquad does not own that storage) and for a texture whose
+    /// format is `TextureFormat::Depth` (see
+    /// docs/adr/0024-metal-texture-format-and-raw-texture-contract.md).
+    fn texture_supports_resize(&self, texture: TextureId) -> bool {
+        let _ = texture;
+        true
+    }
+    /// Reallocates the texture's backing storage at the new dimensions, optionally re-uploading
+    /// `bytes` (same per-pixel contract as `new_texture`: `format.size(width, height)` bytes).
+    ///
+    /// Use [`RenderingBackend::texture_supports_resize`] to check in advance whether this call
+    /// is supported for `texture` instead of relying on the panic below.
+    ///
+    /// Metal-specific note: panics for a texture wrapped with `TextureId::from_raw_id` — Metal
+    /// does not own the caller's texture and cannot reallocate it — and for
+    /// `TextureFormat::Depth` (see `texture_read_pixels`'s note on that format).
     fn texture_resize(&mut self, texture: TextureId, width: u32, height: u32, bytes: Option<&[u8]>);
+    /// Reports whether [`RenderingBackend::texture_read_pixels`] can be called for `texture`
+    /// without panicking. Callers that may run on Metal and accept a texture from elsewhere
+    /// should check this before calling `texture_read_pixels` rather than relying on the panic.
+    ///
+    /// Default: always `true`.
+    ///
+    /// Metal-specific note: returns `false` for a texture whose format is
+    /// `TextureFormat::Depth` (see
+    /// docs/adr/0024-metal-texture-format-and-raw-texture-contract.md).
+    fn texture_supports_read_pixels(&self, texture: TextureId) -> bool {
+        let _ = texture;
+        true
+    }
+    /// Reads the texture's pixels into `bytes`, which must be exactly
+    /// `format.size(width, height)` bytes — the same per-pixel contract as `new_texture`.
+    ///
+    /// Use [`RenderingBackend::texture_supports_read_pixels`] to check in advance whether this
+    /// call is supported for `texture` instead of relying on the panic below.
+    ///
+    /// Metal-specific note: panics for `TextureFormat::Depth`. Metal has no pixel format whose
+    /// CPU-visible storage matches `TextureFormat::Depth`'s documented 2 bytes/pixel (Metal's
+    /// combined depth/stencil format is used instead); use `TextureFormat::Depth32` for a depth
+    /// texture that supports read-back.
     fn texture_read_pixels(&mut self, texture: TextureId, bytes: &mut [u8]);
     fn texture_update_part(
         &mut self,
@@ -1367,4 +1437,49 @@ pub trait RenderingBackend {
     /// NOTE: num_instances > 1 might be not supported by the GPU (gl2.1 and gles2).
     /// `features.instancing` check is required.
     fn draw(&self, base_element: i32, num_elements: i32, num_instances: i32);
+}
+
+#[cfg(test)]
+mod elapsed_query_tests {
+    use super::{Backend, ElapsedQuery, ElapsedQueryError};
+    use std::panic::catch_unwind;
+
+    #[test]
+    fn native_opengl_and_metal_report_unsupported_without_a_panic() {
+        // These run on the host (native) build, never the WebGL2 path, so
+        // both backends must report unsupported deterministically.
+        assert!(!ElapsedQuery::is_supported(Backend::OpenGl));
+        assert!(!ElapsedQuery::is_supported(Backend::Metal));
+    }
+
+    #[test]
+    fn unsupported_backend_reports_a_typed_error_not_a_placeholder_value() {
+        let query = ElapsedQuery::new();
+        assert_eq!(
+            query.is_available(Backend::Metal),
+            Err(ElapsedQueryError::Unsupported)
+        );
+        assert_eq!(
+            query.get_result(Backend::Metal),
+            Err(ElapsedQueryError::Unsupported)
+        );
+        assert_eq!(
+            query.is_available(Backend::OpenGl),
+            Err(ElapsedQueryError::Unsupported)
+        );
+        assert_eq!(
+            query.get_result(Backend::OpenGl),
+            Err(ElapsedQueryError::Unsupported)
+        );
+    }
+
+    #[test]
+    fn lifecycle_calls_on_an_unsupported_backend_panic_instead_of_touching_gl_pointers() {
+        assert!(catch_unwind(|| ElapsedQuery::new().begin_query(Backend::Metal)).is_err());
+        assert!(catch_unwind(|| ElapsedQuery::new().end_query(Backend::Metal)).is_err());
+        assert!(catch_unwind(|| ElapsedQuery::new().delete(Backend::Metal)).is_err());
+        assert!(catch_unwind(|| ElapsedQuery::new().begin_query(Backend::OpenGl)).is_err());
+        assert!(catch_unwind(|| ElapsedQuery::new().end_query(Backend::OpenGl)).is_err());
+        assert!(catch_unwind(|| ElapsedQuery::new().delete(Backend::OpenGl)).is_err());
+    }
 }

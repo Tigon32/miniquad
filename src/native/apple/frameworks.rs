@@ -235,7 +235,8 @@ pub const kCGRenderingIntentDefault: u32 = 0;
 extern "C" {
     pub fn MTLCreateSystemDefaultDevice() -> ObjcId;
     #[cfg(not(target_os = "ios"))]
-    pub fn MTLCopyAllDevices() -> ObjcId; //TODO: Array
+    /// Returns a retained `NSArray<id<MTLDevice>>`; the caller must release it.
+    pub fn MTLCopyAllDevices() -> ObjcId;
 }
 
 #[cfg(target_os = "macos")]
@@ -294,7 +295,9 @@ extern "C" {
     pub fn CVDisplayLinkStart(display_link: CVDisplayLinkRef) -> i32;
     pub fn CVDisplayLinkStop(display_link: CVDisplayLinkRef) -> i32;
     pub fn CVDisplayLinkRelease(display_link: CVDisplayLinkRef);
-    pub fn CVDisplayLinkGetNominalOutputVideoRefreshPeriod(display_link: CVDisplayLinkRef) -> CVTime;
+    pub fn CVDisplayLinkGetNominalOutputVideoRefreshPeriod(
+        display_link: CVDisplayLinkRef,
+    ) -> CVTime;
 }
 
 // Foundation
@@ -536,12 +539,32 @@ impl NSRange {
 unsafe impl Encode for NSRange {
     fn encode() -> Encoding {
         let encoding = format!(
-            // TODO: Verify that this is correct
-            "{{NSRange={}{}}}",
+            "{{_NSRange={}{}}}",
             u64::encode().as_str(),
             u64::encode().as_str(),
         );
         unsafe { Encoding::from_str(&encoding) }
+    }
+}
+
+#[cfg(test)]
+mod nsrange_encode_tests {
+    use super::NSRange;
+    use objc::Encode;
+    use std::mem::{align_of, size_of};
+
+    // The Apple SDK `Foundation/NSRange.h` declares `typedef struct _NSRange`,
+    // so `@encode(NSRange)` on macOS arm64 (Apple clang 21.0.0) is
+    // `{_NSRange=QQ}`, not `{NSRange=QQ}`. See Tigon32/miniquad#146.
+    #[test]
+    fn nsrange_encode_matches_sdk_tag() {
+        assert_eq!(NSRange::encode().as_str(), "{_NSRange=QQ}");
+    }
+
+    #[test]
+    fn nsrange_layout_matches_sdk_abi() {
+        assert_eq!(size_of::<NSRange>(), 16);
+        assert_eq!(align_of::<NSRange>(), 8);
     }
 }
 
@@ -633,6 +656,7 @@ impl MTLClearColor {
 #[derive(Debug, Copy, Clone, Hash, PartialEq, Eq)]
 pub enum MTLPixelFormat {
     Invalid = 0,
+    A8Unorm = 1,
     BGRA8Unorm = 80,
     Depth32Float = 252,
     Stencil8 = 253,

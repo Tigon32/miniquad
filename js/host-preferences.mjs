@@ -498,24 +498,34 @@ export function createHostPreferences({ element, application, onError, view = ty
         state.forcedColors = matches;
         notify();
     });
-    watch("(prefers-contrast: more)", (matches) => {
-        if (matches) {
-            state.contrast = "more";
-            notify();
+    function recomputeContrast() {
+        // `prefers-contrast` is a single enumerated media feature: exactly
+        // one of no-preference/less/more/custom can match at a time. Each
+        // underlying query is watched separately, so recompute the whole
+        // value from scratch on every change (matching readMediaState's
+        // own precedence order) instead of only ever setting a value on a
+        // positive match - that one-directional update left state.contrast
+        // stuck at "more"/"less"/"custom" even after the system preference
+        // changed back to "no-preference".
+        const query = (condition) => (typeof view?.matchMedia === "function" ? view.matchMedia(condition) : null);
+        let contrast = "no-preference";
+        if (query("(prefers-contrast: more)")?.matches) {
+            contrast = "more";
+        } else if (query("(prefers-contrast: less)")?.matches) {
+            contrast = "less";
+        } else if (query("(prefers-contrast: custom)")?.matches) {
+            contrast = "custom";
         }
-    });
-    watch("(prefers-contrast: less)", (matches) => {
-        if (matches) {
-            state.contrast = "less";
-            notify();
+        if (state.contrast === contrast) {
+            return;
         }
-    });
-    watch("(prefers-contrast: custom)", (matches) => {
-        if (matches) {
-            state.contrast = "custom";
-            notify();
-        }
-    });
+        state.contrast = contrast;
+        // Contrast affects palette/theme selection only, never motion.
+        notify();
+    }
+    watch("(prefers-contrast: more)", recomputeContrast);
+    watch("(prefers-contrast: less)", recomputeContrast);
+    watch("(prefers-contrast: custom)", recomputeContrast);
 
     applyMotion();
     applyPalette();

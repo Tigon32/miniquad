@@ -206,8 +206,19 @@ const baseURL = `http://${FIXTURE_HOST}:${FIXTURE_PORT}`;
 test("mixed example mounts, draws a scene, and the HUD reaches an online or local status", async ({ page }) => {
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
+  page.context().on("response", (response) => {
+    if (response.status() >= 400) {
+      errors.push(`HTTP ${response.status()} ${response.url()}`);
+    }
+  });
+  page.on("requestfailed", (request) => {
+    errors.push(`Request failed ${request.url()}: ${request.failure()?.errorText ?? "unknown error"}`);
+  });
   page.on("console", (message) => {
-    if (message.type() === "error") errors.push(message.text());
+    if (message.type() === "error") {
+      const location = message.location();
+      errors.push(`${message.text()} (${location.url}:${location.lineNumber}:${location.columnNumber})`);
+    }
   });
 
   await page.goto(`${baseURL}/voxel-mixed.html`);

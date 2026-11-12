@@ -55,6 +55,8 @@ const root = resolve(new URL("../..", import.meta.url).pathname);
 const FIXTURE_HOST = "127.0.0.1";
 const FIXTURE_PORT = 4231;
 const SERVER_PORT = 4230;
+const MEASUREMENT_WARMUP_FRAMES = 60;
+const MEASUREMENT_FRAMES = 120;
 
 const staticFiles = new Map([
   ["/voxel-mixed.html", { file: "tests/browser/voxel-mixed.html", type: "text/html; charset=utf-8" }],
@@ -1015,6 +1017,7 @@ test("issue #29 measurement receipt: offline and mixed voxel runtime", async ({ 
   };
 
   const runScenario = async (mode, pair, order) => {
+    const targetFrames = MEASUREMENT_WARMUP_FRAMES + MEASUREMENT_FRAMES + 1;
     const context = await browser.newContext({
       viewport: { width: 800, height: 500 },
       deviceScaleFactor: 1,
@@ -1078,22 +1081,35 @@ test("issue #29 measurement receipt: offline and mixed voxel runtime", async ({ 
         await page.waitForFunction(() => document.querySelector("#status").textContent === "Connected.");
       }
       await page.waitForFunction(
-        () => window.app.frame.contentWindow.__voxelMeasurement.frames.length >= 361,
-        undefined,
+        (count) => window.app.frame.contentWindow.__voxelMeasurement.frames.length >= count,
+        targetFrames,
         { timeout: 60000 },
       );
       await Promise.all(pendingSyncResponses);
 
-      const runtime = await page.evaluate(() => {
+      const runtime = await page.evaluate((count) => {
         const frame = window.app.frame.contentWindow;
-        const timestamps = frame.__voxelMeasurement.frames.slice(0, 361);
         return {
-          firstFrameMs: frame.performance.timeOrigin + timestamps[0] - window.__voxelStartEpoch,
-          measuredIntervals: timestamps.slice(61).map((timestamp, index) => timestamp - timestamps[index + 60]),
+          timestamps: frame.__voxelMeasurement.frames.slice(0, count),
           wasmMemoryBytes: frame.wasm_memory?.buffer.byteLength ?? null,
           heapSamples: frame.__voxelMeasurement.heapBytes,
         };
-      });
+      }, targetFrames);
+      const intervals = runtime.timestamps
+        .slice(MEASUREMENT_WARMUP_FRAMES + 1)
+        .map((timestamp, index) => timestamp - runtime.timestamps[index + MEASUREMENT_WARMUP_FRAMES]);
+      const firstFrameMs = await page.evaluate((timestamp) => {
+        const frame = window.app.frame.contentWindow;
+        return frame.performance.timeOrigin + timestamp - window.__voxelStartEpoch;
+      }, runtime.timestamps[0]);
+      const measured = {
+        firstFrameMs,
+        frameIntervalP95Ms: percentile(intervals, 0.95),
+        frameIntervalP99Ms: percentile(intervals, 0.99),
+        wasmMemoryBytes: runtime.wasmMemoryBytes,
+        jsHeapPeakBytes: runtime.heapSamples.length ? Math.max(...runtime.heapSamples) : null,
+        jsHeapSteadyBytes: runtime.heapSamples.length ? median(runtime.heapSamples.slice(-10)) : null,
+      };
 
       if (failures.length) {
         throw new Error(`browser errors: ${failures.join("; ")}`);
@@ -1114,12 +1130,7 @@ test("issue #29 measurement receipt: offline and mixed voxel runtime", async ({ 
         pair,
         order,
         mode,
-        firstFrameMs: runtime.firstFrameMs,
-        frameIntervalP95Ms: percentile(runtime.measuredIntervals, 0.95),
-        frameIntervalP99Ms: percentile(runtime.measuredIntervals, 0.99),
-        wasmMemoryBytes: runtime.wasmMemoryBytes,
-        jsHeapPeakBytes: runtime.heapSamples.length ? Math.max(...runtime.heapSamples) : null,
-        jsHeapSteadyBytes: runtime.heapSamples.length ? median(runtime.heapSamples.slice(-10)) : null,
+        ...measured,
         requestBodyBytes,
         responseBodyBytes,
         serverRssBytes,
@@ -1159,7 +1170,12 @@ test("issue #29 measurement receipt: offline and mixed voxel runtime", async ({ 
     browser: { name: browser.browserType().name(), version: browser.version() },
     runner: { node: process.version, zlib: process.versions.zlib, platform: process.platform, arch: process.arch },
     repetitions: 10,
-    context: { viewport: "800x500 CSS pixels", deviceScaleFactor: 1, warmupFrames: 60, measuredFrames: 300 },
+    context: {
+      viewport: "800x500 CSS pixels",
+      deviceScaleFactor: 1,
+      warmupFrames: MEASUREMENT_WARMUP_FRAMES,
+      measuredFrames: MEASUREMENT_FRAMES,
+    },
     assets,
     results: Object.fromEntries(
       ["offline", "mixed"].map((mode) => [

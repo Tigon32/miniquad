@@ -721,12 +721,12 @@ async function applyFixedTrace(page, { serialize = false } = {}) {
 }
 
 function maskHud(image) {
-  // HUD panel default placement (DPR 1, 800x500 layout): x 8..225,
-  // y 8..32, per the HUD placement spec. Mask a slightly larger
-  // rectangle (0..230, 0..36) to absorb any sub-pixel edge rounding,
-  // so "pixel parity excluding HUD" never credits/blames HUD pixels.
-  for (let y = 0; y < Math.min(36, image.height); y++) {
-    for (let x = 0; x < Math.min(230, image.width); x++) {
+  // HUD bounds are in CSS pixels. Scale the mask to the canvas
+  // backing-store width so high-DPI browser screenshots mask the same
+  // region as DPR1 screenshots.
+  const scale = image.width / 800;
+  for (let y = 0; y < Math.min(Math.ceil(36 * scale), image.height); y++) {
+    for (let x = 0; x < Math.min(Math.ceil(230 * scale), image.width); x++) {
       const idx = (y * image.width + x) * 4;
       image.data[idx] = 0;
       image.data[idx + 1] = 0;
@@ -748,11 +748,47 @@ function countDifferingPixels(a, b, channelTolerance) {
   return diff;
 }
 
-test("frozen offline and mixed (server-synced) scenes apply the same fixed edit trace to equal semantic state and near-identical pixels, excluding the HUD", async ({ page, browser }) => {
-  // Page A: offline/un-wired. Never calls wireVoxelMixedHost, so
-  // `drain_network`'s "no transport status has ever been set" branch
-  // applies `vx_input` directly, matching the contract's "offline"
-  // state (not a network round trip).
+test("offline-only and mixed WASM artifacts render the same frozen scene, excluding the HUD", async ({ page, browser }) => {
+  const contextB = await browser.newContext({ viewport: { width: 800, height: 500 } });
+  const pageB = await contextB.newPage();
+  const { PNG } = await import("pngjs");
+  try {
+    for (const [scenePage, wasmPath, title] of [
+      [page, "voxel-offline.wasm", "Offline voxel scene"],
+      [pageB, "voxel-mixed.wasm", "Mixed voxel scene"],
+    ]) {
+      await scenePage.goto(`${baseURL}/voxel-mixed.html`);
+      await scenePage.evaluate(async ({ wasmURL, title }) => {
+        const { mount } = await import("/js/miniquad.mjs");
+        window.app = mount({ container: document.querySelector("#scene"), wasmURL, title });
+        await window.app.ready;
+        window.app.setParameters({ speed: 0 });
+      }, { wasmURL: `${baseURL}/${wasmPath}`, title });
+      await scenePage.waitForFunction(() => window.app.frame.contentWindow.miniquadRuntime.frames > 2);
+    }
+
+    const canvasA = page.frameLocator("#scene iframe").locator("#glcanvas");
+    const canvasB = pageB.frameLocator("#scene iframe").locator("#glcanvas");
+    const imageA = PNG.sync.read(await canvasA.screenshot());
+    const imageB = PNG.sync.read(await canvasB.screenshot());
+    expect(imageA.width).toBe(imageB.width);
+    expect(imageA.height).toBe(imageB.height);
+
+    maskHud(imageA);
+    maskHud(imageB);
+    const differing = countDifferingPixels(imageA, imageB, 2);
+    expect(differing / (imageA.width * imageA.height)).toBeLessThanOrEqual(0.005);
+  } finally {
+    await page.evaluate(() => window.app?.dispose());
+    await pageB.evaluate(() => window.app?.dispose());
+    await contextB.close();
+  }
+});
+
+test("frozen mixed scenes apply the same fixed edit trace to equal semantic state and near-identical pixels, excluding the HUD", async ({ page, browser }) => {
+  test.skip(!spawnedVxServer, "fixed trace requires this fixture's clean vx-server");
+  // Page A: un-wired mixed artifact. Without a transport, the mixed
+  // example applies `vx_input` locally, matching offline mode.
   const pageA = page;
   await pageA.goto(`${baseURL}/voxel-mixed.html`);
   await pageA.evaluate(async (wasmURL) => {
@@ -812,10 +848,8 @@ test("frozen offline and mixed (server-synced) scenes apply the same fixed edit 
     window.client = window.wireVoxelMixedHost(window.app, syncUrl);
     window.client.start();
   }, `${baseURL}/vx/v1/sync`);
-  // Wait for the first real Hello snapshot: this test's server must
-  // start this trace from the same fresh rev-0 scene as page A's
-  // offline client (no earlier test in this file sends any `vx_input`
-  // while wired to the network).
+  // Wait for the first real Hello snapshot. The fixture-owned server
+  // starts this trace from the same fresh rev-0 scene as page A.
   await pageB.waitForFunction(() => window.app.frame.contentWindow.miniquadRuntime.exports.vx_has_snapshot() !== 0);
   const serverRevBefore = await pageB.evaluate(() => window.app.frame.contentWindow.miniquadRuntime.exports.vx_world_rev());
   expect(serverRevBefore).toBe(0);

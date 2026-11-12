@@ -1089,6 +1089,7 @@ test("issue #29 measurement receipt: offline and mixed voxel runtime", async ({ 
         throw new Error(`browser errors: ${failures.join("; ")}`);
       }
       await page.evaluate(() => clearInterval(window.__voxelHeapTimer));
+      const screenshot = await page.frameLocator("#scene iframe").locator("#glcanvas").screenshot();
 
       let serverRssBytes = null;
       if (mode === "mixed" && spawnedVxServer?.pid) {
@@ -1112,6 +1113,7 @@ test("issue #29 measurement receipt: offline and mixed voxel runtime", async ({ 
         requestBodyBytes,
         responseBodyBytes,
         serverRssBytes,
+        screenshot,
       };
     } finally {
       await context.close();
@@ -1119,9 +1121,25 @@ test("issue #29 measurement receipt: offline and mixed voxel runtime", async ({ 
   };
 
   const observations = [];
+  const { PNG } = await import("pngjs");
+  const parity = [];
   for (let pair = 0; pair < 10; pair++) {
     const order = pair % 2 === 0 ? ["offline", "mixed"] : ["mixed", "offline"];
-    for (const mode of order) observations.push(await runScenario(mode, pair + 1, order.join("-")));
+    const pairRows = {};
+    for (const mode of order) {
+      pairRows[mode] = await runScenario(mode, pair + 1, order.join("-"));
+      observations.push(pairRows[mode]);
+    }
+    const offlineImage = PNG.sync.read(pairRows.offline.screenshot);
+    const mixedImage = PNG.sync.read(pairRows.mixed.screenshot);
+    expect(offlineImage.width).toBe(mixedImage.width);
+    expect(offlineImage.height).toBe(mixedImage.height);
+    maskHud(offlineImage);
+    maskHud(mixedImage);
+    const differingPixels = countDifferingPixels(offlineImage, mixedImage, 2);
+    const differingFraction = differingPixels / (offlineImage.width * offlineImage.height);
+    expect(differingFraction).toBeLessThanOrEqual(0.005);
+    parity.push({ pair: pair + 1, differingPixels, differingFraction });
   }
 
   const summaryFor = (mode, key) =>
@@ -1155,7 +1173,8 @@ test("issue #29 measurement receipt: offline and mixed voxel runtime", async ({ 
       gpuMemoryBytes: null,
       inputToVisibleLatencyMs: null,
     },
-    observations,
+    parity,
+    observations: observations.map(({ screenshot, ...observation }) => observation),
   };
   console.log(`VOXEL_METRICS ${JSON.stringify(receipt)}`);
 });

@@ -973,10 +973,9 @@ test("issue #29 measurement receipt: offline and mixed voxel runtime", async ({ 
   const source = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" });
   if (source.status !== 0) throw new Error(`git rev-parse failed: ${source.stderr}`);
 
-  const commonFiles = [
+  const javascriptFiles = [
     "js/gl.js",
     "js/miniquad.mjs",
-    "js/runtime.html",
     "js/runtime.mjs",
     "js/host-preferences.mjs",
     "companions/voxel/web/voxel-host.mjs",
@@ -984,19 +983,30 @@ test("issue #29 measurement receipt: offline and mixed voxel runtime", async ({ 
   ];
   const assetBytes = async (mode) => {
     const wasmPath = `companions/voxel/target/wasm32-unknown-unknown/release/examples/${mode}.wasm`;
-    const files = [wasmPath, ...commonFiles];
-    const entries = await Promise.all(
-      files.map(async (file) => {
+    const readEntries = async (files) =>
+      Promise.all(
+        files.map(async (file) => {
         const bytes = await readFile(resolve(root, file));
         return { file, rawBytes: bytes.length, gzipBytes: gzipSync(bytes).length };
-      }),
-    );
+        }),
+      );
+    const [wasmEntry] = await readEntries([wasmPath]);
+    const javascript = await readEntries(javascriptFiles);
+    const html = await readEntries(["tests/browser/voxel-mixed.html", "js/runtime.html"]);
     return {
-      entries,
-      wasmRawBytes: entries[0].rawBytes,
-      wasmGzipBytes: entries[0].gzipBytes,
-      jsRawBytes: entries.slice(1).reduce((sum, entry) => sum + entry.rawBytes, 0),
-      jsGzipBytes: entries.slice(1).reduce((sum, entry) => sum + entry.gzipBytes, 0),
+      wasm: wasmEntry,
+      javascript: {
+        entries: javascript,
+        rawBytes: javascript.reduce((sum, entry) => sum + entry.rawBytes, 0),
+        gzipBytes: javascript.reduce((sum, entry) => sum + entry.gzipBytes, 0),
+      },
+      html: {
+        entries: html,
+        rawBytes: html.reduce((sum, entry) => sum + entry.rawBytes, 0),
+        gzipBytes: html.reduce((sum, entry) => sum + entry.gzipBytes, 0),
+      },
+      rawWasmJsBytes: wasmEntry.rawBytes + javascript.reduce((sum, entry) => sum + entry.rawBytes, 0),
+      gzipWasmJsBytes: wasmEntry.gzipBytes + javascript.reduce((sum, entry) => sum + entry.gzipBytes, 0),
     };
   };
   const assets = {

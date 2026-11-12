@@ -1,9 +1,9 @@
 # Compare Miniquad with plain WebGL2 before a continue-or-freeze decision
 
-* Status: **Proposed**
-* Date: 2026-11-11
+* Status: **Accepted**
+* Date: 2026-11-12
 * Tracking: [#157](https://github.com/Tigon32/miniquad/issues/157); related [#14](https://github.com/Tigon32/miniquad/issues/14), [#19](https://github.com/Tigon32/miniquad/issues/19), [#22](https://github.com/Tigon32/miniquad/issues/22), [#29](https://github.com/Tigon32/miniquad/issues/29), [#154](https://github.com/Tigon32/miniquad/issues/154), and [#156](https://github.com/Tigon32/miniquad/issues/156)
-* Source: `5be67a3b89597b56dffb847c054dab352e378725`
+* Source: `65bbc8f1811254ef5ab3ec0f8979620185753680`
 * Scope: one browser scene and its native/WASM portability proof
 * Writing review state: **STE-aligned draft**. Full ASD-STE100 dictionary review not done.
 
@@ -45,10 +45,22 @@ value for this decision. This is not evidence from user research.
 
 ## Decision Outcome
 
-**Proposed:** run the comparison and record its evidence before closing #157.
-The owner-set policy is that native-plus-web portability is required. Do not
-describe this policy as confirmed user demand. The comparison can test
-feasibility and report performance. It cannot establish user demand.
+**Accepted: continue Miniquad** for developers who need one interactive
+graphics application from one Rust codebase on the web and on native
+platforms. This target group remains a hypothesis, not confirmed demand.
+
+The owner-set policy requires native-plus-web portability. This is a product
+policy, not evidence from user research. The council review found gaps in the
+plain WebGL2 geometry hash and the known-bad control. The comparison now
+checks the submitted buffers and uses the A/B pixel comparator for the
+control. The final receipt passes the required fixture, pixel, control, and
+native/WASM checks.
+
+The timing result is **INCONCLUSIVE**. It does not show a speed gain or a
+regression. The receipt is provisional because it does not contain GPU time.
+Continue with the support matrix in #156 and the equivalent-scene WebGPU
+proof in #154. Use #14 for performance work when a valid GPU timer is
+available. This decision does not qualify support or set a release limit.
 
 The public fixture must use a fixed, documented input. It must not import or
 copy code from the private reference. The reference identifies the scene and
@@ -123,7 +135,7 @@ claim pixel parity from matching counts or hashes.
 ### Measurement
 
 * Instrument the page's `requestAnimationFrame` callbacks before either arm
-  loads. Use the same isolated page and wrapper for each arm. The wrapper
+  loads. Use the same page setup and wrapper for each arm. The wrapper
   records callback CPU duration and frame intervals. Both arms redraw the
   full static scene on every frame. This measures callback CPU time, not
   completed GPU work.
@@ -136,8 +148,10 @@ claim pixel parity from matching counts or hashes.
   median paired delta and a 95% bootstrap confidence interval from 10,000
   resamples. Derive and record the bootstrap seed from the comparison source
   SHA. A timing improvement is supported only when the interval is below
-  zero; a regression is supported only when it is above zero. Otherwise
-  report **INCONCLUSIVE**. This rule does not turn timing into a decision
+  zero; a regression is supported only when it is above zero. The timer
+  resolution and same-arm spread must also be smaller than the measured
+  effect. Otherwise report **INCONCLUSIVE**. The bootstrap interval does not
+  model timer quantization. This rule does not turn timing into a decision
   gate.
 * Report frame intervals, p50/p95/p99, cold startup, page asset sizes, and
   implementation effort as descriptive results. Do not select a secondary
@@ -145,7 +159,8 @@ claim pixel parity from matching counts or hashes.
 * Record total page assets for each arm: raw, gzip, and Brotli bytes.
   Record the compression method, tool versions, source hashes, and build
   flags.
-* Record implementation and build effort as elapsed time and commands. Count
+* Record implementation and build effort as elapsed time and commands. If
+  implementation time was not tracked, state that. Do not estimate it. Count
   source lines with one tool and one rule for both arms.
 * Record browser, browser version, OS, CPU, GPU, adapter renderer, context
   attributes, power mode, and background workload. Confirm a hardware WebGL2
@@ -195,42 +210,85 @@ claim, or approved SLO.
 
 ## Confirmation
 
-1. Review and accept this design before building either comparison arm.
-2. Commit the public fixture and schema. Verify its counts and input hash.
-3. Verify browser pixel parity and the render-only control.
-4. Build and run both native and WASM targets. Verify counts, geometry
-   hashes, layer-specific pixel checks, nonempty frames, and record the
-   cross-API pixel metrics.
-5. Run the fixed measurement protocol in one source checkpoint.
-6. Record all tests that did not run, then ask the council to review the
-   receipt and decision.
+1. **Done:** commit the public fixture and schema. Verify its counts and
+   input hash.
+2. **Done:** verify browser pixel parity and run the render-only control
+   through the A/B pixel comparator.
+3. **Done:** build the Miniquad arm for native and WASM. Verify counts,
+   submitted geometry hashes, layer samples, absent sample points, and
+   nonempty frames.
+4. **Done:** run the fixed measurement protocol at one source revision.
+   Record the receipt, artifact hashes, commands, toolchains, and limits.
+5. **Done:** the advisor recommends continue. The adversary identified a
+   plain-arm hash gap and a control-comparator gap. The implementation and
+   receipt now close both gaps. The judge rules **continue** under the
+   owner-set portability policy. The target group remains a hypothesis.
 
 ## Observed Evidence
 
-* The #14 profile receipt reports INCONCLUSIVE timing on a small
-  `browser_perf` fixture.
-* The current Miniquad profiler measures a Miniquad WASM fixture. It does
-  not time a plain WebGL2 implementation.
-* The private reference scene is not an independently accessible public
-  test fixture.
-* The public fixture now records the scene input, source counts, geometry,
-  layer checks, coordinate order, level meaning, numeric encoding, and units.
-  Its output counts match the fixed input contract above.
-* The Miniquad arm builds voxel geometry with `companions/voxel` and vector
-  geometry with `companions/draw`. It checks the submitted vertices, colors,
-  indices, and layer ranges against the fixture before it renders.
-* The plain WebGL2 arm uses the same fixture geometry. The browser verifier
-  checks each arm's counts, geometry hash, layer samples, absent sample
-  points, and render-only control.
-* The native Metal capture passes the five layer samples and the absent
-  sample-point check on macOS 26.7.1 arm64, Apple M3 Pro. The native capture
-  stores top-left RGBA8 bytes after channel normalization.
-* A headful Chromium run on the same host reports WebGL 2.0, an ANGLE Metal
-  renderer, sRGB drawing buffers, zero same-arm pixel differences, and zero
-  Miniquad/plain pixel differences. The 32 × 32 control changes 1024 pixels
-  in each arm.
-* The paired timing receipt has not run. Do not use the parity result as a
-  performance result or as the council's final decision.
+* The measured source is `65bbc8f1811254ef5ab3ec0f8979620185753680`.
+  The full receipt is
+  [`experiments/webgl2-comparison/receipt.json`](../../experiments/webgl2-comparison/receipt.json).
+* The fixture SHA-256 is
+  `7cc1ebf47e08dff053cefdd10ff50989fac1ee58fa47d99ebdf75edec373c934`.
+  It defines 152 occupied cells, 686 voxel levels, 180 path points, 20
+  arrows, and 200 vector items. The geometry FNV64 is
+  `6d6b287b56daf47a`.
+* The Miniquad WASM arm builds voxel geometry with `companions/voxel` and
+  vector geometry with `companions/draw`. It hashes the submitted geometry.
+  The plain arm hashes the exact `Float32Array` and `Uint16Array` buffers
+  that it passes to `bufferData`. Both hashes and count records match.
+* The plain arm submits 2,476 vertices and 3,684 indices. Both browser arms
+  use one static interleaved vertex buffer, one index buffer, and one draw
+  for each enabled layer. Neither arm uses instancing.
+* Browser A/A bounds are zero for both arms. Miniquad/WASM and plain WebGL2
+  differ at zero pixels with tolerance two. Both outputs have opaque alpha.
+  The 32 × 32 control changes 1,024 pixels in each arm when the same A/B
+  comparator checks it.
+* The Miniquad WASM arm and the plain WebGL2 arm each render 27,586
+  non-background pixels. Both pass all layer and absent-sample checks. The
+  native Metal capture passes the same checks and contains 27,586
+  non-background pixels. The native/WASM comparison has zero differing
+  pixels. This cross-API result is descriptive; it is not a gate.
+* The native capture is
+  [`artifacts/native-metal-640x400.rgba`](../../experiments/webgl2-comparison/artifacts/native-metal-640x400.rgba).
+  Its SHA-256 is
+  `72190cbf8ed5897144d0b856ec4464cf4780788bab210d23bc0ea106ac212ae1`.
+  The native binary SHA-256 is
+  `e5a9747cf361395c2bb0c66fb0efc950b4b3398f9898f4983a8baa367011369d`.
+  The WASM binary SHA-256 is
+  `c99456058be382846be67e70a6ccd2b862ea0bb026106dc7fd25de79508dfc2a`.
+* The run took place from `2026-11-12T07:12:57Z` to
+  `2026-11-12T07:17:06Z`. It used macOS 26.7.1 arm64, Apple M3 Pro, and
+  Chromium 158.0.8127.18. WebGL was 2.0. ANGLE used the Apple M3 Pro Metal
+  renderer. The drawing buffer used sRGB. AC power was active and Low Power
+  Mode was disabled. The run did not instrument background workload.
+* The toolchain was rustc 1.99.1 and Cargo 1.99.1. The native release build
+  command was `CARGO_TARGET_DIR=target rustup run stable cargo build --release --manifest-path experiments/webgl2-comparison/rust/Cargo.toml`.
+  It took 4.13 seconds wall time; Cargo reported a 3.95-second build. The WASM
+  release build command was `CARGO_TARGET_DIR=target rustup run stable cargo build --release --target wasm32-unknown-unknown --manifest-path experiments/webgl2-comparison/rust/Cargo.toml`.
+  It took 1.72 seconds wall time; Cargo reported a 1.62-second build.
+* The native capture command was
+  `CARGO_TARGET_DIR=target MINIQUAD_CAPTURE_PATH=experiments/webgl2-comparison/artifacts/native-metal-640x400.rgba rustup run stable cargo run --release --manifest-path experiments/webgl2-comparison/rust/Cargo.toml`.
+  It wrote the committed Metal capture. The browser command was
+  `MINIQUAD_HEADFUL=1 MINIQUAD_NATIVE_CAPTURE_PATH=experiments/webgl2-comparison/artifacts/native-metal-640x400.rgba MINIQUAD_SOURCE_SHA=65bbc8f1811254ef5ab3ec0f8979620185753680 node experiments/webgl2-comparison/verify-browser.mjs > experiments/webgl2-comparison/receipt.json`.
+* Source line counts are 667 for Miniquad and 264 for plain WebGL2. Raw,
+  gzip, and Brotli page sizes are 388,099 / 110,845 / 88,603 bytes for
+  Miniquad, and 436,674 / 59,206 / 43,629 bytes for plain WebGL2.
+* The paired median callback CPU delta is +0.1 ms. The bootstrap interval is
+  `[0.099999994, 0.1000000015]` ms. The page was not cross-origin isolated.
+  The measured callbacks use 0 and 0.1 ms values. Same-arm timing spread is
+  also 0.1 ms. The timer cannot resolve an effect at this scale. The timing
+  result is **INCONCLUSIVE**, not a regression or a speed gain. No GPU time
+  was measured. The receipt is provisional until a valid GPU timer is
+  available.
+* Frame interval p50/p95/p99 is 8.3 / 9.3 / 9.4 ms for Miniquad and
+  8.3 / 9.3 / 9.9 ms for plain WebGL2. Cold startup median/p95 is
+  39.69 / 56.38 ms for Miniquad and 39.94 / 54.84 ms for plain WebGL2.
+  These values describe one host and browser only.
+* Implementation elapsed time was not tracked. Firefox, WebKit, mobile
+  browsers, iOS Safari, input, clipboard, and context-loss tests did not run.
+  This comparison is not browser qualification or user research.
 
 ## References
 

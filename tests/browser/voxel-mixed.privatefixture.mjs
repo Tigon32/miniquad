@@ -36,6 +36,7 @@
 // Separate real WebGL1/WebGL2 build evidence (own build outputs, not
 // served by default - build on demand before running this file's
 // GL1/GL2 test):
+//   cargo build --release --target wasm32-unknown-unknown --example offline --manifest-path companions/voxel/Cargo.toml
 //   cargo build --release --target wasm32-unknown-unknown --example mixed --target-dir companions/voxel/target-gl1
 //   cargo build --release --target wasm32-unknown-unknown --example mixed --features webgl2 --target-dir companions/voxel/target-gl2
 // served at /voxel-mixed-gl1.wasm and /voxel-mixed-gl2.wasm
@@ -45,9 +46,10 @@
 import { test, expect } from "@playwright/test";
 import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { resolve } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
+import { gzipSync } from "node:zlib";
 
 const root = resolve(new URL("../..", import.meta.url).pathname);
 const FIXTURE_HOST = "127.0.0.1";
@@ -61,6 +63,13 @@ const staticFiles = new Map([
   ["/js/runtime.html", { file: "js/runtime.html", type: "text/html; charset=utf-8" }],
   ["/js/runtime.mjs", { file: "js/runtime.mjs", type: "text/javascript; charset=utf-8" }],
   ["/js/host-preferences.mjs", { file: "js/host-preferences.mjs", type: "text/javascript; charset=utf-8" }],
+  [
+    "/voxel-offline.wasm",
+    {
+      file: "companions/voxel/target/wasm32-unknown-unknown/release/examples/offline.wasm",
+      type: "application/wasm",
+    },
+  ],
   [
     "/voxel-mixed.wasm",
     {
@@ -935,4 +944,218 @@ test("sprite depth occlusion: a stone column between the camera and the sprite r
   expect(after).not.toEqual(SPRITE_TINT);
 
   await page.evaluate(() => window.app.dispose());
+});
+
+function percentile(values, fraction) {
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.max(0, Math.ceil(sorted.length * fraction) - 1)];
+}
+
+function median(values) {
+  return percentile(values, 0.5);
+}
+
+function summarize(values) {
+  const measured = values.filter(Number.isFinite);
+  return measured.length
+    ? {
+        median: median(measured),
+        min: Math.min(...measured),
+        max: Math.max(...measured),
+      }
+    : null;
+}
+
+test("issue #29 measurement receipt: offline and mixed voxel runtime", async ({ browser }) => {
+  test.skip(process.env.MINIQUAD_MEASURE_VOXEL !== "1", "run only for an explicit performance measurement");
+  test.setTimeout(300_000);
+
+  const source = spawnSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" });
+  if (source.status !== 0) throw new Error(`git rev-parse failed: ${source.stderr}`);
+
+  const commonFiles = [
+    "js/gl.js",
+    "js/miniquad.mjs",
+    "js/runtime.html",
+    "js/runtime.mjs",
+    "js/host-preferences.mjs",
+    "companions/voxel/web/voxel-host.mjs",
+    "companions/voxel/web/voxel-revision.mjs",
+  ];
+  const assetBytes = async (mode) => {
+    const wasmPath = `companions/voxel/target/wasm32-unknown-unknown/release/examples/${mode}.wasm`;
+    const files = [wasmPath, ...commonFiles];
+    const entries = await Promise.all(
+      files.map(async (file) => {
+        const bytes = await readFile(resolve(root, file));
+        return { file, rawBytes: bytes.length, gzipBytes: gzipSync(bytes).length };
+      }),
+    );
+    return {
+      entries,
+      wasmRawBytes: entries[0].rawBytes,
+      wasmGzipBytes: entries[0].gzipBytes,
+      jsRawBytes: entries.slice(1).reduce((sum, entry) => sum + entry.rawBytes, 0),
+      jsGzipBytes: entries.slice(1).reduce((sum, entry) => sum + entry.gzipBytes, 0),
+    };
+  };
+  const assets = {
+    offline: await assetBytes("offline"),
+    mixed: await assetBytes("mixed"),
+  };
+
+  const runScenario = async (mode, pair, order) => {
+    const context = await browser.newContext({
+      viewport: { width: 800, height: 500 },
+      deviceScaleFactor: 1,
+    });
+    const page = await context.newPage();
+    const failures = [];
+    const pendingSyncResponses = [];
+    let requestBodyBytes = 0;
+    let responseBodyBytes = 0;
+
+    await page.addInitScript(() => {
+      const measurement = { frames: [], heapBytes: [] };
+      window.__voxelMeasurement = measurement;
+      const requestAnimationFrame = window.requestAnimationFrame.bind(window);
+      window.requestAnimationFrame = (callback) =>
+        requestAnimationFrame((timestamp) => {
+          if (measurement.frames.length < 2000) measurement.frames.push(timestamp);
+          callback(timestamp);
+        });
+      window.__voxelHeapTimer = setInterval(() => {
+        const bytes = performance.memory?.usedJSHeapSize;
+        if (typeof bytes === "number") measurement.heapBytes.push(bytes);
+      }, 100);
+    });
+    page.on("pageerror", (error) => failures.push(error.message));
+    page.on("requestfailed", (request) => failures.push(`${request.url()}: ${request.failure()?.errorText ?? "unknown error"}`));
+    page.on("response", (response) => {
+      if (response.status() >= 400) failures.push(`HTTP ${response.status()} ${response.url()}`);
+      if (new URL(response.url()).pathname === "/vx/v1/sync") {
+        pendingSyncResponses.push(
+          response.body().then((body) => {
+            responseBodyBytes += body.length;
+          }),
+        );
+      }
+    });
+    page.on("request", (request) => {
+      if (new URL(request.url()).pathname === "/vx/v1/sync") {
+        requestBodyBytes += request.postDataBuffer()?.length ?? 0;
+      }
+    });
+
+    try {
+      await page.goto(`${baseURL}/voxel-mixed.html`);
+      await page.evaluate(async ({ wasmURL, mode }) => {
+        window.__voxelStartEpoch = performance.timeOrigin + performance.now();
+        const { mount } = await import("/js/miniquad.mjs");
+        window.app = mount({ container: document.querySelector("#scene"), wasmURL, title: "Voxel measurement" });
+        await window.app.ready;
+        window.app.setParameters({ speed: 0 });
+        if (mode === "mixed") {
+          window.client = window.wireVoxelMixedHost(window.app, `${location.origin}/vx/v1/sync`);
+          window.client.start();
+        }
+      }, {
+        wasmURL: `${baseURL}/voxel-${mode}.wasm`,
+        mode,
+      });
+
+      if (mode === "mixed") {
+        await page.waitForFunction(() => document.querySelector("#status").textContent === "Connected.");
+      }
+      await page.waitForFunction(
+        () => window.app.frame.contentWindow.__voxelMeasurement.frames.length >= 361,
+        undefined,
+        { timeout: 60000 },
+      );
+      await Promise.all(pendingSyncResponses);
+
+      const runtime = await page.evaluate(() => {
+        const frame = window.app.frame.contentWindow;
+        const timestamps = frame.__voxelMeasurement.frames.slice(0, 361);
+        return {
+          firstFrameMs: frame.performance.timeOrigin + timestamps[0] - window.__voxelStartEpoch,
+          measuredIntervals: timestamps.slice(61).map((timestamp, index) => timestamp - timestamps[index + 60]),
+          wasmMemoryBytes: frame.wasm_memory?.buffer.byteLength ?? null,
+          heapSamples: frame.__voxelMeasurement.heapBytes,
+        };
+      });
+
+      if (failures.length) {
+        throw new Error(`browser errors: ${failures.join("; ")}`);
+      }
+      await page.evaluate(() => clearInterval(window.__voxelHeapTimer));
+
+      let serverRssBytes = null;
+      if (mode === "mixed" && spawnedVxServer?.pid) {
+        const ps = spawnSync("ps", ["-o", "rss=", "-p", String(spawnedVxServer.pid)], { encoding: "utf8" });
+        if (ps.status !== 0) throw new Error(`ps failed for vx-server: ${ps.stderr}`);
+        const rssKilobytes = Number(ps.stdout.trim());
+        if (!Number.isFinite(rssKilobytes)) throw new Error(`could not parse vx-server RSS: ${ps.stdout}`);
+        serverRssBytes = rssKilobytes * 1024;
+      }
+
+      return {
+        pair,
+        order,
+        mode,
+        firstFrameMs: runtime.firstFrameMs,
+        frameIntervalP95Ms: percentile(runtime.measuredIntervals, 0.95),
+        frameIntervalP99Ms: percentile(runtime.measuredIntervals, 0.99),
+        wasmMemoryBytes: runtime.wasmMemoryBytes,
+        jsHeapPeakBytes: runtime.heapSamples.length ? Math.max(...runtime.heapSamples) : null,
+        jsHeapSteadyBytes: runtime.heapSamples.length ? median(runtime.heapSamples.slice(-10)) : null,
+        requestBodyBytes,
+        responseBodyBytes,
+        serverRssBytes,
+      };
+    } finally {
+      await context.close();
+    }
+  };
+
+  const observations = [];
+  for (let pair = 0; pair < 10; pair++) {
+    const order = pair % 2 === 0 ? ["offline", "mixed"] : ["mixed", "offline"];
+    for (const mode of order) observations.push(await runScenario(mode, pair + 1, order.join("-")));
+  }
+
+  const summaryFor = (mode, key) =>
+    summarize(observations.filter((row) => row.mode === mode).map((row) => row[key]));
+  const receipt = {
+    sourceSha: source.stdout.trim(),
+    browser: { name: browser.browserType().name(), version: browser.version() },
+    runner: { node: process.version, zlib: process.versions.zlib, platform: process.platform, arch: process.arch },
+    repetitions: 10,
+    context: { viewport: "800x500 CSS pixels", deviceScaleFactor: 1, warmupFrames: 60, measuredFrames: 300 },
+    assets,
+    results: Object.fromEntries(
+      ["offline", "mixed"].map((mode) => [
+        mode,
+        {
+          firstFrameMs: summaryFor(mode, "firstFrameMs"),
+          frameIntervalP95Ms: summaryFor(mode, "frameIntervalP95Ms"),
+          frameIntervalP99Ms: summaryFor(mode, "frameIntervalP99Ms"),
+          wasmMemoryBytes: summaryFor(mode, "wasmMemoryBytes"),
+          jsHeapPeakBytes: summaryFor(mode, "jsHeapPeakBytes"),
+          jsHeapSteadyBytes: summaryFor(mode, "jsHeapSteadyBytes"),
+          requestBodyBytes: summaryFor(mode, "requestBodyBytes"),
+          responseBodyBytes: summaryFor(mode, "responseBodyBytes"),
+          serverRssBytes: summaryFor(mode, "serverRssBytes"),
+        },
+      ]),
+    ),
+    unavailable: {
+      cpuFrameTimeMs: null,
+      gpuTimeMs: null,
+      gpuMemoryBytes: null,
+      inputToVisibleLatencyMs: null,
+    },
+    observations,
+  };
+  console.log(`VOXEL_METRICS ${JSON.stringify(receipt)}`);
 });

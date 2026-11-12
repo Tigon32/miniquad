@@ -14,6 +14,7 @@
 // docs/architecture/voxel-protocol.md's "GL1/GL2 build artifacts"
 // section for the exact commands):
 //   cargo build --release --bin vx-server --manifest-path companions/voxel/Cargo.toml
+//   cargo build --release --target wasm32-unknown-unknown --example offline --manifest-path companions/voxel/Cargo.toml
 //   cargo build --release --target wasm32-unknown-unknown --example mixed --manifest-path companions/voxel/Cargo.toml
 //   cargo build --release --target wasm32-unknown-unknown --example mixed --manifest-path companions/voxel/Cargo.toml --target-dir companions/voxel/target-gl1
 //   cargo build --release --target wasm32-unknown-unknown --example mixed --manifest-path companions/voxel/Cargo.toml --features webgl2 --target-dir companions/voxel/target-gl2
@@ -21,6 +22,8 @@
 // Run with (optionally set MINIQUAD_BROWSER=chromium|firefox|webkit to
 // restrict to one engine):
 //   npx playwright test --config=tests/browser/voxel-mixed.playwright.config.mjs
+// For the paired performance receipt, also set MINIQUAD_MEASURE_VOXEL=1
+// and use --grep "issue #29 measurement receipt".
 //
 // This fixture's own servers bind to ports 4230 (vx-server) and 4231
 // (private test forwarder), independent of root's `tests/browser/serve.mjs`

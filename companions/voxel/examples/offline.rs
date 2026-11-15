@@ -114,10 +114,17 @@ fn unpack_rgba8(packed: u32) -> [f32; 4] {
     [r, g, b, a]
 }
 
-/// Bounded demo world layout: two 8x12x8 chunks placed side by side
-/// along X, inside a world that permits at most 4 resident chunks.
+/// The default demo uses two 8x12x8 chunks placed side by side along X.
+/// The measurement feature selects the hex example's 8x4x8 cell grid.
+#[cfg(not(feature = "measurement-equal-cells"))]
 const CHUNK_DIMS: ChunkDims = ChunkDims::new(8, 12, 8);
+#[cfg(feature = "measurement-equal-cells")]
+const CHUNK_DIMS: ChunkDims = ChunkDims::new(8, 4, 8);
 const MAX_RESIDENT_CHUNKS: usize = 4;
+#[cfg(not(feature = "measurement-equal-cells"))]
+const CHUNK_COORDS: [ChunkCoord; 2] = [ChunkCoord::new(0, 0, 0), ChunkCoord::new(1, 0, 0)];
+#[cfg(feature = "measurement-equal-cells")]
+const CHUNK_COORDS: [ChunkCoord; 2] = [ChunkCoord::new(-1, 0, 0), ChunkCoord::new(0, 0, 0)];
 
 struct Stage {
     ctx: Box<dyn RenderingBackend>,
@@ -144,12 +151,21 @@ impl Stage {
         // --- Build the bounded voxel world and its visible-face mesh. ---
         let mut world = World::new(CHUNK_DIMS, MAX_RESIDENT_CHUNKS)
             .expect("fixed demo world configuration is valid");
-        let coord_a = ChunkCoord::new(0, 0, 0);
-        let coord_b = ChunkCoord::new(1, 0, 0);
-        let chunk_a = generate_chunk(WORLD_SEED, CHUNK_DIMS, 0, 0)
-            .expect("fixed demo chunk dimensions are within bounds");
-        let chunk_b = generate_chunk(WORLD_SEED, CHUNK_DIMS, CHUNK_DIMS.x as i32, 0)
-            .expect("fixed demo chunk dimensions are within bounds");
+        let [coord_a, coord_b] = CHUNK_COORDS;
+        let chunk_a = generate_chunk(
+            WORLD_SEED,
+            CHUNK_DIMS,
+            coord_a.x * CHUNK_DIMS.x as i32,
+            coord_a.z * CHUNK_DIMS.z as i32,
+        )
+        .expect("fixed demo chunk dimensions are within bounds");
+        let chunk_b = generate_chunk(
+            WORLD_SEED,
+            CHUNK_DIMS,
+            coord_b.x * CHUNK_DIMS.x as i32,
+            coord_b.z * CHUNK_DIMS.z as i32,
+        )
+        .expect("fixed demo chunk dimensions are within bounds");
         world.insert(coord_a, chunk_a).expect("world has room");
         world.insert(coord_b, chunk_b).expect("world has room");
 

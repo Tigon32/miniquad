@@ -992,3 +992,30 @@ extern "C" {
 pub unsafe fn is_gl2() -> bool {
     false
 }
+
+// `EXT_disjoint_timer_query_webgl2` reuses the desktop/ES `GL_QUERY_COUNTER_BITS`
+// and `GL_GPU_DISJOINT_EXT` enum values. See the WebGL2 feature-detection
+// method in the extension spec: `getQuery(TIME_ELAPSED_EXT, QUERY_COUNTER_BITS_EXT)`
+// returns 0 when the browser does not grant the extension.
+pub const GL_QUERY_COUNTER_BITS: u32 = 0x8864;
+pub const GL_GPU_DISJOINT_EXT: u32 = 0x8FBB;
+
+/// Reports whether the active WebGL context gives a real GPU timer-query
+/// result. Issue #145 scopes the verified path to WebGL2 with the
+/// `EXT_disjoint_timer_query_webgl2` browser extension; WebGL1 always
+/// reports unsupported here, because `js/gl.js` does not route a WebGL1
+/// `glGetQueryiv` call to a function the browser recognizes.
+pub unsafe fn gpu_timer_query_supported() -> bool {
+    let mut bits: GLint = 0;
+    glGetQueryiv(GL_TIME_ELAPSED, GL_QUERY_COUNTER_BITS, &mut bits);
+    bits > 0
+}
+
+/// Reads and clears the WebGL2 `GPU_DISJOINT_EXT` flag. The browser sets
+/// this when the GPU clock changed during a query (for example, a power
+/// state change); a query spanning that change is not reliable.
+pub unsafe fn gpu_timer_query_disjoint() -> bool {
+    let mut disjoint: GLint = 0;
+    glGetIntegerv(GL_GPU_DISJOINT_EXT, &mut disjoint);
+    disjoint != 0
+}

@@ -1,0 +1,12 @@
+[workspace]
+
+[package]
+name = "webgl2-comparison"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+miniquad = { path = "../../../" }
+miniquad-draw = { path = "../../../companions/draw" }
+miniquad-voxel = { path = "../../../companions/voxel" }

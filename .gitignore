@@ -22,6 +22,9 @@ node_modules/
 # a copy of its source) reproducible too. See docs/drawing-companion.md.
 !experiments/drawing-comparison/external-consumer/Cargo.lock
 
+# Keep the issue #157 companion-backed comparison app reproducible.
+!experiments/webgl2-comparison/rust/Cargo.lock
+
 # WebGPU proof candidates (#154): keep their pinned locks, ignore build output.
 !experiments/webgpu-manual/Cargo.lock
 !experiments/webgpu-wgpu/Cargo.lock

@@ -1,6 +1,6 @@
 # Add an optional 2D hex layout to the drawing companion
 
-* Status: **Proposed**
+* Status: **Accepted**
 * Date: 2026-11-11
 * Scope: Optional drawing companion `companions/draw`. Miniquad core is not in scope.
 * Related issues: [#133](https://github.com/Tigon32/miniquad/issues/133), [#134](https://github.com/Tigon32/miniquad/issues/134)
@@ -39,7 +39,7 @@ It does not supply a Y-down 2D layout. A 3D ray picker does not replace a 2D hit
 
 ## Decision Outcome
 
-**Proposed:** option B.
+**Accepted:** option B.
 Add one pure module `companions/draw/src/hex.rs`, public path `miniquad_draw::hex`.
 The module uses the axial convention, side order, and corner lattice of MADR 0011.
 It adds a caller-selected circumradius, a pixel origin, and a 2D orientation.
@@ -74,10 +74,15 @@ That extraction needs a new decision. This decision does not require it.
 
 ## Verification
 
-Use the test lists in the [2D hex contract](../hex-2d-contract.md).
-Run the companion unit tests, native and WASM compile checks, and `node scripts/check-docs.mjs`.
-Browser appearance is not proved by pure geometry tests.
+[#161](https://github.com/Tigon32/miniquad/pull/161) merged the layout API to `master` at
+`e7272766b9d3a417b4c25ecd5d23d4c7a6158c78`. The owner recorded exact source and tree
+equality, passing hosted `rust-wasm`, native and WASM consumer builds, 64 drawing tests,
+and 5 cross-contract tests in [#133](https://github.com/Tigon32/miniquad/issues/133).
+The dependent example in [#134](https://github.com/Tigon32/miniquad/issues/134) also uses
+the public API without a second renderer.
 
-This decision stays **Proposed** until implementation evidence is reviewed.
+The browser suite in [#172](https://github.com/Tigon32/miniquad/pull/172) tests rendering
+and selection under its stated conditions. It does not change this API decision. See the
+[2D hex contract](../hex-2d-contract.md) for the commands and limits.
 This record is already in the [decision index](README.md) and the [glossary](../glossary.md)
 (Axial coordinate, 2D hex layout).

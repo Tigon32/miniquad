@@ -18,7 +18,11 @@ const files = new Map([
   ["/clock-privacy", {file:"tests/browser/clock-privacy.html",type:"text/html; charset=utf-8"}],
   ["/quad.wasm", {file:"target/wasm32-unknown-unknown/release/examples/quad.wasm",type:"application/wasm"}],
   ["/offscreen", {file:"tests/browser/offscreen.html",type:"text/html; charset=utf-8"}],
-  ["/offscreen.wasm", {file:"target/wasm32-unknown-unknown/release/examples/offscreen.wasm",type:"application/wasm"}]
+  ["/offscreen.wasm", {file:"target/wasm32-unknown-unknown/release/examples/offscreen.wasm",type:"application/wasm"}],
+  ["/gpu-timer-query-webgl1", {file:"tests/browser/gpu-timer-query-webgl1.html",type:"text/html; charset=utf-8"}],
+  ["/gpu-timer-query-webgl2", {file:"tests/browser/gpu-timer-query-webgl2.html",type:"text/html; charset=utf-8"}],
+  ["/gpu_timer_query_webgl1.wasm", {file:"target/wasm32-unknown-unknown/release/examples/gpu_timer_query_webgl1.wasm",type:"application/wasm"}],
+  ["/gpu_timer_query_webgl2.wasm", {file:"target/wasm32-unknown-unknown/release/examples/gpu_timer_query_webgl2.wasm",type:"application/wasm"}]
 ]);
 const host = "127.0.0.1";
 const port = 4173;

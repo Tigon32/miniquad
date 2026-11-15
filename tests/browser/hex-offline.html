@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Miniquad offline hex voxel scene</title>
+  <style>
+    html, body { margin: 0; background: #000; font-family: sans-serif; }
+    #glcanvas { width: 640px; height: 360px; display: block; }
+    #hex-status { color: #f2f2f2; background: #111; padding: 8px 12px; }
+    #hex-status button { margin-right: 8px; }
+  </style>
+</head>
+<body>
+  <canvas id="glcanvas" width="640" height="360" tabindex="0"></canvas>
+  <section id="hex-status" aria-label="Hex voxel scene" role="status" aria-live="polite">
+    <p id="hex-topology">Topology: hexagonal prism</p>
+    <p id="hex-mode">Mode: offline</p>
+    <p id="hex-revision">Revision: 0</p>
+    <p id="hex-picked">Picked: none</p>
+    <button id="hex-place-column" type="button">Place column</button>
+    <button id="hex-release" type="button">Release</button>
+  </section>
+  <script src="/js/gl.js"></script>
+  <script>
+    (function () {
+      const params = new URLSearchParams(window.location.search);
+      const variant = params.get("variant") === "webgl2" ? "webgl2" : "webgl1";
+      const wasmPath = "/offline_hex_" + variant + ".wasm";
+
+      const faceNames = ["PosQ", "PosR", "NegQPosR", "NegQ", "NegR", "PosQNegR", "Top", "Bottom"];
+      // True once `resources_live()` has been observed nonzero (the
+      // scene actually started). Used below to tell a real post-
+      // release "resources_live() == 0" apart from the brief instant
+      // before the first frame, when the export may not yet exist.
+      let everLive = false;
+      // Shared with the pointerdown handler below, which is outside
+      // `updateStatus`'s own scope: once released, no further pick
+      // should run against a scene with no GPU resources.
+      let released = false;
+
+      function setControlsDisabled(disabled) {
+        document.getElementById("hex-place-column").disabled = disabled;
+        document.getElementById("hex-release").disabled = disabled;
+      }
+
+      function updateStatus() {
+        const exports = window.wasm_exports;
+        if (!exports) {
+          window.requestAnimationFrame(updateStatus);
+          return;
+        }
+        const live = exports.resources_live();
+        if (live > 0) everLive = true;
+        released = everLive && live === 0;
+
+        // A real, bounded world-mutation count (contract: only
+        // actual "Place column" writes increment it), not a per-
+        // frame tick. Stays accurate and readable at any scene
+        // lifetime: no overflow-truncation display hack needed.
+        document.getElementById("hex-revision").textContent =
+          "Revision: " + exports.hex_world_revision();
+
+        if (released) {
+          // Stop polling: the scene has no more GPU resources and no
+          // further picked-cell state will change.
+          setControlsDisabled(true);
+          return;
+        }
+
+        const valid = exports.hex_probe_picked_valid();
+        if (valid) {
+          const q = exports.hex_probe_picked_q();
+          const r = exports.hex_probe_picked_r();
+          const layer = exports.hex_probe_picked_layer();
+          const faceIndex = exports.hex_probe_picked_face();
+          const face = faceIndex < faceNames.length ? faceNames[faceIndex] : "none";
+          document.getElementById("hex-picked").textContent =
+            "Picked: q=" + q + " r=" + r + " layer=" + layer + " face=" + face;
+        } else {
+          document.getElementById("hex-picked").textContent = "Picked: none";
+        }
+        window.requestAnimationFrame(updateStatus);
+      }
+
+      document.getElementById("hex-place-column").addEventListener("click", () => {
+        window.wasm_exports?.hex_request_place_column();
+      });
+      document.getElementById("hex-release").addEventListener("click", () => {
+        window.wasm_exports?.hex_request_release();
+      });
+
+      window.addEventListener("pointerdown", event => {
+        const exports = window.wasm_exports;
+        const canvas = document.getElementById("glcanvas");
+        if (!exports || released || event.target !== canvas) return;
+        const rect = canvas.getBoundingClientRect();
+        const dpr = window.devicePixelRatio || 1;
+        const px = (event.clientX - rect.left) * dpr;
+        const py = (event.clientY - rect.top) * dpr;
+        const pxBits = new Uint32Array(new Float32Array([px]).buffer)[0];
+        const pyBits = new Uint32Array(new Float32Array([py]).buffer)[0];
+        exports.hex_probe_pick(pxBits, pyBits);
+      });
+
+      load(wasmPath).then(updateStatus);
+    })();
+  </script>
+</body>
+</html>

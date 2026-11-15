@@ -1,0 +1,746 @@
+{
+  "sourceSha": "65bbc8f1811254ef5ab3ec0f8979620185753680",
+  "runStartedAt": "2026-11-12T07:12:57.533Z",
+  "runCompletedAt": "2026-11-12T07:17:06.744Z",
+  "host": {
+    "os": "macOS 26.7.1",
+    "architecture": "arm64",
+    "cpu": "Apple M3 Pro",
+    "powerSource": "AC Power",
+    "lowPowerMode": "disabled",
+    "backgroundWorkload": "not instrumented"
+  },
+  "toolchain": {
+    "rustc": "rustc 1.99.1 (58cf8f9c3 2026-10-13)\nbinary: rustc\ncommit-hash: 58cf8f9c35b355199727627d07ae34a4e2846d67\ncommit-date: 2026-10-13\nhost: aarch64-apple-darwin\nrelease: 1.99.1\nLLVM version: 23.1.1",
+    "cargo": "cargo 1.99.1 (5f94df478 2026-08-27)"
+  },
+  "browser": "158.0.8127.18",
+  "webglVersion": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+  "shadingLanguageVersion": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)",
+  "adapter": {
+    "version": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+    "shadingLanguageVersion": "WebGL GLSL ES 3.00 (OpenGL ES GLSL ES 3.0 Chromium)",
+    "attributes": {
+      "alpha": true,
+      "antialias": false,
+      "depth": true,
+      "desynchronized": false,
+      "failIfMajorPerformanceCaveat": false,
+      "powerPreference": "high-performance",
+      "premultipliedAlpha": false,
+      "preserveDrawingBuffer": true,
+      "stencil": false,
+      "xrCompatible": false
+    },
+    "drawingBufferColorSpace": "srgb",
+    "vendor": "Google Inc. (Apple)",
+    "renderer": "ANGLE (Apple, ANGLE Metal Renderer: Apple M3 Pro, Unspecified Version)"
+  },
+  "fixtureSha256": "7cc1ebf47e08dff053cefdd10ff50989fac1ee58fa47d99ebdf75edec373c934  fixture.json",
+  "meshFnv64": "6d6b287b56daf47a",
+  "maxSameArmDifference": {
+    "miniquad": 0,
+    "plain": 0
+  },
+  "pixelTolerance": 2,
+  "parity": {
+    "differentPixels": 0,
+    "maxChannelDifference": 0
+  },
+  "nativeCapture": {
+    "path": "experiments/webgl2-comparison/artifacts/native-metal-640x400.rgba",
+    "graphicsApi": "Metal",
+    "target": "aarch64-apple-darwin",
+    "pixelFormat": "RGBA8, normalized from BGRA storage; top-left rows",
+    "width": 640,
+    "height": 400,
+    "sha256": "72190cbf8ed5897144d0b856ec4464cf4780788bab210d23bc0ea106ac212ae1",
+    "validation": {
+      "nonBackgroundPixels": 27586,
+      "samples": [
+        "grid",
+        "voxels",
+        "path",
+        "arrow",
+        "background",
+        "samplePoints"
+      ]
+    }
+  },
+  "artifacts": {
+    "buildFlags": [
+      "--release"
+    ],
+    "native": {
+      "path": "target/release/webgl2-comparison",
+      "target": "aarch64-apple-darwin",
+      "sha256": "e5a9747cf361395c2bb0c66fb0efc950b4b3398f9898f4983a8baa367011369d"
+    },
+    "wasm": {
+      "path": "target/wasm32-unknown-unknown/release/webgl2-comparison.wasm",
+      "target": "wasm32-unknown-unknown",
+      "sha256": "c99456058be382846be67e70a6ccd2b862ea0bb026106dc7fd25de79508dfc2a"
+    },
+    "commands": {
+      "native": "CARGO_TARGET_DIR=target rustup run stable cargo build --release --manifest-path experiments/webgl2-comparison/rust/Cargo.toml",
+      "wasm": "CARGO_TARGET_DIR=target rustup run stable cargo build --release --target wasm32-unknown-unknown --manifest-path experiments/webgl2-comparison/rust/Cargo.toml"
+    }
+  },
+  "executionTargets": {
+    "miniquad": "wasm32-unknown-unknown",
+    "plain": "browser JavaScript"
+  },
+  "crossApiDifference": {
+    "descriptiveOnly": true,
+    "differentPixels": 0,
+    "maxChannelDifference": 0,
+    "differentPixelPercent": 0
+  },
+  "controls": {
+    "miniquad": {
+      "differentPixels": 1024,
+      "maxChannelDifference": 250
+    },
+    "plain": {
+      "differentPixels": 1024,
+      "maxChannelDifference": 250
+    }
+  },
+  "nonBackgroundPixels": {
+    "miniquadWasm": 27586,
+    "plain": 27586
+  },
+  "geometry": {
+    "miniquad": {
+      "counts": {
+        "occupiedCells": 152,
+        "voxelLevels": 686,
+        "pathPoints": 180,
+        "arrows": 20,
+        "vectorItems": 200
+      },
+      "meshFnv64": "6d6b287b56daf47a"
+    },
+    "plain": {
+      "occupiedCells": 152,
+      "voxelLevels": 686,
+      "pathPoints": 180,
+      "arrows": 20,
+      "vectorItems": 200,
+      "meshFnv64": "6d6b287b56daf47a",
+      "vertexCount": 2476,
+      "indexCount": 3684
+    }
+  },
+  "samples": {
+    "miniquad": [
+      {
+        "layer": "grid",
+        "actual": [
+          32,
+          49,
+          75,
+          255
+        ]
+      },
+      {
+        "layer": "voxels",
+        "actual": [
+          23,
+          228,
+          255,
+          255
+        ]
+      },
+      {
+        "layer": "path",
+        "actual": [
+          255,
+          73,
+          198,
+          255
+        ]
+      },
+      {
+        "layer": "arrow",
+        "actual": [
+          255,
+          243,
+          107,
+          255
+        ]
+      },
+      {
+        "layer": "background",
+        "actual": [
+          5,
+          8,
+          22,
+          255
+        ]
+      }
+    ],
+    "plain": [
+      {
+        "layer": "grid",
+        "actual": [
+          32,
+          49,
+          75,
+          255
+        ]
+      },
+      {
+        "layer": "voxels",
+        "actual": [
+          23,
+          228,
+          255,
+          255
+        ]
+      },
+      {
+        "layer": "path",
+        "actual": [
+          255,
+          73,
+          198,
+          255
+        ]
+      },
+      {
+        "layer": "arrow",
+        "actual": [
+          255,
+          243,
+          107,
+          255
+        ]
+      },
+      {
+        "layer": "background",
+        "actual": [
+          5,
+          8,
+          22,
+          255
+        ]
+      }
+    ]
+  },
+  "absentSamples": {
+    "miniquad": [
+      {
+        "layer": "samplePoints",
+        "actual": [
+          5,
+          8,
+          22,
+          255
+        ]
+      }
+    ],
+    "plain": [
+      {
+        "layer": "samplePoints",
+        "actual": [
+          5,
+          8,
+          22,
+          255
+        ]
+      }
+    ]
+  },
+  "timing": {
+    "warmupFramesPerRun": 60,
+    "measuredFramesPerRun": 300,
+    "sameArmPairs": {
+      "miniquad": [
+        {
+          "firstMs": 0.10000000149011612,
+          "secondMs": 0.10000000149011612,
+          "deltaMs": 0
+        },
+        {
+          "firstMs": 0.10000000149011612,
+          "secondMs": 0.09999999403953552,
+          "deltaMs": -7.450580596923828e-9
+        },
+        {
+          "firstMs": 0.09999999403953552,
+          "secondMs": 0.09999999403953552,
+          "deltaMs": 0
+        },
+        {
+          "firstMs": 0,
+          "secondMs": 0.09999999403953552,
+          "deltaMs": 0.09999999403953552
+        },
+        {
+          "firstMs": 0.09999999403953552,
+          "secondMs": 0.09999999403953552,
+          "deltaMs": 0
+        },
+        {
+          "firstMs": 0.09999999403953552,
+          "secondMs": 0.09999999403953552,
+          "deltaMs": 0
+        },
+        {
+          "firstMs": 0.09999999403953552,
+          "secondMs": 0.09999999403953552,
+          "deltaMs": 0
+        },
+        {
+          "firstMs": 0.10000000149011612,
+          "secondMs": 0.10000000149011612,
+          "deltaMs": 0
+        },
+        {
+          "firstMs": 0.09999999403953552,
+          "secondMs": 0.09999999403953552,
+          "deltaMs": 0
+        },
+        {
+          "firstMs": 0.09999999403953552,
+          "secondMs": 0.10000000149011612,
+          "deltaMs": 7.450580596923828e-9
+        }
+      ],
+      "plain": [
+        {
+          "firstMs": 0,
+          "secondMs": 0,
+          "deltaMs": 0
+        },
+        {
+          "firstMs": 0,
+          "secondMs": 0,
+          "deltaMs": 0
+        },
+        {
+          "firstMs": 0,
+          "secondMs": 0,
+          "deltaMs": 0
+        },
+        {
+          "firstMs": 0,
+          "secondMs": 0,
+          "deltaMs": 0
+        },
+        {
+          "firstMs": 0,
+          "secondMs": 0,
+          "deltaMs": 0
+        },
+        {
+          "firstMs": 0,
+          "secondMs": 0,
+          "deltaMs": 0
+        },
+        {
+          "firstMs": 0,
+          "secondMs": 0,
+          "deltaMs": 0
+        },
+        {
+          "firstMs": 0,
+          "secondMs": 0,
+          "deltaMs": 0
+        },
+        {
+          "firstMs": 0,
+          "secondMs": 0,
+          "deltaMs": 0
+        },
+        {
+          "firstMs": 0,
+          "secondMs": 0,
+          "deltaMs": 0
+        }
+      ]
+    },
+    "pairOrderSeed": "65bbc8f1",
+    "pairOrder": [
+      [
+        "miniquad",
+        "plain"
+      ],
+      [
+        "miniquad",
+        "plain"
+      ],
+      [
+        "miniquad",
+        "plain"
+      ],
+      [
+        "miniquad",
+        "plain"
+      ],
+      [
+        "miniquad",
+        "plain"
+      ],
+      [
+        "plain",
+        "miniquad"
+      ],
+      [
+        "plain",
+        "miniquad"
+      ],
+      [
+        "miniquad",
+        "plain"
+      ],
+      [
+        "plain",
+        "miniquad"
+      ],
+      [
+        "plain",
+        "miniquad"
+      ],
+      [
+        "miniquad",
+        "plain"
+      ],
+      [
+        "plain",
+        "miniquad"
+      ],
+      [
+        "plain",
+        "miniquad"
+      ],
+      [
+        "plain",
+        "miniquad"
+      ],
+      [
+        "miniquad",
+        "plain"
+      ],
+      [
+        "plain",
+        "miniquad"
+      ],
+      [
+        "miniquad",
+        "plain"
+      ],
+      [
+        "miniquad",
+        "plain"
+      ],
+      [
+        "plain",
+        "miniquad"
+      ],
+      [
+        "plain",
+        "miniquad"
+      ]
+    ],
+    "abPairs": [
+      {
+        "order": [
+          "miniquad",
+          "plain"
+        ],
+        "miniquadMs": 0.10000000149011612,
+        "plainMs": 0,
+        "deltaMs": 0.10000000149011612
+      },
+      {
+        "order": [
+          "miniquad",
+          "plain"
+        ],
+        "miniquadMs": 0.10000000149011612,
+        "plainMs": 0,
+        "deltaMs": 0.10000000149011612
+      },
+      {
+        "order": [
+          "miniquad",
+          "plain"
+        ],
+        "miniquadMs": 0.09999999403953552,
+        "plainMs": 0,
+        "deltaMs": 0.09999999403953552
+      },
+      {
+        "order": [
+          "miniquad",
+          "plain"
+        ],
+        "miniquadMs": 0.10000000149011612,
+        "plainMs": 0,
+        "deltaMs": 0.10000000149011612
+      },
+      {
+        "order": [
+          "miniquad",
+          "plain"
+        ],
+        "miniquadMs": 0.10000000149011612,
+        "plainMs": 0,
+        "deltaMs": 0.10000000149011612
+      },
+      {
+        "order": [
+          "plain",
+          "miniquad"
+        ],
+        "miniquadMs": 0.10000000149011612,
+        "plainMs": 0,
+        "deltaMs": 0.10000000149011612
+      },
+      {
+        "order": [
+          "plain",
+          "miniquad"
+        ],
+        "miniquadMs": 0.10000000149011612,
+        "plainMs": 0,
+        "deltaMs": 0.10000000149011612
+      },
+      {
+        "order": [
+          "miniquad",
+          "plain"
+        ],
+        "miniquadMs": 0.10000000149011612,
+        "plainMs": 0,
+        "deltaMs": 0.10000000149011612
+      },
+      {
+        "order": [
+          "plain",
+          "miniquad"
+        ],
+        "miniquadMs": 0.10000000149011612,
+        "plainMs": 0,
+        "deltaMs": 0.10000000149011612
+      },
+      {
+        "order": [
+          "plain",
+          "miniquad"
+        ],
+        "miniquadMs": 0.10000000149011612,
+        "plainMs": 0,
+        "deltaMs": 0.10000000149011612
+      },
+      {
+        "order": [
+          "miniquad",
+          "plain"
+        ],
+        "miniquadMs": 0.09999999403953552,
+        "plainMs": 0,
+        "deltaMs": 0.09999999403953552
+      },
+      {
+        "order": [
+          "plain",
+          "miniquad"
+        ],
+        "miniquadMs": 0.09999999403953552,
+        "plainMs": 0,
+        "deltaMs": 0.09999999403953552
+      },
+      {
+        "order": [
+          "plain",
+          "miniquad"
+        ],
+        "miniquadMs": 0.09999999403953552,
+        "plainMs": 0,
+        "deltaMs": 0.09999999403953552
+      },
+      {
+        "order": [
+          "plain",
+          "miniquad"
+        ],
+        "miniquadMs": 0.10000000149011612,
+        "plainMs": 0,
+        "deltaMs": 0.10000000149011612
+      },
+      {
+        "order": [
+          "miniquad",
+          "plain"
+        ],
+        "miniquadMs": 0.10000000149011612,
+        "plainMs": 0,
+        "deltaMs": 0.10000000149011612
+      },
+      {
+        "order": [
+          "plain",
+          "miniquad"
+        ],
+        "miniquadMs": 0.09999999403953552,
+        "plainMs": 0,
+        "deltaMs": 0.09999999403953552
+      },
+      {
+        "order": [
+          "miniquad",
+          "plain"
+        ],
+        "miniquadMs": 0.09999999403953552,
+        "plainMs": 0,
+        "deltaMs": 0.09999999403953552
+      },
+      {
+        "order": [
+          "miniquad",
+          "plain"
+        ],
+        "miniquadMs": 0.09999999403953552,
+        "plainMs": 0,
+        "deltaMs": 0.09999999403953552
+      },
+      {
+        "order": [
+          "plain",
+          "miniquad"
+        ],
+        "miniquadMs": 0.10000000149011612,
+        "plainMs": 0,
+        "deltaMs": 0.10000000149011612
+      },
+      {
+        "order": [
+          "plain",
+          "miniquad"
+        ],
+        "miniquadMs": 0.10000000149011612,
+        "plainMs": 0,
+        "deltaMs": 0.10000000149011612
+      }
+    ],
+    "primaryMetric": "paired median callback CPU duration; delta = Miniquad - plain WebGL2",
+    "medianPairedDeltaMs": 0.10000000149011612,
+    "confidenceInterval95Ms": {
+      "lower": 0.09999999403953552,
+      "upper": 0.10000000149011612,
+      "resamples": 10000,
+      "seed": "4dc033e6"
+    },
+    "perArm": {
+      "miniquad": {
+        "runCount": 40,
+        "medianCallbackMs": 0.09999999403953552,
+        "callbackP50Ms": 0.09999999403953552,
+        "frameIntervalMs": {
+          "p50": 8.300000000000182,
+          "p95": 9.299999999999955,
+          "p99": 9.400000000000091
+        },
+        "coldStartupMs": {
+          "median": 39.685729500008165,
+          "p95": 56.37758399999802
+        }
+      },
+      "plain": {
+        "runCount": 40,
+        "medianCallbackMs": 0,
+        "callbackP50Ms": 0,
+        "frameIntervalMs": {
+          "p50": 8.300000000000182,
+          "p95": 9.300000000000182,
+          "p99": 9.900000000000091
+        },
+        "coldStartupMs": {
+          "median": 39.94187450000754,
+          "p95": 54.83770800000639
+        }
+      }
+    },
+    "environment": {
+      "crossOriginIsolated": false
+    }
+  },
+  "assets": {
+    "miniquad": {
+      "raw": 388099,
+      "gzip": 110845,
+      "brotli": 88603,
+      "files": [
+        {
+          "path": "experiments/webgl2-comparison/index.html",
+          "raw": 5805,
+          "gzip": 1834,
+          "brotli": 1499,
+          "sha256": "60027244569209d07fe2ba80fdc32f2c8406570c1f4d541c838148e152f835fd"
+        },
+        {
+          "path": "js/gl.js",
+          "raw": 81331,
+          "gzip": 18431,
+          "brotli": 15210,
+          "sha256": "54ad72133b95b5b3627d51ae56e6bae5a217c950302ec8113906cf60769f3ed9"
+        },
+        {
+          "path": "target/wasm32-unknown-unknown/release/webgl2-comparison.wasm",
+          "raw": 300963,
+          "gzip": 90580,
+          "brotli": 71894,
+          "sha256": "c99456058be382846be67e70a6ccd2b862ea0bb026106dc7fd25de79508dfc2a"
+        }
+      ]
+    },
+    "plain": {
+      "raw": 436674,
+      "gzip": 59206,
+      "brotli": 43629,
+      "files": [
+        {
+          "path": "experiments/webgl2-comparison/index.html",
+          "raw": 5805,
+          "gzip": 1834,
+          "brotli": 1499,
+          "sha256": "60027244569209d07fe2ba80fdc32f2c8406570c1f4d541c838148e152f835fd"
+        },
+        {
+          "path": "js/gl.js",
+          "raw": 81331,
+          "gzip": 18431,
+          "brotli": 15210,
+          "sha256": "54ad72133b95b5b3627d51ae56e6bae5a217c950302ec8113906cf60769f3ed9"
+        },
+        {
+          "path": "experiments/webgl2-comparison/plain.mjs",
+          "raw": 9770,
+          "gzip": 2836,
+          "brotli": 2501,
+          "sha256": "b7146eff5fb95a4e826bfe53719603d9b80143c09ff6eb3826be142e577e3055"
+        },
+        {
+          "path": "experiments/webgl2-comparison/fixture.json",
+          "raw": 339768,
+          "gzip": 36105,
+          "brotli": 24419,
+          "sha256": "7cc1ebf47e08dff053cefdd10ff50989fac1ee58fa47d99ebdf75edec373c934"
+        }
+      ]
+    },
+    "compression": {
+      "method": "gzipSync and brotliCompressSync per served file",
+      "node": "v26.10.0",
+      "zlib": "1.2.12"
+    }
+  },
+  "sourceLoc": {
+    "rule": "count non-empty source lines; do not count generated fixture data",
+    "miniquad": 667,
+    "plain": 264
+  }
+}

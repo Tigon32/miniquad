@@ -663,3 +663,16 @@ pub unsafe fn is_gl2() -> bool {
         || version_string.starts_with("2")
         || version_string.starts_with("OpenGL ES 2")
 }
+
+/// Native OpenGL has no verified GPU timer-query path in this release
+/// (issue #145). Return `false` instead of probing `glGenQueries` and
+/// related pointers, which `load_gl_funcs` may not have loaded yet.
+pub unsafe fn gpu_timer_query_supported() -> bool {
+    false
+}
+
+/// Native OpenGL never reaches a disjoint check: `gpu_timer_query_supported`
+/// always returns `false`, so `ElapsedQuery` never begins a native query.
+pub unsafe fn gpu_timer_query_disjoint() -> bool {
+    false
+}

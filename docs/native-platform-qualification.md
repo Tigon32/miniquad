@@ -17,6 +17,16 @@ The old Android build job has been disabled.
 Do not report the Android target as supported or qualified based on an earlier green workflow.
 The Rust Android backend remains in the source tree.
 
+The source changes for [#149](https://github.com/Tigon32/miniquad/issues/149),
+[#150](https://github.com/Tigon32/miniquad/issues/150), and
+[#151](https://github.com/Tigon32/miniquad/issues/151) follow
+[MADR 0022](adr/0022-android-quit-and-jni-thread-ownership.md), **Proposed**.
+Host tests check complete asset reads and the quit mutex/callback sequence.
+`cargo check --target aarch64-linux-android --lib --tests` checks Rust compilation.
+It does not build the Java application or run the Android backend.
+Device tests for heap use, JNI thread exit, Back, and quit remain **blocked**.
+Keep these issues open until the runtime checks pass.
+
 ### Restore a verified job
 
 1. Select a currently supported Android SDK, NDK, and Rust compiler.

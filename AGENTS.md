@@ -102,6 +102,7 @@ Do not commit passwords, private data, or user files.
 ## PR record
 
 Give the issue, exact source revision, changed behavior, test commands, test results, and test limits.
+Name the task worktree and branch, and the cleanup plan (see [MADR 0027](docs/adr/0027-clean-up-worktrees-at-task-completion.md)).
 Identify the OS or browsers that you tested.
 If a required test fails, do not merge.
 After a merge, verify the commit on `master`.

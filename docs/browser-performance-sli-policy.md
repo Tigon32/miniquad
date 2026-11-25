@@ -3,7 +3,7 @@
 * Review date: 2026-11-10
 * Tracking: [#12 performance/SLO](https://github.com/Tigon32/miniquad/issues/12)
 * Baseline source: current PR head as reported in CI; results are **not** copied from an untested local machine
-* State: **Measured SLI receipts; no calibrated release SLO is enforced**
+* State: **Measured SLI receipts. The candidate reference-profile guard is proposed. No device SLO is enforced.**
 
 ## Terminology
 
@@ -72,6 +72,32 @@ compressed bytes are not proof of startup latency.
 7. Escalate an SLI to an enforced SLO only after a separately reviewed
    calibration and release-policy change.
 
+## Proposed candidate reference-profile guard
+
+[MADR 0010](adr/0010-browser-release-candidates.md) and the
+[candidate contract](release-candidate-contract.md) define a relative regression guard.
+It is not the 500 KiB or 16.7 ms hypothesis above.
+It does not establish a performance objective for user devices.
+
+Use one manual `ubuntu-24.04` CI job with the pinned browser engines.
+Build both packages before measurement.
+Run at least 20 alternating baseline and candidate pairs per engine.
+Do not run other workload commands during measurement.
+Retain every raw sample and the environment record.
+The shared macOS development computer can run a rehearsal, not this gate.
+
+For each gated timing metric, use the baseline nearest-rank p90 plus the measured
+positive `performance.now()` clock resolution as the limit.
+Pass only when the upper 95% confidence bound of the candidate median is at or below that limit.
+Fail when the lower bound is above the limit.
+Other results are inconclusive and block qualification.
+An unmeasurable clock resolution also blocks qualification.
+Do not substitute zero for an unavailable measurement.
+
+Record the exact source, artifact hashes, CI run, and reviewed gate decision.
+A policy file or successful local run does not activate this qualification.
+GPU memory, physical input latency, mobile devices, and production networks remain outside this profile.
+
 ## Evidence collection and retention
 
 The required integration job publishes
@@ -84,3 +110,5 @@ artifact expires. Do not copy numbers without their actual execution record.
 The goal of this phase is honest baseline instrumentation. This document
 does **not** claim GPU performance improvements, full mobile browser support
 or an SLO-compliant release.
+
+**Writing review state:** STE-aligned draft. Full dictionary review not done.

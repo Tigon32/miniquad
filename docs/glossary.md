@@ -39,6 +39,10 @@ See [MADR 0003](adr/0003-use-asd-ste100-for-communication.md).
 | **Rendering pipeline** | The shaders and render state that the GPU uses for drawing. | CI pipeline |
 | **Frame** | One completed visual update. | Physics simulation step |
 | **CI check** | A test or build check that runs automatically. | Proof of browser behavior |
+| **Candidate package** | An immutable browser payload and canonical manifest built from one reviewed source revision. | Approved public release |
+| **Bootstrap reference** | A tested source revision used before a qualified release exists. It has no candidate label or release qualification. | Previous qualified release |
+| **Reference-profile regression guard** | A comparison of baseline and candidate measurements in one specified CI profile. | A performance objective for user devices |
+| **QUALIFIED-CANDIDATE** | A candidate gate result for the recorded source, artifacts, and browser profile. It does not grant owner approval for publication. | Stable release approval |
 | **Worktree** | A Git working directory with its own HEAD and index. Linked worktrees share repository objects and branch references. | Branch |
 | **Worktree owner** | The contributor or agent assigned as the single writer for a task worktree. | PR author |
 | **Integration PR** | A pull request that adds selected upstream changes to this fork. | Original upstream PR |

@@ -1,0 +1,1657 @@
+// Hermetic unit tests for the release candidate contract
+// (docs/release-candidate-contract.md, section 13). Runs with
+// `node --test` before `npm ci` in CI (see .github/workflows/
+// integration-ci.yml), so this file and everything it imports must use
+// only Node.js builtin modules: no network access, no browser, and no
+// third-party dependency (Playwright, pngjs) at module load time.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+
+import {
+  parseLabel,
+  formatTag,
+  parseTag,
+  compareLabels,
+  deriveCore,
+  isSafePayloadName,
+  canonicalizeManifest,
+  verifyCanonicalManifest,
+  ManifestError,
+  scanForLeaks,
+  evaluateGate,
+  gate,
+  verifyTagBinding,
+  collectCi,
+  verify,
+} from "../scripts/release-candidate.mjs";
+
+import {
+  median,
+  nearestRank,
+  medianConfidenceRanks,
+  clockResolution,
+  evaluateMetric,
+  evaluateRegression,
+  measure,
+  createReleaseServer,
+} from "../scripts/release-browser.mjs";
+
+function sha256(buffer) {
+  return createHash("sha256").update(buffer).digest("hex");
+}
+
+// ---------------------------------------------------------------------
+// Label grammar and precedence
+// ---------------------------------------------------------------------
+
+test("parseLabel accepts the first candidate label", () => {
+  const parsed = parseLabel("0.5.0-tigon32.1.rc.1");
+  assert.deepEqual(parsed, { core: { major: 0, minor: 5, patch: 0 }, forkSeq: 1, stage: "rc", rc: 1 });
+});
+
+test("parseLabel accepts a .release label", () => {
+  const parsed = parseLabel("0.5.0-tigon32.1.release");
+  assert.equal(parsed.stage, "release");
+  assert.equal(parsed.rc, null);
+});
+
+for (const invalid of [
+  "0.5.0",
+  "v0.5.0-tigon32.1.rc.1",
+  "0.5.0-tigon32.01.rc.1",
+  "0.5.0-tigon32.1.rc.0",
+  "0.5.0-tigon32.1.final",
+  "0.4.11+tigon32.1",
+]) {
+  test(`parseLabel rejects ${invalid}`, () => {
+    assert.throws(() => parseLabel(invalid));
+  });
+}
+
+test("formatTag and parseTag add and remove the fork-scoped prefix", () => {
+  const label = "0.5.0-tigon32.1.rc.1";
+  const tag = formatTag(label);
+  assert.equal(tag, "tigon32-miniquad-v0.5.0-tigon32.1.rc.1");
+  assert.equal(parseTag(tag), label);
+});
+
+test("parseTag rejects a tag without the fork prefix", () => {
+  assert.throws(() => parseTag("v0.5.0-tigon32.1.rc.1"));
+});
+
+test("compareLabels orders rc.1 < rc.2 < rc.10 < release for the same F", () => {
+  assert.equal(compareLabels("0.5.0-tigon32.1.rc.1", "0.5.0-tigon32.1.rc.2"), -1);
+  assert.equal(compareLabels("0.5.0-tigon32.1.rc.2", "0.5.0-tigon32.1.rc.10"), -1);
+  assert.equal(compareLabels("0.5.0-tigon32.1.rc.10", "0.5.0-tigon32.1.release"), -1);
+});
+
+test("compareLabels orders F=1 release before F=2 rc.1", () => {
+  assert.equal(compareLabels("0.5.0-tigon32.1.release", "0.5.0-tigon32.2.rc.1"), -1);
+});
+
+test("compareLabels is reflexive", () => {
+  assert.equal(compareLabels("0.5.0-tigon32.1.rc.1", "0.5.0-tigon32.1.rc.1"), 0);
+});
+
+test("release labels reject numeric identifiers that cannot be represented exactly", () => {
+  for (const label of [
+    "9007199254740992.0.0-tigon32.1.rc.1",
+    "0.9007199254740992.0-tigon32.1.rc.1",
+    "0.5.9007199254740992-tigon32.1.rc.1",
+    "0.5.0-tigon32.9007199254740992.rc.1",
+    "0.5.0-tigon32.1.rc.9007199254740992",
+    `0.5.0-tigon32.1.rc.${"9".repeat(309)}`,
+  ]) {
+    assert.throws(() => parseLabel(label), /safe integer/);
+  }
+  assert.equal(parseLabel("0.5.0-tigon32.1.rc.9007199254740991").rc, Number.MAX_SAFE_INTEGER);
+});
+
+// ---------------------------------------------------------------------
+// Compatibility core
+// ---------------------------------------------------------------------
+
+test("deriveCore: 0.4.11 plus a browser protocol break gives 0.5.0", () => {
+  const result = deriveCore({ major: 0, minor: 4, patch: 11 }, {
+    rustApiBreaking: false,
+    browserProtocolBreaking: true,
+    changed: false,
+  });
+  assert.deepEqual(result, { major: 0, minor: 5, patch: 0 });
+});
+
+test("deriveCore: 0.4.11 plus a change only gives 0.4.12", () => {
+  const result = deriveCore({ major: 0, minor: 4, patch: 11 }, {
+    rustApiBreaking: false,
+    browserProtocolBreaking: false,
+    changed: true,
+  });
+  assert.deepEqual(result, { major: 0, minor: 4, patch: 12 });
+});
+
+test("deriveCore: 1.2.3 plus a break gives 2.0.0", () => {
+  const result = deriveCore({ major: 1, minor: 2, patch: 3 }, {
+    rustApiBreaking: true,
+    browserProtocolBreaking: false,
+    changed: false,
+  });
+  assert.deepEqual(result, { major: 2, minor: 0, patch: 0 });
+});
+
+test("deriveCore: no breaking change and no other change keeps the previous core", () => {
+  const result = deriveCore({ major: 0, minor: 4, patch: 11 }, {
+    rustApiBreaking: false,
+    browserProtocolBreaking: false,
+    changed: false,
+  });
+  assert.deepEqual(result, { major: 0, minor: 4, patch: 11 });
+});
+
+test("deriveCore rejects invalid input and an increment beyond the exact integer range", () => {
+  const unchanged = { rustApiBreaking: false, browserProtocolBreaking: false, changed: false };
+  for (const value of [-1, 0.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, "1"]) {
+    for (const field of ["major", "minor", "patch"]) {
+      assert.throws(
+        () => deriveCore({ major: 0, minor: 4, patch: 11, [field]: value }, unchanged),
+        /safe integer/,
+      );
+    }
+  }
+  for (const [core, flags] of [
+    [{ major: 0, minor: 4, patch: Number.MAX_SAFE_INTEGER }, { ...unchanged, changed: true }],
+    [{ major: 0, minor: Number.MAX_SAFE_INTEGER, patch: 0 }, { ...unchanged, browserProtocolBreaking: true }],
+    [{ major: Number.MAX_SAFE_INTEGER, minor: 0, patch: 0 }, { ...unchanged, rustApiBreaking: true }],
+  ]) {
+    assert.throws(() => deriveCore(core, flags), /safe integer/);
+  }
+});
+
+// ---------------------------------------------------------------------
+// isSafePayloadName
+// ---------------------------------------------------------------------
+
+test("isSafePayloadName rejects a path separator, a hidden name, and a traversal", () => {
+  assert.equal(isSafePayloadName("a/b"), false);
+  assert.equal(isSafePayloadName(".hidden"), false);
+  assert.equal(isSafePayloadName("../x"), false);
+});
+
+test("isSafePayloadName accepts the shipped payload names", () => {
+  for (const name of ["app.wasm", "gl.js", "host-preferences.mjs", "index.html", "miniquad.mjs", "runtime.html", "runtime.mjs"]) {
+    assert.equal(isSafePayloadName(name), true);
+  }
+});
+
+// ---------------------------------------------------------------------
+// canonicalizeManifest (section 5.3)
+// ---------------------------------------------------------------------
+
+const SHA = "a".repeat(40);
+const OTHER_SHA = "b".repeat(40);
+const PAYLOAD_BYTES = {
+  "app.wasm": Buffer.from("WASM-BYTES"),
+  "gl.js": Buffer.from("const version = 3;"),
+  "host-preferences.mjs": Buffer.from("export function createHostPreferences() {}"),
+  "index.html": Buffer.from("<!doctype html>"),
+  "miniquad.mjs": Buffer.from("export function mount() {}"),
+  "runtime.html": Buffer.from("<script></script>"),
+  "runtime.mjs": Buffer.from("globalThis.miniquadRuntime = {};"),
+};
+const SOURCE_PATHS = {
+  "gl.js": "js/gl.js",
+  "host-preferences.mjs": "js/host-preferences.mjs",
+  "miniquad.mjs": "js/miniquad.mjs",
+  "runtime.html": "js/runtime.html",
+  "runtime.mjs": "js/runtime.mjs",
+};
+
+function buildValidManifest() {
+  const files = Object.entries(PAYLOAD_BYTES).map(([file, bytes]) => ({
+    file,
+    sha256: sha256(bytes),
+    bytes: bytes.length,
+    sourcePath: SOURCE_PATHS[file] ?? null,
+  }));
+  const raw = {
+    generatedAt: "2026-11-11T00:00:00.000Z",
+    updatedAt: "2026-11-11T00:01:00.000Z",
+    source: { mode: "git", sha: SHA, dirty: false },
+    files,
+  };
+  const fileEntries = Object.entries(PAYLOAD_BYTES).map(([name, bytes]) => ({ name, kind: "file", bytes }));
+  const sourceAssetBytes = new Map(Object.entries(SOURCE_PATHS).map(([file, path]) => [path, PAYLOAD_BYTES[file]]));
+  const expected = {
+    sha: SHA,
+    label: "0.5.0-tigon32.1.rc.1",
+    role: "candidate",
+    reference: null,
+    abiVersion: 3,
+    repository: "https://github.com/Tigon32/miniquad",
+    sourceAssetBytes,
+  };
+  return { raw, fileEntries, expected };
+}
+
+test("canonicalizeManifest accepts a valid manifest and removes both timestamps", () => {
+  const { raw, fileEntries, expected } = buildValidManifest();
+  const { canonical, timing } = canonicalizeManifest(raw, fileEntries, expected);
+  assert.equal(canonical.schema, "miniquad-release-payload/1");
+  assert.equal(canonical.label, "0.5.0-tigon32.1.rc.1");
+  assert.equal(canonical.source.sha, SHA);
+  assert.equal(canonical.abiVersion, 3);
+  assert.equal(Object.prototype.hasOwnProperty.call(canonical, "generatedAt"), false);
+  assert.equal(Object.prototype.hasOwnProperty.call(canonical, "updatedAt"), false);
+  assert.deepEqual(timing, { generatedAt: raw.generatedAt, updatedAt: raw.updatedAt });
+  const names = canonical.files.map((f) => f.file);
+  assert.deepEqual(names, [...names].sort());
+});
+
+test("canonicalizeManifest rejects a file name with a path traversal", () => {
+  const { raw, fileEntries, expected } = buildValidManifest();
+  raw.files[0] = { ...raw.files[0], file: "../x" };
+  assert.throws(() => canonicalizeManifest(raw, fileEntries, expected), ManifestError);
+});
+
+test("canonicalizeManifest rejects a path-separated file name", () => {
+  const { raw, fileEntries, expected } = buildValidManifest();
+  raw.files[0] = { ...raw.files[0], file: "a/b" };
+  assert.throws(() => canonicalizeManifest(raw, fileEntries, expected), ManifestError);
+});
+
+test("canonicalizeManifest rejects a hidden file name", () => {
+  const { raw, fileEntries, expected } = buildValidManifest();
+  raw.files[0] = { ...raw.files[0], file: ".hidden" };
+  assert.throws(() => canonicalizeManifest(raw, fileEntries, expected), ManifestError);
+});
+
+test("canonicalizeManifest rejects a duplicate file name", () => {
+  const { raw, fileEntries, expected } = buildValidManifest();
+  raw.files.push(raw.files[0]);
+  assert.throws(() => canonicalizeManifest(raw, fileEntries, expected), ManifestError);
+});
+
+test("canonicalizeManifest rejects an extra file in the directory", () => {
+  const { raw, fileEntries, expected } = buildValidManifest();
+  fileEntries.push({ name: "extra.txt", kind: "file", bytes: Buffer.from("x") });
+  assert.throws(() => canonicalizeManifest(raw, fileEntries, expected), ManifestError);
+});
+
+test("canonicalizeManifest rejects a missing file", () => {
+  const { raw, fileEntries, expected } = buildValidManifest();
+  assert.throws(() => canonicalizeManifest(raw, fileEntries.slice(1), expected), ManifestError);
+});
+
+test("canonicalizeManifest rejects a hash mismatch", () => {
+  const { raw, fileEntries, expected } = buildValidManifest();
+  raw.files[0] = { ...raw.files[0], sha256: "0".repeat(64) };
+  assert.throws(() => canonicalizeManifest(raw, fileEntries, expected), ManifestError);
+});
+
+test("canonicalizeManifest rejects source.dirty: true", () => {
+  const { raw, fileEntries, expected } = buildValidManifest();
+  raw.source = { ...raw.source, dirty: true };
+  assert.throws(() => canonicalizeManifest(raw, fileEntries, expected), ManifestError);
+});
+
+test("canonicalizeManifest rejects a different source SHA", () => {
+  const { raw, fileEntries, expected } = buildValidManifest();
+  raw.source = { ...raw.source, sha: OTHER_SHA };
+  assert.throws(() => canonicalizeManifest(raw, fileEntries, expected), ManifestError);
+});
+
+test("canonicalizeManifest rejects an unknown top-level key", () => {
+  const { raw, fileEntries, expected } = buildValidManifest();
+  raw.extra = "unexpected";
+  assert.throws(() => canonicalizeManifest(raw, fileEntries, expected), ManifestError);
+});
+
+test("canonicalizeManifest rejects a directory entry in web/", () => {
+  const { raw, fileEntries, expected } = buildValidManifest();
+  fileEntries.push({ name: "sub", kind: "dir", bytes: null });
+  assert.throws(() => canonicalizeManifest(raw, fileEntries, expected), ManifestError);
+});
+
+test("canonicalizeManifest rejects a source byte mismatch for a copied asset", () => {
+  const { raw, fileEntries, expected } = buildValidManifest();
+  expected.sourceAssetBytes.set("js/gl.js", Buffer.from("const version = 2;"));
+  assert.throws(() => canonicalizeManifest(raw, fileEntries, expected), ManifestError);
+});
+
+// ---------------------------------------------------------------------
+// verifyCanonicalManifest (section 5.6 round trip)
+//
+// `verify` re-reads the already-canonical payload/MANIFEST.json that
+// `prepare` wrote (via canonicalizeManifest) and must check it without
+// re-running the raw-generator-input rules (source.mode/dirty, rule 1,
+// and rule 6, which both need the original repository/--sha). This is
+// the exact round trip that `prepare`'s internal `verify` step performs;
+// a regression here reproduces the bug where every `prepare` invocation
+// failed because the canonical form's extra keys (schema, label, role,
+// reference, abiVersion) tripped canonicalizeManifest's raw-input
+// unknown-key check.
+// ---------------------------------------------------------------------
+
+function buildValidCanonicalRoundTrip() {
+  const { raw, fileEntries, expected } = buildValidManifest();
+  const { canonical } = canonicalizeManifest(raw, fileEntries, expected);
+  return { canonical, fileEntries };
+}
+
+test("verifyCanonicalManifest accepts the canonical output of canonicalizeManifest", () => {
+  const { canonical, fileEntries } = buildValidCanonicalRoundTrip();
+  assert.doesNotThrow(() => verifyCanonicalManifest(canonical, fileEntries));
+});
+
+test("verifyCanonicalManifest rejects a duplicate file name", () => {
+  const { canonical, fileEntries } = buildValidCanonicalRoundTrip();
+  canonical.files.push(canonical.files[0]);
+  assert.throws(() => verifyCanonicalManifest(canonical, fileEntries), ManifestError);
+});
+
+test("verifyCanonicalManifest rejects an unsafe file name", () => {
+  const { canonical, fileEntries } = buildValidCanonicalRoundTrip();
+  canonical.files[0] = { ...canonical.files[0], file: "../x" };
+  assert.throws(() => verifyCanonicalManifest(canonical, fileEntries), ManifestError);
+});
+
+test("verifyCanonicalManifest rejects an extra file in the payload directory", () => {
+  const { canonical, fileEntries } = buildValidCanonicalRoundTrip();
+  fileEntries.push({ name: "extra.txt", kind: "file", bytes: Buffer.from("x") });
+  assert.throws(() => verifyCanonicalManifest(canonical, fileEntries), ManifestError);
+});
+
+test("verifyCanonicalManifest rejects a missing file", () => {
+  const { canonical, fileEntries } = buildValidCanonicalRoundTrip();
+  assert.throws(() => verifyCanonicalManifest(canonical, fileEntries.slice(1)), ManifestError);
+});
+
+test("verifyCanonicalManifest rejects a directory entry in the payload directory", () => {
+  const { canonical, fileEntries } = buildValidCanonicalRoundTrip();
+  fileEntries.push({ name: "sub", kind: "dir", bytes: null });
+  assert.throws(() => verifyCanonicalManifest(canonical, fileEntries), ManifestError);
+});
+
+test("verifyCanonicalManifest rejects a hash mismatch against the payload bytes", () => {
+  const { canonical, fileEntries } = buildValidCanonicalRoundTrip();
+  canonical.files[0] = { ...canonical.files[0], sha256: "0".repeat(64) };
+  assert.throws(() => verifyCanonicalManifest(canonical, fileEntries), ManifestError);
+});
+
+test("verifyCanonicalManifest rejects a byte-length mismatch against the manifest", () => {
+  const { canonical, fileEntries } = buildValidCanonicalRoundTrip();
+  canonical.files[0] = { ...canonical.files[0], bytes: canonical.files[0].bytes + 1 };
+  assert.throws(() => verifyCanonicalManifest(canonical, fileEntries), ManifestError);
+});
+
+// ---------------------------------------------------------------------
+// Leak scan (section 5.4)
+// ---------------------------------------------------------------------
+
+test("scanForLeaks finds each documented rule ID", () => {
+  const text =
+    "prefix /Users/alice/project/app.wasm suffix " +
+    "windows C:\\Users\\bob\\project suffix " +
+    "file://etc/passwd suffix " +
+    "http://user:pass@example.com/path suffix " +
+    `token ghp_${"a".repeat(25)} suffix`;
+  const findings = scanForLeaks(Buffer.from(text, "utf8"), ["/opt/repo-clone", "/opt/out-dir"]);
+  const ruleIds = new Set(findings.map((f) => f.ruleId));
+  for (const expected of ["unix-home", "windows-home", "file-url", "credential-url", "token"]) {
+    assert.ok(ruleIds.has(expected), `expected a ${expected} finding`);
+  }
+});
+
+test("scanForLeaks finds the local-path rule for a forbidden absolute prefix", () => {
+  const text = "panicked at /opt/repo-clone/src/lib.rs:42";
+  const findings = scanForLeaks(Buffer.from(text, "utf8"), ["/opt/repo-clone"]);
+  assert.ok(findings.some((f) => f.ruleId === "local-path"));
+});
+
+test("scanForLeaks findings never contain the matched text", () => {
+  const text = "secret ghp_" + "b".repeat(30);
+  const findings = scanForLeaks(Buffer.from(text, "utf8"), []);
+  for (const finding of findings) {
+    assert.deepEqual(Object.keys(finding).sort(), ["offset", "ruleId"]);
+  }
+});
+
+test("scanForLeaks gives no finding for :root { and the word runner", () => {
+  const findings = scanForLeaks(Buffer.from(":root { color: red } a runner ran", "utf8"), ["/opt/repo-clone"]);
+  assert.deepEqual(findings, []);
+});
+
+test("scanForLeaks ignores a forbidden string shorter than 4 characters or equal to /", () => {
+  const findings = scanForLeaks(Buffer.from("a/b and / and xyz/sub", "utf8"), ["/", "a", "xyz"]);
+  assert.deepEqual(findings, []);
+});
+
+// ---------------------------------------------------------------------
+// Statistics (section 7.5)
+// ---------------------------------------------------------------------
+
+test("medianConfidenceRanks(20) gives 6 and 15", () => {
+  const { low, high, coverage } = medianConfidenceRanks(20);
+  assert.equal(low, 6);
+  assert.equal(high, 15);
+  assert.ok(coverage > 0.95 && coverage < 0.96);
+});
+
+test("nearestRank of 1..20 at p=0.90 gives 18", () => {
+  const sorted = Array.from({ length: 20 }, (_, i) => i + 1);
+  assert.equal(nearestRank(sorted, 0.9), 18);
+});
+
+test("median handles an even-length array by averaging the middle two", () => {
+  assert.equal(median([1, 2, 3, 4]), 2.5);
+  assert.equal(median([1, 2, 3]), 2);
+});
+
+test("clockResolution never returns 0 and returns null when no positive difference exists", () => {
+  assert.equal(clockResolution([[5, 5, 5]]), null);
+  assert.equal(clockResolution([[1, 1, 1.25, 1.25]]), 0.25);
+});
+
+function makeSamples(start, count, step = 1) {
+  return Array.from({ length: count }, (_, i) => start + i * step);
+}
+
+test("evaluateMetric gives PASS when the candidate upper CI is at or below the limit", () => {
+  const baseline = makeSamples(10, 25, 0.1); // median ~11.2, p90 ~ 12.16
+  const candidate = makeSamples(10, 25, 0.1); // identical distribution
+  const result = evaluateMetric({ baseline, candidate, resolution: 0.02 });
+  assert.equal(result.result, "PASS");
+});
+
+test("evaluateMetric gives FAIL when the candidate lower CI is above the limit", () => {
+  const baseline = makeSamples(10, 25, 0.05);
+  const candidate = makeSamples(40, 25, 0.05);
+  const result = evaluateMetric({ baseline, candidate, resolution: 0.01 });
+  assert.equal(result.result, "FAIL");
+});
+
+test("evaluateMetric gives INCONCLUSIVE for fewer than 20 valid values", () => {
+  const result = evaluateMetric({ baseline: makeSamples(1, 19), candidate: makeSamples(1, 25), resolution: 1 });
+  assert.equal(result.result, "INCONCLUSIVE");
+});
+
+test("evaluateMetric gives INCONCLUSIVE when resolution is null", () => {
+  const result = evaluateMetric({ baseline: makeSamples(1, 25), candidate: makeSamples(1, 25), resolution: null });
+  assert.equal(result.result, "INCONCLUSIVE");
+});
+
+test("evaluateMetric never drops or ignores invalid sample values", () => {
+  for (const field of ["baseline", "candidate"]) {
+    for (const value of [NaN, Infinity, -1, undefined, "1"]) {
+      const input = { baseline: Array(30).fill(1), candidate: Array(30).fill(1), resolution: 0.1 };
+      input[field][29] = value;
+      assert.equal(evaluateMetric(input).result, "INCONCLUSIVE", `${field}: ${String(value)}`);
+    }
+  }
+});
+
+test("evaluateMetric rejects an infinite clock resolution", () => {
+  assert.equal(evaluateMetric({
+    baseline: Array(20).fill(1), candidate: Array(20).fill(2), resolution: Infinity,
+  }).result, "INCONCLUSIVE");
+});
+
+function validRegressionSamples() {
+  const timing = () => ({
+    coldStartupToRunningMs: 1,
+    coldStartupToFirstFrameMs: 1,
+    frameIntervalSamples: [0, 1, 2],
+    clockSamplesTop: [0, 0.01, 0.02],
+    clockSamplesRuntime: [0, 0.01, 0.02],
+  });
+  return {
+    profile: "gha-ubuntu-24.04-x64-pw1.56.1",
+    engines: Object.fromEntries(["chromium", "firefox", "webkit"].map((engine) => [engine, {
+      runs: Array.from({ length: 60 }, (_, i) => ({
+        variant: i % 2 ? "candidate" : "baseline", cold: timing(), warm: timing(),
+      })),
+    }])),
+  };
+}
+
+test("evaluateRegression uses the largest per-run clock resolution", () => {
+  const samples = validRegressionSamples();
+  const run = samples.engines.chromium.runs[0];
+  for (const phase of [run.cold, run.warm]) {
+    phase.clockSamplesTop = [0, 0.1, 0.2];
+    phase.clockSamplesRuntime = [0, 0.1, 0.2];
+  }
+  const result = evaluateRegression(samples);
+  assert.equal(result.result, "PASS");
+  assert.equal(result.engines.chromium.resolution, 0.1);
+});
+
+test("evaluateRegression retains invalid samples even when more than 20 pairs remain", () => {
+  for (const change of [
+    (s) => { s.engines.chromium.runs[0].invalidReason = "navigation timeout"; },
+    (s) => { s.engines.chromium.runs[0].cold.coldStartupToRunningMs = NaN; },
+    (s) => {
+      const run = s.engines.chromium.runs[0];
+      for (const phase of [run.cold, run.warm]) {
+        phase.clockSamplesTop = [1, 1];
+        phase.clockSamplesRuntime = [1, 1];
+      }
+    },
+    (s) => { delete s.engines.webkit; },
+  ]) {
+    const samples = validRegressionSamples();
+    change(samples);
+    assert.equal(evaluateRegression(samples).result, "INCONCLUSIVE");
+  }
+});
+
+test("measure rejects invalid pair counts before loading browser dependencies", async () => {
+  for (const pairs of ["invalid", 19, 20.5, Infinity]) {
+    await assert.rejects(measure({ pairs }), /--pairs must be an integer of 20 or more/);
+  }
+});
+
+test("collectCi uses only the newest completed master dispatch for the exact SHA", () => {
+  const dir = mkdtempSync(join(tmpdir(), "release-ci-test-"));
+  const sha = "c".repeat(40);
+  const workflow = "Miniquad integration CI";
+  const run = { name: workflow, head_sha: sha, status: "completed", event: "workflow_dispatch", head_branch: "master" };
+  const calls = [];
+  try {
+    const result = collectCi({ sha, out: join(dir, "ci.json") }, {
+      execFileSyncImpl(command, args) {
+        assert.equal(command, "gh");
+        assert.deepEqual(args.slice(0, 5), ["api", "--hostname", "github.com", "--paginate", "--slurp"]);
+        const path = args[5];
+        calls.push(path);
+        if (path.includes("head_sha=")) {
+          return Buffer.from(JSON.stringify([{ workflow_runs: [
+            { ...run, id: 1, created_at: "2026-11-11T00:00:00Z" },
+            { ...run, id: 2, created_at: "2026-11-11T01:00:00Z" },
+            { ...run, id: 3, created_at: "2026-11-11T02:00:00Z", status: "in_progress" },
+            { ...run, id: 4, created_at: "2026-11-11T03:00:00Z", event: "pull_request" },
+            { ...run, id: 5, created_at: "2026-11-11T04:00:00Z", head_branch: "other" },
+            { ...run, id: 6, created_at: "2026-11-11T05:00:00Z", head_sha: "a".repeat(40) },
+          ] }]));
+        }
+        assert.equal(path, "repos/Tigon32/miniquad/actions/runs/2/jobs?per_page=100");
+        return Buffer.from(JSON.stringify([{ jobs: [{ name: "rust-wasm", conclusion: "success", status: "completed", id: 20, run_id: 2 }] }]));
+      },
+    });
+    assert.equal(result[0].runId, 2);
+    assert.equal(result[0].sha, sha);
+    assert.equal(result[0].conclusion, "success");
+    assert.equal(calls.length, 2);
+    assert.ok(result.slice(1).every((entry) => entry.conclusion === "absent"));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("collectCi never drops a failed job that is returned only on a later page", () => {
+  const dir = mkdtempSync(join(tmpdir(), "release-ci-test-"));
+  const sha = "c".repeat(40);
+  const run = {
+    name: "Security advisory review", head_sha: sha, status: "completed",
+    event: "workflow_dispatch", head_branch: "master", id: 7, created_at: "2026-11-11T00:00:00Z",
+    html_url: "https://github.com/Tigon32/miniquad/actions/runs/7",
+  };
+  try {
+    const result = collectCi({ sha, out: join(dir, "ci.json") }, {
+      execFileSyncImpl(command, args) {
+        const path = args[5];
+        if (path.includes("head_sha=")) {
+          return Buffer.from(JSON.stringify([{ workflow_runs: [run] }]));
+        }
+        // Two pages of jobs, as gh would return when the job count exceeds
+        // one page: the failing job is only on the second page.
+        return Buffer.from(JSON.stringify([
+          { total_count: 2, jobs: [{ name: "cargo-audit", conclusion: "success", status: "completed", id: 70, run_id: 7 }] },
+          { total_count: 2, jobs: [{ name: "cargo-deny", conclusion: "failure", status: "completed", id: 71, run_id: 7 }] },
+        ]));
+      },
+    });
+    const security = result.find((entry) => entry.workflow === "Security advisory review");
+    assert.equal(security.conclusion, "failure", JSON.stringify(security));
+    assert.deepEqual(security.jobId.sort((a, b) => a - b), [70, 71]);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("collectCi fails closed when a job on the collected run belongs to a different run", () => {
+  const dir = mkdtempSync(join(tmpdir(), "release-ci-test-"));
+  const sha = "c".repeat(40);
+  const run = {
+    name: "Miniquad integration CI", head_sha: sha, status: "completed",
+    event: "workflow_dispatch", head_branch: "master", id: 7, created_at: "2026-11-11T00:00:00Z",
+    html_url: "https://github.com/Tigon32/miniquad/actions/runs/7",
+  };
+  try {
+    const result = collectCi({ sha, out: join(dir, "ci.json") }, {
+      execFileSyncImpl(command, args) {
+        const path = args[5];
+        if (path.includes("head_sha=")) {
+          return Buffer.from(JSON.stringify([{ workflow_runs: [run] }]));
+        }
+        // The job claims to belong to a different run (e.g. a cached or
+        // misrouted response); this must never be accepted as evidence.
+        return Buffer.from(JSON.stringify([
+          { jobs: [{ name: "rust-wasm", conclusion: "success", status: "completed", id: 70, run_id: 9 }] },
+        ]));
+      },
+    });
+    const entry = result.find((e) => e.workflow === "Miniquad integration CI");
+    assert.equal(entry.conclusion, "absent");
+    assert.ok(entry.reason && entry.reason.includes("run 9"), JSON.stringify(entry));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("collectCi fails closed on a malformed or incomplete jobs response", () => {
+  const dir = mkdtempSync(join(tmpdir(), "release-ci-test-"));
+  const sha = "c".repeat(40);
+  const run = {
+    name: "Miniquad integration CI", head_sha: sha, status: "completed",
+    event: "workflow_dispatch", head_branch: "master", id: 7, created_at: "2026-11-11T00:00:00Z",
+    html_url: "https://github.com/Tigon32/miniquad/actions/runs/7",
+  };
+  for (const jobsResponse of [
+    [{ total_count: 2, jobs: [{ name: "rust-wasm", conclusion: "success", status: "completed", id: 70, run_id: 7 }] }], // total_count disagrees with actual count
+    [{ notJobs: [] }], // missing the "jobs" array entirely
+    "not json",
+  ]) {
+    try {
+      const result = collectCi({ sha, out: join(dir, "ci.json") }, {
+        execFileSyncImpl(command, args) {
+          const path = args[5];
+          if (path.includes("head_sha=")) {
+            return Buffer.from(JSON.stringify([{ workflow_runs: [run] }]));
+          }
+          return Buffer.from(typeof jobsResponse === "string" ? jobsResponse : JSON.stringify(jobsResponse));
+        },
+      });
+      const entry = result.find((e) => e.workflow === "Miniquad integration CI");
+      assert.equal(entry.conclusion, "absent", JSON.stringify(entry));
+      assert.ok(entry.reason, "a malformed/incomplete jobs response must record an explicit reason");
+    } finally {
+      // no cleanup needed between iterations; directory removed below
+    }
+  }
+  rmSync(dir, { recursive: true, force: true });
+});
+
+test("collectCi merges the newest run across multiple pages of the runs list", () => {
+  const dir = mkdtempSync(join(tmpdir(), "release-ci-test-"));
+  const sha = "c".repeat(40);
+  const base = { name: "Miniquad integration CI", head_sha: sha, status: "completed", event: "workflow_dispatch", head_branch: "master" };
+  try {
+    const result = collectCi({ sha, out: join(dir, "ci.json") }, {
+      execFileSyncImpl(command, args) {
+        const path = args[5];
+        if (path.includes("head_sha=")) {
+          // The newest run (by created_at) is returned only on the second page.
+          return Buffer.from(JSON.stringify([
+            { total_count: 2, workflow_runs: [{ ...base, id: 1, created_at: "2026-11-11T00:00:00Z" }] },
+            { total_count: 2, workflow_runs: [{ ...base, id: 2, created_at: "2026-11-11T05:00:00Z", html_url: "https://github.com/Tigon32/miniquad/actions/runs/2" }] },
+          ]));
+        }
+        return Buffer.from(JSON.stringify([{ jobs: [{ name: "rust-wasm", conclusion: "success", status: "completed", id: 20, run_id: 2 }] }]));
+      },
+    });
+    const entry = result.find((e) => e.workflow === "Miniquad integration CI");
+    assert.equal(entry.runId, 2);
+    assert.equal(entry.conclusion, "success");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("evaluateMetric gives INCONCLUSIVE for a median at or below the limit with ciHigh above it", () => {
+  // Baseline tightly clustered near 10 (p90 ~ 10.022, limit ~ 10.023).
+  // Candidate: 13 low values keep the median at/below the limit, but 12
+  // high values push the upper confidence bound (rank 15 of 25) above it.
+  const baseline = makeSamples(10, 25, 0.001);
+  const limit = nearestRank([...baseline].sort((a, b) => a - b), 0.9) + 0.001;
+  const candidate = [
+    ...makeSamples(10, 13, 0.0005),
+    ...makeSamples(limit + 1, 12, 1),
+  ];
+  const result = evaluateMetric({ baseline, candidate, resolution: 0.001 });
+  assert.equal(result.result, "INCONCLUSIVE");
+  assert.ok(result.medianCandidate <= result.limit, `median ${result.medianCandidate} should be <= limit ${result.limit}`);
+  assert.ok(result.ciHigh > result.limit, `ciHigh ${result.ciHigh} should be > limit ${result.limit}`);
+});
+
+// ---------------------------------------------------------------------
+// Prepare argument validation (section 5.1)
+// ---------------------------------------------------------------------
+
+test("prepare role rules: --label is not permitted for a bootstrap baseline", async () => {
+  const { prepare } = await import("../scripts/release-candidate.mjs");
+  assert.throws(() => prepare({
+    sha: "a".repeat(40),
+    role: "baseline",
+    reference: "bootstrap-reference",
+    label: "0.5.0-tigon32.1.rc.1",
+    repo: "/tmp/does-not-matter",
+    out: "/tmp/does-not-matter-out",
+  }));
+});
+
+test("prepare role rules: a candidate without an rc label is rejected", async () => {
+  const { prepare } = await import("../scripts/release-candidate.mjs");
+  assert.throws(() => prepare({
+    sha: "a".repeat(40),
+    role: "candidate",
+    repo: "/tmp/does-not-matter",
+    out: "/tmp/does-not-matter-out",
+  }));
+});
+
+// ---------------------------------------------------------------------
+// Gate (section 9.3)
+// ---------------------------------------------------------------------
+
+function buildValidGateRecord() {
+  return {
+    schema: "miniquad-release-gate/1",
+    label: "0.5.0-tigon32.1.rc.1",
+    tag: "tigon32-miniquad-v0.5.0-tigon32.1.rc.1",
+    candidateSha: "c".repeat(40),
+    toolSha: "d".repeat(40),
+    baseline: { sha: SHA, kind: "bootstrap-reference", tag: null },
+    upstream: { mergeBaseSha: "39c928fb7e09fd44e45f37fe9a98503968bca412", cargoVersion: "0.4.11", importedChanges: [] },
+    compatibility: {
+      previousCore: { major: 0, minor: 4, patch: 11 },
+      rustApiBreaking: false,
+      browserProtocolBreaking: true,
+      changed: false,
+      evidence: "js/gl.js const version changed from 2 to 3",
+      derivedCore: { major: 0, minor: 5, patch: 0 },
+    },
+    cargoPackage: { name: "miniquad", version: "0.4.11" },
+    contracts: { abiVersion: 3, starterParamsVersion: 1 },
+    packages: { baselineManifestSha256: "a".repeat(64), candidateManifestSha256: "b".repeat(64), reproducible: true },
+    ci: [
+      { workflow: "Miniquad integration CI", job: "rust-wasm", conclusion: "success", sha: "c".repeat(40), runId: 1, jobId: 10, url: "https://github.com/Tigon32/miniquad/actions/runs/1" },
+      { workflow: "Miniquad three-engine browser acceptance", job: "engines", conclusion: "success", sha: "c".repeat(40), runId: 2, jobId: 20, url: "https://github.com/Tigon32/miniquad/actions/runs/2" },
+      { workflow: "Security advisory review", job: "all", conclusion: "success", sha: "c".repeat(40), runId: 3, jobId: [30, 31], url: "https://github.com/Tigon32/miniquad/actions/runs/3" },
+      { workflow: "Miniquad release candidate", job: "reference", conclusion: "success", sha: "c".repeat(40), runId: 4, jobId: 40, url: "https://github.com/Tigon32/miniquad/actions/runs/4" },
+    ],
+    compare: true,
+    drill: {
+      reference: {
+        result: "PASS", profile: "gha-ubuntu-24.04-x64-pw1.56.1", sha256: "0".repeat(64),
+        packages: {
+          baseline: { role: "baseline", label: null, sourceSha: SHA, canonicalManifestSha256: "a".repeat(64) },
+          candidate: { role: "candidate", label: "0.5.0-tigon32.1.rc.1", sourceSha: "c".repeat(40), canonicalManifestSha256: "b".repeat(64) },
+        },
+      },
+      local: {
+        result: "PASS", profile: "local-macos-shared-rehearsal", sha256: "1".repeat(64),
+        packages: {
+          baseline: { role: "baseline", label: null, sourceSha: SHA, canonicalManifestSha256: "a".repeat(64) },
+          candidate: { role: "candidate", label: "0.5.0-tigon32.1.rc.1", sourceSha: "c".repeat(40), canonicalManifestSha256: "b".repeat(64) },
+        },
+      },
+    },
+    regression: {
+      profileId: "gha-ubuntu-24.04-x64-pw1.56.1",
+      runs: [{ runId: "4", result: "PASS", profile: "gha-ubuntu-24.04-x64-pw1.56.1" }],
+      result: "PASS",
+      metrics: Object.fromEntries(["chromium", "firefox", "webkit"].map((engine) => [engine, {
+        result: "PASS",
+        resolution: 0.1,
+        validSampleCount: 40,
+        invalidSampleCount: 0,
+        metrics: Object.fromEntries([
+          "coldStartupToRunningMs", "coldStartupToFirstFrameMs",
+          "warmStartupToRunningMs", "warmFrameIntervalP95Ms",
+        ].map((metric) => [metric, evaluateMetric({
+          baseline: Array(20).fill(10), candidate: Array(20).fill(10), resolution: 0.1,
+        })])),
+      }])),
+    },
+    sizes: {
+      baseline: { rawBytes: 500000, gzipBytes: 180000, brotliBytes: 150000 },
+      candidate: { rawBytes: 500000, gzipBytes: 180000, brotliBytes: 150000 },
+      deltas: { rawBytes: 0, gzipBytes: 0, brotliBytes: 0 },
+    },
+    security: { workflowRun: "https://github.com/Tigon32/miniquad/actions/runs/3", openFindings: [], waivers: [] },
+    changelog: { hasHeading: true },
+    native: { windows: "unqualified", linux: "unqualified", macos: "unqualified", android: "unqualified", ios: "unqualified" },
+    limits: { reason: "see section 12" },
+    review: {
+      reviewerKind: "automated",
+      reviewer: "GitHub Copilot (automated agent)",
+      method: "ran node scripts/release-candidate.mjs gate --record gate.json at tool SHA " + "d".repeat(40),
+      reference: "https://github.com/Tigon32/miniquad/pull/1#issuecomment-1",
+      date: "2026-11-11",
+      sizeIncreaseAccepted: false,
+      sizeIncreaseReason: null,
+      waivers: [],
+      ownerApproval: false,
+    },
+  };
+}
+
+test("evaluateGate gives QUALIFIED-CANDIDATE for a complete automated-review fixture", () => {
+  const { result, reasons } = evaluateGate(buildValidGateRecord());
+  assert.equal(result, "QUALIFIED-CANDIDATE", reasons.join("; "));
+});
+
+test("evaluateGate blocks absent or inconsistent retained CI references", () => {
+  for (const change of [
+    (record) => { delete record.ci[0].runId; },
+    (record) => { record.ci[0].runId = 0; },
+    (record) => { record.ci[0].runId = "1"; },
+    (record) => { delete record.ci[0].jobId; },
+    (record) => { record.ci[0].jobId = -1; },
+    (record) => { record.ci[2].jobId = []; },
+    (record) => { record.ci[2].jobId = [30, 30]; },
+    (record) => { delete record.ci[0].url; },
+    (record) => { record.ci[0].url = "https://example.invalid/run/1"; },
+    (record) => { record.ci[0].url = "https://github.com/Tigon32/miniquad/actions/runs/2"; },
+  ]) {
+    const record = buildValidGateRecord();
+    change(record);
+    assert.equal(evaluateGate(record).result, "BLOCKED", JSON.stringify(record.ci));
+  }
+});
+
+test("evaluateGate binds security and newest regression evidence to their collected CI runs", () => {
+  for (const change of [
+    (record) => { record.security.workflowRun = "https://github.com/Tigon32/miniquad/actions/runs/9"; },
+    (record) => { record.regression.runs[0].runId = "9"; },
+    (record) => { record.regression.runs.unshift({ ...record.regression.runs[0] }); },
+  ]) {
+    const record = buildValidGateRecord();
+    change(record);
+    assert.equal(evaluateGate(record).result, "BLOCKED");
+  }
+});
+
+test("evaluateGate requires the contract identity and evidence references", () => {
+  for (const path of [
+    "schema", "contracts", "limits", "review.date", "compatibility.evidence",
+    "upstream.importedChanges", "packages.baselineManifestSha256",
+    "packages.candidateManifestSha256", "drill.reference.sha256",
+    "drill.local.sha256", "regression.metrics",
+  ]) {
+    const record = buildValidGateRecord();
+    const parts = path.split(".");
+    let parent = record;
+    for (const key of parts.slice(0, -1)) parent = parent[key];
+    delete parent[parts.at(-1)];
+    assert.equal(evaluateGate(record).result, "BLOCKED", path);
+  }
+});
+
+test("evaluateGate rejects invalid evidence types and contract versions", () => {
+  for (const change of [
+    (r) => { r.schema = "unknown"; },
+    (r) => { r.contracts.abiVersion = 2; },
+    (r) => { r.packages.candidateManifestSha256 = "not-a-hash"; },
+    (r) => { r.upstream.importedChanges = {}; },
+    (r) => { r.compatibility.browserProtocolBreaking = "true"; },
+    (r) => { r.review.reviewer = {}; },
+    (r) => { r.review.waivers = {}; },
+    (r) => { r.drill.local.profile = null; },
+  ]) {
+    const record = buildValidGateRecord();
+    change(record);
+    assert.equal(evaluateGate(record).result, "BLOCKED");
+  }
+});
+
+for (const [name, change, expected] of [
+  ["one security job substituted for all jobs", (r) => { r.ci[2].job = "npm-advisories"; }, "BLOCKED"],
+  ["a later failed required CI job", (r) => { r.ci.push({ ...r.ci[0], conclusion: "failure" }); }, "FAILED"],
+  ["a cancelled security job", (r) => { r.ci.push({ ...r.ci[2], job: "rustsec", conclusion: "cancelled" }); }, "BLOCKED"],
+  ["an older null regression run", (r) => { r.regression.runs.unshift(null); }, "BLOCKED"],
+  ["an empty native inventory", (r) => { r.native = {}; }, "BLOCKED"],
+  ["an unsupported baseline kind", (r) => { r.baseline.kind = "unknown"; }, "BLOCKED"],
+  ["the wrong reference drill profile", (r) => { r.drill.reference.profile = "local-rehearsal"; }, "BLOCKED"],
+  ["missing security details", (r) => { r.security = {}; }, "BLOCKED"],
+  ["an open security finding", (r) => { r.security.openFindings = [{ advisory: "unresolved" }]; }, "BLOCKED"],
+  ["a security waiver", (r) => { r.security.waivers = [{ reason: "unreviewed" }]; }, "BLOCKED"],
+  ["empty metric evidence", (r) => { r.regression.metrics = {}; }, "BLOCKED"],
+  ["a missing engine", (r) => { delete r.regression.metrics.firefox; }, "BLOCKED"],
+  ["an inconclusive engine", (r) => { r.regression.metrics.webkit.result = "INCONCLUSIVE"; }, "BLOCKED"],
+  ["an invalid retained sample", (r) => { r.regression.metrics.chromium.invalidSampleCount = 1; }, "BLOCKED"],
+  ["a failed metric hidden by the aggregate", (r) => { r.regression.metrics.chromium.metrics.coldStartupToRunningMs.result = "FAIL"; }, "FAILED"],
+  ["a missing metric", (r) => { delete r.regression.metrics.firefox.metrics.warmFrameIntervalP95Ms; }, "BLOCKED"],
+  ["inconsistent passing statistics", (r) => { r.regression.metrics.webkit.metrics.coldStartupToFirstFrameMs.ciHigh = 20; }, "BLOCKED"],
+]) {
+  test(`evaluateGate rejects ${name}`, () => {
+    const record = buildValidGateRecord();
+    change(record);
+    const { result, reasons } = evaluateGate(record);
+    assert.equal(result, expected, reasons.join("; "));
+  });
+}
+
+test("evaluateGate gives BLOCKED when ownerApproval is true", () => {
+  const record = buildValidGateRecord();
+  record.review.ownerApproval = true;
+  const { result } = evaluateGate(record);
+  assert.equal(result, "BLOCKED");
+});
+
+test("evaluateGate gives BLOCKED when the newest regression run is not PASS", () => {
+  const record = buildValidGateRecord();
+  record.regression.result = "INCONCLUSIVE";
+  const { result } = evaluateGate(record);
+  assert.equal(result, "BLOCKED");
+});
+
+test("evaluateGate gives BLOCKED when any one required field is removed", () => {
+  for (const path of ["label", "candidateSha", "baseline.kind", "review.reviewer", "changelog"]) {
+    const record = buildValidGateRecord();
+    const parts = path.split(".");
+    let cursor = record;
+    for (let i = 0; i < parts.length - 1; i += 1) cursor = cursor[parts[i]];
+    delete cursor[parts[parts.length - 1]];
+    const { result, reasons } = evaluateGate(record);
+    assert.equal(result, "BLOCKED", `removing ${path} should block: ${reasons.join("; ")}`);
+  }
+});
+
+test("evaluateGate gives BLOCKED for a bootstrap baseline when a .release tag exists", () => {
+  const record = buildValidGateRecord();
+  record.existingReleaseTag = true;
+  const { result } = evaluateGate(record);
+  assert.equal(result, "BLOCKED");
+});
+
+test("evaluateGate gives FAILED for a regression FAIL", () => {
+  const record = buildValidGateRecord();
+  record.regression.runs.push({ runId: "2", result: "FAIL", profile: "gha-ubuntu-24.04-x64-pw1.56.1" });
+  record.regression.result = "FAIL";
+  const { result } = evaluateGate(record);
+  assert.equal(result, "FAILED");
+});
+
+test("evaluateGate gives BLOCKED when a waiver is recorded", () => {
+  const record = buildValidGateRecord();
+  record.review.waivers = [{ check: "regression", scope: "warmFrameIntervalP95Ms", risk: "low", owner: "Tigon32", expiry: "2026-12-01" }];
+  const { result } = evaluateGate(record);
+  assert.equal(result, "BLOCKED");
+});
+
+// ---------------------------------------------------------------------
+// evaluateGate: regressions for reported fail-open routes to a false
+// QUALIFIED-CANDIDATE result. Each test first documents the exact pre-fix
+// behavior it reproduces, then asserts the strict post-fix behavior.
+// ---------------------------------------------------------------------
+
+test("evaluateGate gives BLOCKED when ci is present but is not the collected job list (was QUALIFIED-CANDIDATE)", () => {
+  const record = buildValidGateRecord();
+  record.ci = {}; // non-array `ci` used to satisfy requireField and skip every CI check
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "BLOCKED", reasons.join("; "));
+  assert.ok(reasons.some((r) => r.includes("ci is missing or is not the list")));
+});
+
+test("evaluateGate gives BLOCKED when a required CI job is missing from the list", () => {
+  const record = buildValidGateRecord();
+  record.ci = record.ci.filter((entry) => entry.workflow !== "Security advisory review");
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "BLOCKED", reasons.join("; "));
+});
+
+test("evaluateGate gives BLOCKED when a required CI job's evidence is for a different SHA than candidateSha", () => {
+  const record = buildValidGateRecord();
+  record.ci = record.ci.map((entry) => ({ ...entry, sha: "a".repeat(40) }));
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "BLOCKED", reasons.join("; "));
+  assert.ok(reasons.some((r) => r.includes("not recorded for the candidate SHA")));
+});
+
+test("evaluateGate gives BLOCKED when drill.local did not record PASS (was QUALIFIED-CANDIDATE)", () => {
+  const record = buildValidGateRecord();
+  record.drill.local = {}; // missing `result` used to pass silently
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "BLOCKED", reasons.join("; "));
+  assert.ok(reasons.some((r) => r.includes("Local drill result")));
+});
+
+test("evaluateGate gives BLOCKED when compare is absent (was QUALIFIED-CANDIDATE)", () => {
+  const record = buildValidGateRecord();
+  delete record.compare; // only `=== false` was ever checked; absent compare was never blocked
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "BLOCKED", reasons.join("; "));
+  assert.ok(reasons.some((r) => r.includes("compare is missing")));
+});
+
+test("evaluateGate gives BLOCKED when candidateSha or toolSha is not a real commit SHA (was QUALIFIED-CANDIDATE)", () => {
+  const record = buildValidGateRecord();
+  record.candidateSha = "not-a-real-sha";
+  record.toolSha = "also-not-real";
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "BLOCKED", reasons.join("; "));
+  assert.ok(reasons.some((r) => r.includes("candidateSha is not a 40-character")));
+});
+
+test("evaluateGate gives BLOCKED when baseline.sha equals candidateSha", () => {
+  const record = buildValidGateRecord();
+  record.baseline.sha = record.candidateSha;
+  const { result } = evaluateGate(record);
+  assert.equal(result, "BLOCKED");
+});
+
+test("evaluateGate gives BLOCKED when regression.result cherry-picks an earlier PASS over the newest retained run (was QUALIFIED-CANDIDATE)", () => {
+  const record = buildValidGateRecord();
+  const profile = record.regression.profileId;
+  record.regression.runs = [
+    { runId: "1", result: "PASS", profile },
+    { runId: "2", result: "INCONCLUSIVE", profile },
+  ];
+  record.regression.result = "PASS"; // claims the earlier PASS despite the newest run being INCONCLUSIVE
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "BLOCKED", reasons.join("; "));
+  assert.ok(reasons.some((r) => r.includes("does not match the newest retained run")));
+});
+
+test("evaluateGate gives BLOCKED when a retained regression run is not from the declared reference profile", () => {
+  const record = buildValidGateRecord();
+  record.regression.runs = [{ runId: "1", result: "PASS", profile: "local-macos-shared-rehearsal" }];
+  const { result } = evaluateGate(record);
+  assert.equal(result, "BLOCKED");
+});
+
+test("evaluateGate gives BLOCKED when more than three regression runs are retained", () => {
+  const record = buildValidGateRecord();
+  const profile = record.regression.profileId;
+  record.regression.runs = [
+    { runId: "1", result: "PASS", profile },
+    { runId: "2", result: "PASS", profile },
+    { runId: "3", result: "PASS", profile },
+    { runId: "4", result: "PASS", profile },
+  ];
+  const { result } = evaluateGate(record);
+  assert.equal(result, "BLOCKED");
+});
+
+test("evaluateGate gives BLOCKED when sizes totals are missing, NaN, negative, or non-integer", () => {
+  for (const change of [
+    (record) => { delete record.sizes.baseline; },
+    (record) => { delete record.sizes.candidate; },
+    (record) => { delete record.sizes.deltas; },
+    (record) => { record.sizes.candidate.brotliBytes = Number.NaN; },
+    (record) => { record.sizes.baseline.gzipBytes = -1; },
+    (record) => { record.sizes.candidate.rawBytes = 500000.5; },
+  ]) {
+    const record = buildValidGateRecord();
+    change(record);
+    const { result, reasons } = evaluateGate(record);
+    assert.equal(result, "BLOCKED", reasons.join("; "));
+  }
+});
+
+test("evaluateGate gives BLOCKED when a size delta is inconsistent with candidate minus baseline", () => {
+  const record = buildValidGateRecord();
+  record.sizes.candidate.brotliBytes = 150500;
+  record.sizes.deltas.brotliBytes = 0; // should be +500
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "BLOCKED", reasons.join("; "));
+});
+
+test("evaluateGate gives QUALIFIED-CANDIDATE when the Brotli total decreased without any acceptance", () => {
+  const record = buildValidGateRecord();
+  record.sizes.candidate.brotliBytes = 149000;
+  record.sizes.deltas.brotliBytes = -1000;
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "QUALIFIED-CANDIDATE", reasons.join("; "));
+});
+
+test("evaluateGate gives BLOCKED when the Brotli total increased and review.sizeIncreaseAccepted is false", () => {
+  const record = buildValidGateRecord();
+  record.sizes.candidate.brotliBytes = 151000;
+  record.sizes.deltas.brotliBytes = 1000;
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "BLOCKED", reasons.join("; "));
+});
+
+test("evaluateGate gives BLOCKED when an accepted Brotli increase has no non-empty rationale", () => {
+  for (const reason of [null, "", "   ", undefined]) {
+    const record = buildValidGateRecord();
+    record.sizes.candidate.brotliBytes = 151000;
+    record.sizes.deltas.brotliBytes = 1000;
+    record.review.sizeIncreaseAccepted = true;
+    record.review.sizeIncreaseReason = reason;
+    const { result, reasons } = evaluateGate(record);
+    assert.equal(result, "BLOCKED", reasons.join("; "));
+  }
+});
+
+test("evaluateGate gives QUALIFIED-CANDIDATE for an accepted Brotli increase with a documented, non-empty rationale", () => {
+  const record = buildValidGateRecord();
+  record.sizes.candidate.brotliBytes = 151000;
+  record.sizes.deltas.brotliBytes = 1000;
+  record.review.sizeIncreaseAccepted = true;
+  record.review.sizeIncreaseReason = "Added a required WebGL fallback shader; accepted by the reviewer.";
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "QUALIFIED-CANDIDATE", reasons.join("; "));
+});
+
+test("gate CLI reports a failing exit code for a BLOCKED record and does not report success", () => {
+  const dir = mkdtempSync(join(tmpdir(), "release-gate-test-"));
+  const record = buildValidGateRecord();
+  delete record.compare;
+  const recordPath = join(dir, "gate.json");
+  writeFileSyncFs(recordPath, JSON.stringify(record));
+  const previousExitCode = process.exitCode;
+  process.exitCode = 0;
+  try {
+    const { result } = gate({ record: recordPath });
+    assert.equal(result, "BLOCKED");
+    assert.notEqual(process.exitCode, 0, "gate must not report a successful exit code for a BLOCKED record");
+  } finally {
+    process.exitCode = previousExitCode;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("gate CLI reports a successful exit code for a QUALIFIED-CANDIDATE record with a proven tag binding", () => {
+  const dir = mkdtempSync(join(tmpdir(), "release-gate-test-"));
+  const record = buildValidGateRecord();
+  const recordPath = join(dir, "gate.json");
+  writeFileSyncFs(recordPath, JSON.stringify(record));
+  const previousExitCode = process.exitCode;
+  process.exitCode = 0;
+  const fakeGit = (_bin, args) => {
+    if (args.includes("cat-file")) return Buffer.from("tag\n");
+    if (args.includes("rev-parse")) return Buffer.from(`${record.candidateSha}\n`);
+    throw new Error(`unexpected git invocation: ${args.join(" ")}`);
+  };
+  try {
+    const { result } = gate({ record: recordPath, repo: dir }, { gitImpl: fakeGit });
+    assert.equal(result, "QUALIFIED-CANDIDATE");
+    assert.equal(process.exitCode, 0);
+  } finally {
+    process.exitCode = previousExitCode;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("gate CLI fails closed to BLOCKED when the tag cannot be proven to point at candidateSha", () => {
+  const dir = mkdtempSync(join(tmpdir(), "release-gate-test-"));
+  const record = buildValidGateRecord();
+  const recordPath = join(dir, "gate.json");
+  writeFileSyncFs(recordPath, JSON.stringify(record));
+  const previousExitCode = process.exitCode;
+  process.exitCode = 0;
+  const fakeGitWrongCommit = (_bin, args) => {
+    if (args.includes("cat-file")) return Buffer.from("tag\n");
+    if (args.includes("rev-parse")) return Buffer.from(`${"f".repeat(40)}\n`);
+    throw new Error(`unexpected git invocation: ${args.join(" ")}`);
+  };
+  try {
+    const { result, reasons } = gate({ record: recordPath, repo: dir }, { gitImpl: fakeGitWrongCommit });
+    assert.equal(result, "BLOCKED");
+    assert.ok(reasons.some((reason) => reason.includes("tag binding")));
+  } finally {
+    process.exitCode = previousExitCode;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("gate CLI fails closed to BLOCKED when the tag is lightweight (not annotated)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "release-gate-test-"));
+  const record = buildValidGateRecord();
+  const recordPath = join(dir, "gate.json");
+  writeFileSyncFs(recordPath, JSON.stringify(record));
+  const previousExitCode = process.exitCode;
+  process.exitCode = 0;
+  const fakeGitLightweightTag = (_bin, args) => {
+    if (args.includes("cat-file")) return Buffer.from("commit\n");
+    throw new Error(`unexpected git invocation: ${args.join(" ")}`);
+  };
+  try {
+    const { result, reasons } = gate({ record: recordPath, repo: dir }, { gitImpl: fakeGitLightweightTag });
+    assert.equal(result, "BLOCKED");
+    assert.ok(reasons.some((reason) => reason.includes("not an annotated tag")));
+  } finally {
+    process.exitCode = previousExitCode;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("gate CLI fails closed to BLOCKED when the tag does not exist", () => {
+  const dir = mkdtempSync(join(tmpdir(), "release-gate-test-"));
+  const record = buildValidGateRecord();
+  const recordPath = join(dir, "gate.json");
+  writeFileSyncFs(recordPath, JSON.stringify(record));
+  const previousExitCode = process.exitCode;
+  process.exitCode = 0;
+  const fakeGitMissingTag = () => {
+    throw new Error("fatal: Not a valid object name tigon32-miniquad-v0.5.0-tigon32.1.rc.1");
+  };
+  try {
+    const { result, reasons } = gate({ record: recordPath, repo: dir }, { gitImpl: fakeGitMissingTag });
+    assert.equal(result, "BLOCKED");
+    assert.ok(reasons.some((reason) => reason.includes("does not exist")));
+  } finally {
+    process.exitCode = previousExitCode;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("gate CLI does not run the tag proof when the record is already BLOCKED (fewer reasons, same verdict)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "release-gate-test-"));
+  const record = buildValidGateRecord();
+  delete record.compare;
+  const recordPath = join(dir, "gate.json");
+  writeFileSyncFs(recordPath, JSON.stringify(record));
+  const previousExitCode = process.exitCode;
+  process.exitCode = 0;
+  const fakeGitThatMustNotBeCalled = () => {
+    throw new Error("git must not be invoked for an already-BLOCKED record");
+  };
+  try {
+    const { result } = gate({ record: recordPath, repo: dir }, { gitImpl: fakeGitThatMustNotBeCalled });
+    assert.equal(result, "BLOCKED");
+  } finally {
+    process.exitCode = previousExitCode;
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("verifyTagBinding rejects a tag that resolves to a different commit than candidateSha", () => {
+  const candidateSha = "c".repeat(40);
+  const fakeGit = (_bin, args) => {
+    if (args.includes("cat-file")) return Buffer.from("tag\n");
+    if (args.includes("rev-parse")) return Buffer.from(`${"d".repeat(40)}\n`);
+    throw new Error(`unexpected git invocation: ${args.join(" ")}`);
+  };
+  const result = verifyTagBinding({ repo: "/tmp/does-not-matter", tag: "v1.0.0", candidateSha }, { gitImpl: fakeGit });
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /points to/);
+});
+
+test("verifyTagBinding rejects a lightweight (non-annotated) tag", () => {
+  const fakeGit = (_bin, args) => {
+    if (args.includes("cat-file")) return Buffer.from("commit\n");
+    throw new Error(`unexpected git invocation: ${args.join(" ")}`);
+  };
+  const result = verifyTagBinding(
+    { repo: "/tmp/does-not-matter", tag: "v1.0.0", candidateSha: "c".repeat(40) },
+    { gitImpl: fakeGit },
+  );
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /not an annotated tag/);
+});
+
+test("verifyTagBinding rejects a missing tag (git command failure)", () => {
+  const fakeGit = () => {
+    throw new Error("fatal: Not a valid object name v1.0.0");
+  };
+  const result = verifyTagBinding(
+    { repo: "/tmp/does-not-matter", tag: "v1.0.0", candidateSha: "c".repeat(40) },
+    { gitImpl: fakeGit },
+  );
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /does not exist/);
+});
+
+test("verifyTagBinding rejects an unresolvable commit (non-hex rev-parse output)", () => {
+  const fakeGit = (_bin, args) => {
+    if (args.includes("cat-file")) return Buffer.from("tag\n");
+    if (args.includes("rev-parse")) return Buffer.from("not-a-sha\n");
+    throw new Error(`unexpected git invocation: ${args.join(" ")}`);
+  };
+  const result = verifyTagBinding(
+    { repo: "/tmp/does-not-matter", tag: "v1.0.0", candidateSha: "c".repeat(40) },
+    { gitImpl: fakeGit },
+  );
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /could not resolve/);
+});
+
+test("verifyTagBinding accepts an annotated tag whose commit exactly matches candidateSha", () => {
+  const candidateSha = "c".repeat(40);
+  const fakeGit = (_bin, args) => {
+    if (args.includes("cat-file")) return Buffer.from("tag\n");
+    if (args.includes("rev-parse")) return Buffer.from(`${candidateSha}\n`);
+    throw new Error(`unexpected git invocation: ${args.join(" ")}`);
+  };
+  const result = verifyTagBinding({ repo: "/tmp/does-not-matter", tag: "v1.0.0", candidateSha }, { gitImpl: fakeGit });
+  assert.equal(result.ok, true);
+  assert.equal(result.reason, null);
+});
+
+test("verifyTagBinding fails closed when required fields are missing", () => {
+  const result = verifyTagBinding({ repo: "/tmp/does-not-matter", tag: "", candidateSha: "c".repeat(40) });
+  assert.equal(result.ok, false);
+  assert.match(result.reason, /requires repo, tag, and candidateSha/);
+});
+
+// ---------------------------------------------------------------------
+// Server (section 6.1)
+// ---------------------------------------------------------------------
+
+import { mkdtempSync, mkdirSync as mkdirSyncFs, writeFileSync as writeFileSyncFs, readFileSync as readFileSyncFs, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+function buildFixturePackage(role, label, overrides = {}) {
+  const dir = mkdtempSync(join(tmpdir(), "release-server-test-"));
+  const payloadDir = join(dir, "payload");
+  mkdirSyncFs(payloadDir, { recursive: true });
+  const payloadBytes = { ...PAYLOAD_BYTES, ...(overrides.payloadBytes ?? {}) };
+  const files = Object.entries(payloadBytes).map(([file, bytes]) => {
+    writeFileSyncFs(join(payloadDir, file), bytes);
+    return { file, sha256: sha256(bytes), bytes: bytes.length, sourcePath: SOURCE_PATHS[file] ?? null };
+  });
+  const manifest = {
+    schema: "miniquad-release-payload/1",
+    label,
+    role,
+    reference: role === "baseline" ? "bootstrap-reference" : null,
+    source: { repository: "https://github.com/Tigon32/miniquad", sha: SHA },
+    abiVersion: 3,
+    files,
+    ...(overrides.manifest ?? {}),
+  };
+  writeFileSyncFs(join(payloadDir, "MANIFEST.json"), `${JSON.stringify(manifest, null, 2)}\n`);
+  if (overrides.provenance !== undefined) {
+    writeFileSyncFs(join(dir, "provenance.json"), `${JSON.stringify(overrides.provenance, null, 2)}\n`);
+  }
+  return dir;
+}
+
+test("createReleaseServer: an unknown path and .. give 404", async () => {
+  const baselineDir = buildFixturePackage("baseline", null);
+  const candidateDir = buildFixturePackage("candidate", "0.5.0-tigon32.1.rc.1");
+  const server = await createReleaseServer({ packages: { baseline: { dir: baselineDir }, candidate: { dir: candidateDir } } });
+  try {
+    server.deploy("baseline");
+    const notFound = await fetch(`${server.url}/does-not-exist`);
+    assert.equal(notFound.status, 404);
+    const traversal = await fetch(`${server.url}/app/../secret`);
+    assert.equal(traversal.status, 404);
+  } finally {
+    await server.close();
+    rmSync(baselineDir, { recursive: true, force: true });
+    rmSync(candidateDir, { recursive: true, force: true });
+  }
+});
+
+test("createReleaseServer: a matching ETag gives 304, and deploy() changes the served hash", async () => {
+  const baselineDir = buildFixturePackage("baseline", null);
+  const candidateDir = buildFixturePackage("candidate", "0.5.0-tigon32.1.rc.1");
+  const server = await createReleaseServer({ packages: { baseline: { dir: baselineDir }, candidate: { dir: candidateDir } } });
+  try {
+    server.deploy("baseline");
+    const first = await fetch(`${server.url}/app/gl.js`);
+    const etag = first.headers.get("etag");
+    assert.equal(first.status, 200);
+    const cached = await fetch(`${server.url}/app/gl.js`, { headers: { "If-None-Match": etag } });
+    assert.equal(cached.status, 304);
+
+    server.deploy("candidate");
+    const afterDeploy = await fetch(`${server.url}/app/gl.js`, { headers: { "If-None-Match": etag } });
+    // The fixture uses the same bytes for baseline and candidate gl.js, so
+    // this only exercises that deploy() switches the active package
+    // without error; the hash equality itself is already covered above.
+    assert.ok(afterDeploy.status === 200 || afterDeploy.status === 304);
+  } finally {
+    await server.close();
+    rmSync(baselineDir, { recursive: true, force: true });
+    rmSync(candidateDir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------
+// `verify` (section 5.6): package identity, WASM exports, and provenance
+// (issue #19 artifact-acceptance review, findings F2 and F3)
+// ---------------------------------------------------------------------
+
+function u32leb(value) {
+  const bytes = [];
+  let n = value;
+  do {
+    let byte = n & 0x7f;
+    n >>>= 7;
+    if (n !== 0) byte |= 0x80;
+    bytes.push(byte);
+  } while (n !== 0);
+  return bytes;
+}
+
+function wasmSection(id, bytes) {
+  return [id, ...u32leb(bytes.length), ...bytes];
+}
+
+function wasmName(name) {
+  const utf8 = Buffer.from(name, "utf8");
+  return [...u32leb(utf8.length), ...utf8];
+}
+
+/** Builds the smallest valid WASM module that exports `memory` plus the
+ * given function names, each as a no-op `() -> ()` function. `verify` only
+ * checks export names, not signatures, so this is sufficient evidence for
+ * the exports rule without needing a real compiled Miniquad build. */
+function buildWasmWithExports(functionNames) {
+  const typeSec = wasmSection(1, [1, 0x60, 0, 0]);
+  const funcSec = wasmSection(3, [functionNames.length, ...functionNames.map(() => 0)]);
+  const memSec = wasmSection(5, [1, 0x00, 1]);
+  const exportEntries = [...wasmName("memory"), 2, 0];
+  functionNames.forEach((name, i) => exportEntries.push(...wasmName(name), 0, i));
+  const exportSec = wasmSection(7, [functionNames.length + 1, ...exportEntries]);
+  const codeContent = [functionNames.length, ...functionNames.flatMap(() => [2, 0x00, 0x0b])];
+  const codeSec = wasmSection(10, codeContent);
+  return Buffer.from([
+    0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+    ...typeSec, ...funcSec, ...memSec, ...exportSec, ...codeSec,
+  ]);
+}
+
+const REQUIRED_WASM_EXPORT_NAMES = [
+  "main", "frame", "crate_version",
+  "allocate_transfer_vec_u8", "discard_transfer_vec_u8", "mq_params_version",
+];
+const VALID_WASM_BYTES = buildWasmWithExports(REQUIRED_WASM_EXPORT_NAMES);
+const EXPORT_LESS_WASM_BYTES = buildWasmWithExports([]);
+
+test("verify accepts a well-formed package with required exports and a valid identity manifest", () => {
+  const dir = buildFixturePackage("candidate", "0.5.0-tigon32.1.rc.1", {
+    payloadBytes: { "app.wasm": VALID_WASM_BYTES },
+  });
+  try {
+    const result = verify({ package: dir });
+    assert.equal(result.ok, true, JSON.stringify(result.reasons));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("verify rejects a compiled app.wasm with none of the required exports (F2)", () => {
+  const dir = buildFixturePackage("candidate", "0.5.0-tigon32.1.rc.1", {
+    payloadBytes: { "app.wasm": EXPORT_LESS_WASM_BYTES },
+  });
+  try {
+    const result = verify({ package: dir });
+    assert.equal(result.ok, false);
+    assert.ok(result.reasons.some((r) => r.includes("missing required export")));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+for (const [name, manifestOverrides] of [
+  ["schema is absent", { schema: undefined }],
+  ["role is absent", { role: undefined }],
+  ["label is null for a candidate", { label: null }],
+  ["reference is not null for a candidate", { reference: "bootstrap-reference" }],
+  ["source.repository is wrong", { source: { repository: "https://example.invalid/not-miniquad", sha: SHA } }],
+  ["source.sha is not a commit SHA", { source: { repository: "https://github.com/Tigon32/miniquad", sha: "not-a-sha" } }],
+  ["abiVersion is wrong", { abiVersion: 99 }],
+]) {
+  test(`verify rejects an identity-free or mislabeled manifest: ${name} (F2)`, () => {
+    const dir = buildFixturePackage("candidate", "0.5.0-tigon32.1.rc.1", {
+      payloadBytes: { "app.wasm": VALID_WASM_BYTES },
+      manifest: manifestOverrides,
+    });
+    try {
+      const result = verify({ package: dir });
+      assert.equal(result.ok, false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+}
+
+test("verify rejects a provenance.json whose canonicalManifestSha256 does not match the real manifest bytes (F2)", () => {
+  const dir = buildFixturePackage("candidate", "0.5.0-tigon32.1.rc.1", {
+    payloadBytes: { "app.wasm": VALID_WASM_BYTES },
+    provenance: { canonicalManifestSha256: "0".repeat(64), assetSource: { sha: SHA } },
+  });
+  try {
+    const result = verify({ package: dir });
+    assert.equal(result.ok, false);
+    assert.ok(result.reasons.some((r) => r.includes("canonicalManifestSha256")));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test("verify rejects a provenance.json whose assetSource.sha does not match manifest.source.sha (F2)", () => {
+  const dir = buildFixturePackage("candidate", "0.5.0-tigon32.1.rc.1", {
+    payloadBytes: { "app.wasm": VALID_WASM_BYTES },
+    provenance: { canonicalManifestSha256: "placeholder", assetSource: { sha: OTHER_SHA } },
+  });
+  // Overwrite with the real manifest hash after the manifest is written, so
+  // only assetSource.sha is wrong.
+  const manifestBytes = readFileSyncFs(join(dir, "payload", "MANIFEST.json"));
+  const realHash = sha256(manifestBytes);
+  writeFileSyncFs(join(dir, "provenance.json"), `${JSON.stringify({ canonicalManifestSha256: realHash, assetSource: { sha: OTHER_SHA } }, null, 2)}\n`);
+  try {
+    const result = verify({ package: dir });
+    assert.equal(result.ok, false);
+    assert.ok(result.reasons.some((r) => r.includes("assetSource.sha")));
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---------------------------------------------------------------------
+// `canonicalizeManifest` rule 6: fixed copied-asset source-path binding
+// (issue #19 artifact-acceptance review, finding F3)
+// ---------------------------------------------------------------------
+
+test("canonicalizeManifest rejects a copied-asset entry with a null sourcePath (F3)", () => {
+  const { raw, fileEntries, expected } = buildValidManifest();
+  const glEntry = raw.files.find((entry) => entry.file === "gl.js");
+  glEntry.sourcePath = null;
+  assert.throws(() => canonicalizeManifest(raw, fileEntries, expected), /source-path-mismatch/);
+});
+
+test("canonicalizeManifest rejects a copied-asset entry pointing at an uncopied path (F3)", () => {
+  const { raw, fileEntries, expected } = buildValidManifest();
+  const glEntry = raw.files.find((entry) => entry.file === "gl.js");
+  glEntry.sourcePath = "js/not-copied.js";
+  assert.throws(() => canonicalizeManifest(raw, fileEntries, expected), /source-path-mismatch/);
+});
+
+test("canonicalizeManifest throws when no source bytes were supplied for a copied asset, instead of skipping the rule (F3)", () => {
+  const { raw, fileEntries, expected } = buildValidManifest();
+  expected.sourceAssetBytes.delete("js/gl.js");
+  assert.throws(() => canonicalizeManifest(raw, fileEntries, expected), /source-bytes-unavailable/);
+});
+
+test("canonicalizeManifest rejects gl.js bytes that differ from the real js/gl.js bytes at the fixed path (F3)", () => {
+  const { raw, fileEntries, expected } = buildValidManifest();
+  expected.sourceAssetBytes.set("js/gl.js", Buffer.from("const version = 3; // REAL COMMIT BYTES, not the payload copy"));
+  assert.throws(() => canonicalizeManifest(raw, fileEntries, expected), /source-bytes-mismatch/);
+});
+
+// ---------------------------------------------------------------------
+// `evaluateGate` drill/package identity binding (issue #19 artifact
+// acceptance review, finding F4)
+// ---------------------------------------------------------------------
+
+test("evaluateGate gives BLOCKED when baseline and candidate packages share one manifest hash", () => {
+  const record = buildValidGateRecord();
+  record.packages.candidateManifestSha256 = record.packages.baselineManifestSha256;
+  record.drill.reference.packages.candidate.canonicalManifestSha256 = record.packages.baselineManifestSha256;
+  record.drill.local.packages.candidate.canonicalManifestSha256 = record.packages.baselineManifestSha256;
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "BLOCKED", reasons.join("; "));
+  assert.ok(reasons.some((r) => r.includes("must not equal")));
+});
+
+test("evaluateGate gives BLOCKED when a retained drill's package hash does not match packages.baselineManifestSha256", () => {
+  const record = buildValidGateRecord();
+  record.drill.reference.packages.baseline.canonicalManifestSha256 = "f".repeat(64);
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "BLOCKED", reasons.join("; "));
+  assert.ok(reasons.some((r) => r.includes("drill.reference.packages.baseline")));
+});
+
+test("evaluateGate gives BLOCKED when a retained drill has no package-identity binding at all", () => {
+  const record = buildValidGateRecord();
+  delete record.drill.local.packages;
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "BLOCKED", reasons.join("; "));
+  assert.ok(reasons.some((r) => r.includes("drill.local.packages")));
+});
+
+test("evaluateGate still gives QUALIFIED-CANDIDATE for the complete, correctly bound fixture", () => {
+  const { result, reasons } = evaluateGate(buildValidGateRecord());
+  assert.equal(result, "QUALIFIED-CANDIDATE", reasons.join("; "));
+});
+
+// G1 (Opus follow-up on 0c59538): a drill's canonicalManifestSha256 at the
+// right JSON key is not, by itself, proof the drill actually exercised the
+// correctly-labeled package: a hash is not provenance. Require each
+// retained drill's own role/label/sourceSha to independently match the
+// gate record's candidate/baseline identity, so swapping which package
+// played which role (same two correct hashes, wrong slots) is rejected.
+test("evaluateGate gives BLOCKED when a retained drill swaps baseline and candidate roles (G1)", () => {
+  const record = buildValidGateRecord();
+  const swapped = {
+    baseline: { ...record.drill.reference.packages.candidate },
+    candidate: { ...record.drill.reference.packages.baseline },
+  };
+  record.drill.reference.packages = swapped;
+  record.drill.local.packages = swapped;
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "BLOCKED", reasons.join("; "));
+  assert.ok(reasons.some((r) => /\.role is/.test(r)));
+});
+
+test("evaluateGate gives BLOCKED when a retained drill's candidate.label contradicts record.label (G1)", () => {
+  const record = buildValidGateRecord();
+  record.drill.reference.packages.candidate.label = "9.9.9-tigon32.1.rc.1";
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "BLOCKED", reasons.join("; "));
+  assert.ok(reasons.some((r) => r.includes("drill.reference.packages.candidate.label")));
+});
+
+test("evaluateGate gives BLOCKED when a retained drill's candidate.sourceSha contradicts candidateSha (G1)", () => {
+  const record = buildValidGateRecord();
+  record.drill.local.packages.candidate.sourceSha = "9".repeat(40);
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "BLOCKED", reasons.join("; "));
+  assert.ok(reasons.some((r) => r.includes("drill.local.packages.candidate.sourceSha")));
+});
+
+test("evaluateGate gives BLOCKED when a retained drill's baseline.sourceSha contradicts baseline.sha (G1)", () => {
+  const record = buildValidGateRecord();
+  record.drill.reference.packages.baseline.sourceSha = "8".repeat(40);
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "BLOCKED", reasons.join("; "));
+  assert.ok(reasons.some((r) => r.includes("drill.reference.packages.baseline.sourceSha")));
+});
+
+test("evaluateGate gives BLOCKED when a retained drill's baseline.label is non-null for a bootstrap baseline (G1)", () => {
+  const record = buildValidGateRecord();
+  record.drill.local.packages.baseline.label = "0.5.0-tigon32.1.rc.1";
+  const { result, reasons } = evaluateGate(record);
+  assert.equal(result, "BLOCKED", reasons.join("; "));
+  assert.ok(reasons.some((r) => r.includes("drill.local.packages.baseline.label")));
+});

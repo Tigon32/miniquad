@@ -5,7 +5,9 @@
 ## Identity
 
 - Candidate tag: NOT ASSIGNED
+- Candidate artifact label / Cargo package version: NOT ASSIGNED / NOT REVIEWED
 - Exact source SHA: UNKNOWN
+- Candidate tool source SHA: UNKNOWN
 - Upstream base SHA: UNKNOWN
 - Build date/time (UTC): NOT RUN
 - Builder and OS: NOT RUN
@@ -16,6 +18,8 @@
 - Lockfile/dependency revision: NOT RUN
 - Rust build command and flags: NOT RUN
 - Browser JS build or copy command: NOT RUN
+- Baseline source, role, and reference kind: NOT RUN
+- Previous qualified release or explicit bootstrap limitation: NOT REVIEWED
 
 ## Shipped artifacts
 
@@ -29,12 +33,16 @@ Run `bash scripts/measure-browser-artifacts.sh path/to/app.wasm path/to/gl.js` o
 - Compression tool versions: NOT RUN
 - Artifact retention location: NOT RUN
 - Source revision matching evidence: NOT RUN
+- Canonical manifest SHA-256 and complete payload inventory: NOT RUN
+- Two fresh builds with identical payload bytes: NOT RUN
+- Private-path and credential-pattern scan: NOT RUN
+- Candidate, baseline, and tool input receipts: NOT RUN
 
 ## Required checks
 
 | Check | Result (PASS/FAIL/SKIP/NOT RUN) | Evidence link and SHA |
 | --- | --- | --- |
-| Cargo fmt | NOT RUN | |
+| Focused Rust format and separate legacy format audit | NOT RUN | |
 | Clippy | NOT RUN | |
 | Rust unit and contract tests | NOT RUN | |
 | JavaScript lint and tests | NOT RUN | |
@@ -70,6 +78,11 @@ Record browser logs, CI links, screenshots or machine-readable reports. Desktop 
 - Input-to-visible latency: NOT RUN
 - Size difference, uncertainty, correctness parity: NOT RUN
 - Budget source and calibration evidence: NOT RUN
+- Manual reference-profile CI run and exact browser/tool versions: NOT RUN
+- Alternating baseline/candidate pairs per engine (minimum 20): NOT RUN
+- Measured positive clock resolution per engine: NOT RUN
+- Raw samples, baseline p90, candidate median confidence bounds, and limits: NOT RUN
+- Regression result (PASS/FAIL/INCONCLUSIVE) per gated metric: NOT RUN
 
 Do not use provisional targets as measured results.
 
@@ -81,14 +94,24 @@ Do not use provisional targets as measured results.
 - Untested native/mobile platforms: NOT REVIEWED
 - Prior qualified artifact pair and verified hashes: NOT RUN
 - Rollback drill command, target and observed first frame: NOT RUN
+- Baseline to candidate to exact baseline in all three engines: NOT RUN
+- Served and browser-received hashes, visible pixels, screenshots, and errors: NOT RUN
+- Existing candidate tab reloaded after rollback: NOT RUN
 - State migration or rollback incompatibility: NOT REVIEWED
 
 ## Gate decision
 
 - Result: **BLOCKED — TEMPLATE ONLY**
 - Reviewer: NOT ASSIGNED
+- Reviewer kind (person or automated agent): NOT ASSIGNED
+- Review method and source-bound evidence references: NOT RUN
 - Review date: NOT ASSIGNED
 - Required-check waivers (scope, owner, expiry, risk): NONE RECORDED
 - Approval/reference: NOT APPROVED
+- Human owner publication approval: **false — not granted by candidate qualification**
 
 See [release qualification policy](../release.md). Do not close [#19](https://github.com/Tigon32/miniquad/issues/19) without actual candidate and rollback evidence.
+Use [the candidate contract](../release-candidate-contract.md) for machine-readable evidence.
+A waiver or inconclusive mandatory result gives `BLOCKED`, not `QUALIFIED-CANDIDATE`.
+
+**Writing review state:** STE-aligned draft. Full dictionary review not done.

@@ -13,9 +13,69 @@ Until a versioned fork release is approved, do not claim full upstream compatibi
 - **Platforms:** Browser/WASM is the qualification target. Windows, Linux, macOS, Android, iOS and other native targets remain **not qualified by this gate** unless each target has its own run and evidence record. The proposed target matrix is in the [platform support policy](platform-support-policy.md) (**Proposed**).
 - **Upstream:** Review imported fixes independently. Record source revision, license, local diff and test outcome. Do not assume a clean cherry-pick proves compatibility.
 
+### Manual compatibility matrix
+
+Keep this matrix for an explicit release request.
+A target changes from **unqualified** only when a separate evidence record exists for that target and that candidate.
+[#156](https://github.com/Tigon32/miniquad/issues/156) owns the approved platform scope.
+Use that scope when it is approved.
+The [platform support policy](platform-support-policy.md) (**Proposed**) gives the support tier of each target.
+This matrix does not give a tier. It gives the candidate state only.
+"Unqualified" means that no passed candidate record exists. It is not a tier.
+
+| Target | State for a candidate | Evidence record that can change the state |
+| --- | --- | --- |
+| Chromium, Firefox, desktop WebKit (Playwright) | Candidate gate scope | Candidate drill and reference-profile run (section "Release gate") |
+| Safari on a physical iOS device | Unqualified, not tested | [Mobile browser qualification](mobile-browser-qualification.md) session |
+| Chrome on a physical Android device | Unqualified, not tested | [Mobile browser qualification](mobile-browser-qualification.md) session |
+| Android native | Unqualified, not tested | [Native platform qualification](native-platform-qualification.md) record |
+| iOS native | Unqualified, not tested | Separate native record for the target |
+| Windows, Linux, macOS native | Unqualified | Separate native build and runtime record for each target |
+
+Do not copy a state from an earlier candidate.
+Do not change a state because a compiler check passed.
+
+## Consumer distribution
+
+Until an owner approves a publication, consumers use one exact fork revision.
+
+1. **Rust source:** Use a Cargo `git` dependency on `https://github.com/Tigon32/miniquad` with `rev = "<40-character SHA>"`.
+   Do not use a branch, a tag name, or the upstream crate as the pin.
+2. **Bridge:** Copy `js/gl.js` from the same SHA. The [browser starter](browser-starter.md) does this with `git show <rev>:<path>`.
+   A candidate package contains the bridge and the WASM file of one candidate. Its manifest gives their hashes.
+   No npm runtime package exists. No GitHub Release asset exists.
+   Do not use the upstream hosted `gl.js`. It uses ABI v2 and this fork uses ABI v3.
+3. **Hashes:** Keep the SHA-256 values of `gl.js` and the WASM file that you deploy.
+4. **Upgrade:** Change the `rev` value and copy `gl.js` from the new SHA in the same change.
+   Rebuild the WASM file. Deploy `gl.js` and the WASM file together.
+   Read the `CHANGELOG.md` section for the new candidate before the upgrade.
+5. **Rollback:** Deploy the previous `gl.js` and WASM pair together. Do not roll back only one file.
+
+Optional companions keep their own versions. Record their versions and source SHAs with the core SHA.
+A change to the browser public contract, for example from [#121](https://github.com/Tigon32/miniquad/issues/121), needs a compatibility review in [#19](https://github.com/Tigon32/miniquad/issues/19) before a candidate includes it.
+
 ## Versioning and change control
 
-Use Semantic Versioning for fork release tags once public release ownership and naming are decided. Before an initial fork-specific tag, do not imply an independently supported release series. A removal, incompatible Rust signature change or incompatible JS/WASM ABI change requires a breaking-version decision and a documented migration path. Additive behavior still requires regression testing. Record changes relative to the last qualified tag and the corresponding upstream Miniquad revision. Do not silently synchronize a new upstream release.
+[MADR 0010](adr/0010-browser-release-candidates.md) proposes fork-scoped candidate labels.
+The [candidate contract](release-candidate-contract.md) defines the label, package, evidence, and gate.
+The first proposed label is `0.5.0-tigon32.1.rc.1`.
+Its tag prefix is `tigon32-miniquad-v`.
+This is an artifact compatibility label, not a package rename.
+The Cargo package remains `miniquad` version `0.4.11`.
+MADR 0006 still owns the product identity decision.
+
+The fork uses core browser ABI v3. Its upstream base used browser ABI v2.
+Do not pair the upstream bridge with fork WASM.
+Before version 1.0, a breaking core API or browser contract change increases the compatibility minor version.
+An additive or corrective change increases the patch version under the proposed fork policy.
+Record upstream synchronization, deprecation, and migration effects in the change log.
+Do not infer compatibility from an upstream version number or a clean merge.
+
+Optional companions and the application-parameter surface keep their own versions.
+Bind unversioned embedding assets to their exact source and asset hashes.
+An annotated candidate tag must identify reviewed, merged source.
+Never replace or delete a candidate tag.
+A `.release` tag or public stable release needs separate, explicit human owner approval.
 
 ## Candidate evidence record
 
@@ -32,6 +92,15 @@ For each candidate, create a reviewed, committed Markdown record under `docs/rel
 | Limits | Untested devices (including physical iOS Safari and Android if applicable), unsupported configurations and open regressions |
 | Decision | Named reviewer, date, pass/fail/waiver reason, rollback procedure and release approval reference |
 
+Use the [evidence template](release-evidence/TEMPLATE.md).
+The machine-readable records in the candidate contract supplement this record.
+They do not replace technical review.
+Record both the package source and the tool source.
+Keep timestamps outside the canonical payload.
+Two fresh builds of the same source and toolchain must have identical payload bytes.
+Scan the exact payload for private paths and credential patterns before publication.
+Retain the complete manifest, lockfile, tool versions, and raw evidence.
+
 Compute byte counts from **the exact shipped JS and WASM files**, not an unrelated local build. Example commands (run after producing those files):
 
 ```sh
@@ -47,25 +116,46 @@ Record if `brotli` or a target browser is unavailable; do not report a synthetic
 
 ## Release gate
 
-A browser-qualified release requires **all** of the following:
+A browser-qualified candidate requires **all** of the following:
 
 1. Required CI jobs pass for the **exact candidate commit**. A skipped, pending, or absent job is not a pass.
 2. Compiled JS/WASM ABI contract checks pass and the JS bridge matches the candidate WASM revision.
 3. Browser acceptance tests execute in real Chromium, Firefox and WebKit and pass the agreed required scenarios. An engine-emulation result does not qualify a physical iOS/Android device.
 4. Known applicable security findings are resolved or have a documented, approved risk decision. A previous closed tracking issue is not proof that new dependencies are safe.
-5. Performance budgets are calibrated against baseline measurements. A provisional hypothesis is **not** an enforced SLO until a reviewed gate defines it.
+5. The source-bound reference-profile regression guard passes under the candidate contract. A local rehearsal or provisional device target cannot satisfy this check.
 6. A reviewer verifies artifact hashes, CHANGELOG/compatibility impact, retained reports and the rollback plan.
 
-**No release** if any mandatory check fails, a runtime assertion has no evidence, or required review is absent. A waiver must name the check, scope, residual risk, owner and expiry, and cannot be described as a pass.
+The candidate result is `QUALIFIED-CANDIDATE`, `BLOCKED`, or `FAILED`.
+Missing, inconclusive, or waived mandatory evidence blocks qualification.
+Record the named reviewer, reviewer kind, exact method, date, and evidence references.
+An identified automated agent can review a candidate.
+It must record `ownerApproval: false`.
+It cannot approve publication on behalf of the human owner.
+
+**No release** if any mandatory check fails, a runtime assertion has no evidence, or required review is absent.
+A qualified candidate is not an approved stable release.
+Publication needs a separate human owner approval reference.
 
 ## Candidate and rollback exercise
 
 1. Tag a candidate from an immutable reviewed SHA; build artifacts reproducibly and record hashes.
 2. Serve the exact candidate JS/WASM pair over HTTP and execute browser tests on that candidate.
-3. Publish only after the release gate decision has been recorded.
-4. Rehearse rollback in a test deployment: redeploy the previous qualified JS/WASM pair **together**, verify the hashes and first-frame behavior, and record the result.
+3. Publish only after the gate decision and separate human owner approval have been recorded.
+4. Rehearse rollback in a test deployment: redeploy the previous qualified JS/WASM pair **together**, verify served and browser-received hashes and actual canvas pixels, and record the result.
 5. If an incompatible public API or persistent state format changed, document why rollback is safe or block release until a safe migration path exists.
 
 ## Current qualification status
 
-**Not qualified.** This document is a policy and an evidence template; it contains no benchmark, browser run, CI result, release candidate or rollback exercise. Issue #19 stays open until the acceptance evidence is available.
+Before the first qualified release, the contract permits the bootstrap reference
+`f837a98d415262320a8c66ef9f8024d8f2faeab1`.
+It has no candidate label and is not a qualified release.
+The first rollback exercise proves package integrity and the rollback procedure.
+It does not prove a return to a qualified release.
+Once a qualified `.release` tag exists, it must replace the bootstrap rollback target.
+
+**Not qualified by this document.**
+The proposed contract is not a candidate receipt or an observed test result.
+The manual reference-profile job must collect and retain the actual measurements.
+Issue #19 stays open until the required candidate and rollback evidence is recorded.
+
+**Writing review state:** STE-aligned draft. Full dictionary review not done.

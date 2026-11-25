@@ -1,0 +1,147 @@
+name: Miniquad release candidate
+
+# Manual, candidate-scoped reference workflow (docs/release-candidate-contract.md
+# section 8). Dispatch only for a specific candidate commit that is already
+# on `master`; never run this per pull request.
+on:
+  workflow_dispatch:
+    inputs:
+      candidate_sha:
+        description: 'Full 40-hex candidate commit SHA (must equal github.sha and be an ancestor of origin/master)'
+        required: true
+      baseline_sha:
+        description: 'Full 40-hex baseline commit SHA (must be an ancestor of origin/master)'
+        required: true
+      label:
+        description: 'Candidate label, e.g. 0.5.0-tigon32.1.rc.1'
+        required: true
+      rollback_target:
+        description: 'What the drill rolls back to'
+        required: true
+        type: choice
+        options:
+          - bootstrap-reference
+          - qualified-release
+      pairs:
+        description: 'Number of alternating baseline/candidate pairs per engine for measure (minimum 20)'
+        required: false
+        default: '20'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-candidate
+  cancel-in-progress: false
+
+jobs:
+  reference:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      CANDIDATE_SHA: ${{ inputs.candidate_sha }}
+      BASELINE_SHA: ${{ inputs.baseline_sha }}
+      CANDIDATE_LABEL: ${{ inputs.label }}
+      ROLLBACK_TARGET: ${{ inputs.rollback_target }}
+      MEASURE_PAIRS: ${{ inputs.pairs }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Require this run to target the candidate SHA
+        run: |
+          set -eu
+          if [ "$GITHUB_SHA" != "$CANDIDATE_SHA" ]; then
+            echo "github.sha ($GITHUB_SHA) does not equal candidate_sha ($CANDIDATE_SHA)" >&2
+            exit 1
+          fi
+      - name: Require both SHAs to be ancestors of origin/master
+        run: |
+          set -eu
+          git fetch origin master --quiet
+          git merge-base --is-ancestor "$CANDIDATE_SHA" origin/master
+          git merge-base --is-ancestor "$BASELINE_SHA" origin/master
+      - name: Check immutable GitHub Action references
+        run: node scripts/check-actions.mjs
+      - name: Install stable Rust and WASM target
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustup target add wasm32-unknown-unknown
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+          cache: npm
+      - name: Install locked JavaScript tools
+        run: npm ci --ignore-scripts --no-audit --no-fund
+      - name: Install pinned Playwright browser engines and host dependencies
+        run: npx playwright install --with-deps chromium firefox webkit
+      - name: Create working directories under RUNNER_TEMP
+        run: |
+          set -eu
+          mkdir -p "$RUNNER_TEMP/release-candidate/baseline" \
+                   "$RUNNER_TEMP/release-candidate/candidate" \
+                   "$RUNNER_TEMP/release-candidate/candidate-repeat" \
+                   "$RUNNER_TEMP/release-candidate/drill" \
+                   "$RUNNER_TEMP/release-candidate/measure"
+          rmdir "$RUNNER_TEMP/release-candidate/baseline" \
+                "$RUNNER_TEMP/release-candidate/candidate" \
+                "$RUNNER_TEMP/release-candidate/candidate-repeat"
+      - name: Prepare the baseline package
+        run: |
+          node scripts/release-candidate.mjs prepare \
+            --sha "$BASELINE_SHA" --role baseline --reference "$ROLLBACK_TARGET" \
+            --repo "$GITHUB_WORKSPACE" \
+            --out "$RUNNER_TEMP/release-candidate/baseline"
+      - name: Prepare the candidate package
+        run: |
+          node scripts/release-candidate.mjs prepare \
+            --sha "$CANDIDATE_SHA" --role candidate --label "$CANDIDATE_LABEL" \
+            --repo "$GITHUB_WORKSPACE" \
+            --out "$RUNNER_TEMP/release-candidate/candidate"
+      - name: Prepare the candidate a second time, reusing the first Cargo.lock
+        run: |
+          node scripts/release-candidate.mjs prepare \
+            --sha "$CANDIDATE_SHA" --role candidate --label "$CANDIDATE_LABEL" \
+            --repo "$GITHUB_WORKSPACE" \
+            --out "$RUNNER_TEMP/release-candidate/candidate-repeat" \
+            --lockfile "$RUNNER_TEMP/release-candidate/candidate/consumer/Cargo.lock"
+      - name: Compare the two candidate preparations
+        run: |
+          mkdir -p "$RUNNER_TEMP/release-candidate"
+          node scripts/release-candidate.mjs compare \
+            --a "$RUNNER_TEMP/release-candidate/candidate" \
+            --b "$RUNNER_TEMP/release-candidate/candidate-repeat" \
+            > "$RUNNER_TEMP/release-candidate/compare.json"
+          node -e 'const r = require(process.env.RUNNER_TEMP + "/release-candidate/compare.json"); if (!r.ok) { console.error(r.reason); process.exit(1); }'
+      - name: Rollout and rollback drill, three engines
+        run: |
+          xvfb-run -a node scripts/release-browser.mjs drill \
+            --baseline "$RUNNER_TEMP/release-candidate/baseline" \
+            --candidate "$RUNNER_TEMP/release-candidate/candidate" \
+            --out "$RUNNER_TEMP/release-candidate/drill" \
+            --engines chromium,firefox,webkit --headful firefox,webkit
+      - name: Regression measurement, three engines
+        run: |
+          xvfb-run -a node scripts/release-browser.mjs measure \
+            --baseline "$RUNNER_TEMP/release-candidate/baseline" \
+            --candidate "$RUNNER_TEMP/release-candidate/candidate" \
+            --out "$RUNNER_TEMP/release-candidate/measure" \
+            --engines chromium,firefox,webkit --pairs "$MEASURE_PAIRS" \
+            --profile gha-ubuntu-24.04-x64-pw1.56.1 --headful firefox,webkit
+      - name: Upload release candidate artifacts
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-candidate-${{ inputs.label }}
+          path: |
+            ${{ runner.temp }}/release-candidate/baseline
+            ${{ runner.temp }}/release-candidate/candidate
+            ${{ runner.temp }}/release-candidate/candidate-repeat
+            ${{ runner.temp }}/release-candidate/compare.json
+            ${{ runner.temp }}/release-candidate/drill
+            ${{ runner.temp }}/release-candidate/measure
+            !${{ runner.temp }}/release-candidate/candidate/consumer/target
+            !${{ runner.temp }}/release-candidate/candidate-repeat/consumer/target
+          if-no-files-found: warn
+          retention-days: 30

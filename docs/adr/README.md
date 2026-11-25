@@ -27,6 +27,7 @@ The documents are **STE-aligned drafts**. We have not completed a full ASD-STE10
 * [0023 — Add a verified WebGL2 GPU timer-query path and supersede the deprecation](0023-webgl2-gpu-timer-query.md) — **Accepted**
 * [0024 — Supply or gate missing Metal texture formats, raw textures, resize, and read-back](0024-metal-texture-format-and-raw-texture-contract.md) — **Accepted**
 * [0025 — Compare Miniquad with plain WebGL2 before a continue-or-freeze decision](0025-continue-or-freeze-webgl2-comparison.md) — **Accepted**
+* [0027 — Clean up the worktree and branch when a task completes](0027-clean-up-worktrees-at-task-completion.md) — **Proposed**
 
 ## Write a new decision
 
